@@ -178,8 +178,8 @@ export interface MessageItem {
 
 /** Unified message (proto: WeixinMessage). Replaces the old split Message + MessageContent + FullMessage. */
 export interface WeixinMessage {
-  seq?: number;
-  message_id?: number;
+  seq?: number | string;
+  message_id?: number | string;
   from_user_id?: string;
   to_user_id?: string;
   client_id?: string;

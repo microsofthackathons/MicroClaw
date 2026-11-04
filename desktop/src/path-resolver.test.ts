@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mock electron ─────────────────────────────────────────────────────
+const mockApp = vi.hoisted(() => ({ isPackaged: false }));
 vi.mock("electron", () => ({
   app: {
     getPath: vi.fn((name: string) => {
@@ -8,7 +9,9 @@ vi.mock("electron", () => ({
       if (name === "appData") return "C:\\Users\\testuser\\AppData\\Roaming";
       return "";
     }),
-    isPackaged: false,
+    get isPackaged() {
+      return mockApp.isPackaged;
+    },
   },
 }));
 
@@ -25,11 +28,17 @@ vi.mock("fs", async () => {
   };
 });
 
+const mockExecFileSync = vi.hoisted(() => vi.fn());
+vi.mock("child_process", () => ({
+  execFileSync: mockExecFileSync,
+}));
+
 import * as path from "path";
 import {
   getOpenClawStateDir,
   loadGatewayEnvironment,
   loadStateDirEnv,
+  isSupportedNodeVersion,
   resolveNodePath,
   resolveOpenClawEntry,
   resolveOpenClawPackageDir,
@@ -41,6 +50,8 @@ const originalEnv = { ...process.env };
 beforeEach(() => {
   mockExistsSync.mockReset().mockReturnValue(false);
   mockReadFileSync.mockReset().mockReturnValue("");
+  mockExecFileSync.mockReset().mockReturnValue("v26.1.0\r\n");
+  mockApp.isPackaged = false;
 });
 
 afterEach(() => {
@@ -119,9 +130,7 @@ describe("loadStateDirEnv", () => {
 
 describe("loadGatewayEnvironment", () => {
   it("uses state-directory values over the desktop process environment", () => {
-    mockReadFileSync.mockReturnValue(
-      "OPENCLAW_HOME=D:\\state-home\nSTATE_ONLY=from-state\n",
-    );
+    mockReadFileSync.mockReturnValue("OPENCLAW_HOME=D:\\state-home\nSTATE_ONLY=from-state\n");
 
     expect(
       loadGatewayEnvironment("D:\\state", {
@@ -139,6 +148,14 @@ describe("loadGatewayEnvironment", () => {
 // ── resolveNodePath ─────────────────────────────────────────────────
 
 describe("resolveNodePath", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("returns deployer-installed node when it exists", () => {
     process.env.USERPROFILE = "C:\\Users\\testuser";
     const expected = path.join("C:\\Users\\testuser", ".openclaw-node", "node.exe");
@@ -146,10 +163,15 @@ describe("resolveNodePath", () => {
     expect(resolveNodePath()).toBe(expected);
   });
 
-  it("falls back to 'node' when nothing exists", () => {
+  it("falls back to a supported Node on PATH when standard locations are missing", () => {
     process.env.USERPROFILE = "C:\\Users\\testuser";
     mockExistsSync.mockReturnValue(false);
     expect(resolveNodePath()).toBe("node");
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "node",
+      ["--version"],
+      expect.objectContaining({ windowsHide: true, timeout: 5_000 }),
+    );
   });
 
   it("falls back to Program Files when deployer node missing", () => {
@@ -158,6 +180,112 @@ describe("resolveNodePath", () => {
     mockExistsSync.mockImplementation((p) => String(p) === progFiles);
     expect(resolveNodePath()).toBe(progFiles);
   });
+
+  it.each(["v22.22.3", "v24.15.9", "v25.9.0", "v26.0.0", "v26.1.0-rc.1"])(
+    "skips an unsupported legacy installation (%s)",
+    (version) => {
+      process.env.USERPROFILE = "C:\\Users\\testuser";
+      process.env.ProgramFiles = "C:\\Program Files";
+      delete process.env.OPENCLAW_NODE_DIR;
+      const legacy = path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe");
+      const supported = path.join(process.env.ProgramFiles, "nodejs", "node.exe");
+      mockExistsSync.mockImplementation((p) => [legacy, supported].includes(String(p)));
+      mockExecFileSync.mockImplementation((p) => (p === legacy ? version : "v26.1.0"));
+      expect(resolveNodePath()).toBe(supported);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining(`Skipping unsupported Node.js ${version}`),
+      );
+    },
+  );
+
+  it("skips a broken binary and accepts the per-user MSI installation", () => {
+    process.env.ProgramFiles = "C:\\Program Files";
+    process.env.LOCALAPPDATA = "C:\\Users\\testuser\\AppData\\Local";
+    const broken = path.join(process.env.ProgramFiles, "nodejs", "node.exe");
+    const supported = path.join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe");
+    mockExistsSync.mockImplementation((p) => [broken, supported].includes(String(p)));
+    mockExecFileSync.mockImplementation((p) => {
+      if (p === broken) throw new Error("cannot execute");
+      return "v24.16.0";
+    });
+    expect(resolveNodePath()).toBe(supported);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("cannot execute"));
+  });
+
+  it("honors a supported absolute OPENCLAW_NODE_DIR override", () => {
+    process.env.OPENCLAW_NODE_DIR = "D:\\custom-node";
+    const expected = path.join(process.env.OPENCLAW_NODE_DIR, "node.exe");
+    mockExistsSync.mockImplementation((p) => String(p) === expected);
+    expect(resolveNodePath()).toBe(expected);
+  });
+
+  it("does not execute a relative OPENCLAW_NODE_DIR override", () => {
+    process.env.OPENCLAW_NODE_DIR = "relative-node";
+    mockExistsSync.mockReturnValue(false);
+    expect(resolveNodePath()).toBe("node");
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips an unsupported bundled runtime", () => {
+    mockApp.isPackaged = true;
+    vi.stubGlobal("process", { ...process, resourcesPath: "C:\\MicroClaw\\resources" });
+    try {
+      const bundled = path.join(process.resourcesPath, "node.exe");
+      mockExistsSync.mockImplementation((p) => String(p) === bundled);
+      mockExecFileSync.mockImplementation((p) => (p === bundled ? "v22.22.3" : "v26.1.0"));
+      expect(resolveNodePath()).toBe("node");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["v25.9.0", "v26.0.0", "invalid"])(
+    "rejects unsupported Node on PATH (%s) with the required runtime range",
+    (version) => {
+      mockExecFileSync.mockReturnValue(version);
+      expect(() => resolveNodePath()).toThrow(">=24.16.0 <25 || >=26.1.0");
+    },
+  );
+
+  it("reports how to install Node when no executable runs", () => {
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    expect(() => resolveNodePath()).toThrow("Run the MicroClaw installer or install Node.js 26");
+  });
+});
+
+describe("isSupportedNodeVersion", () => {
+  it.each(["24.16.0", "v24.17.0", "26.1.0", "v26.2.0", "27.0.0"])("accepts %s", (version) =>
+    expect(isSupportedNodeVersion(version)).toBe(true),
+  );
+
+  it.each([
+    "22.22.3",
+    "v22.99.0",
+    "23.10.0",
+    "24.15.9",
+    "25.9.0",
+    "v25.99.0",
+    "26.0.0",
+    "v26.0.9",
+    "",
+    "26",
+    "26.1",
+    "26.1.0.0",
+    "26.1.0-rc.1",
+    "26.1.0+build.1",
+    " 26.1.0",
+    "26.1.0\n",
+    "vv26.1.0",
+    "V26.1.0",
+    "026.1.0",
+    "26.01.0",
+    "26.1.00",
+    "２６.1.0",
+    "-26.1.0",
+    "26.a.0",
+  ])("rejects %s", (version) => expect(isSupportedNodeVersion(version)).toBe(false));
 });
 
 // ── resolveOpenClawEntry ────────────────────────────────────────────

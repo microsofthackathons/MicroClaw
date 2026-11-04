@@ -3,11 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { CREATE_NO_WINDOW } from "./constants";
+import { resolveGitHubCopilotConfigRuntimePath } from "./github-copilot-auth-worker";
 
 const MESSAGE_PREFIX = "MICROCLAW_COPILOT_AUTH:";
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
 const AUTH_TIMEOUT_MS = 20 * 60_000;
 const CLI_TIMEOUT_MS = 30_000;
+export const GITHUB_COPILOT_CATALOG_TIMEOUT_MS = 210_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
 const MAX_GATEWAY_MODELS = 5_000;
@@ -18,6 +20,7 @@ let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | 
 let authStatusInFlight: Promise<{ authenticated: boolean }> | null = null;
 let modelCatalogCache: GitHubCopilotModel[] | null = null;
 let modelCatalogInFlight: Promise<GitHubCopilotModel[]> | null = null;
+let modelCatalogGeneration = 0;
 
 export interface GitHubCopilotAuthRuntime {
   nodePath: string;
@@ -229,9 +232,7 @@ export function parseGitHubCopilotGatewayAuthStatus(payload: unknown): boolean {
   return parseGitHubCopilotProviderHealth((payload as { providers?: unknown }).providers);
 }
 
-export function parseGitHubCopilotDisconnectResult(
-  output: string,
-): GitHubCopilotDisconnectResult {
+export function parseGitHubCopilotDisconnectResult(output: string): GitHubCopilotDisconnectResult {
   let payload: unknown;
   try {
     payload = JSON.parse(output);
@@ -254,8 +255,7 @@ function parseGitHubCopilotDisconnectPayload(payload: unknown): GitHubCopilotDis
   if (
     result.removedProfiles.length > 100 ||
     result.removedProfiles.some(
-      (profileId) =>
-        typeof profileId !== "string" || !profileId.trim() || profileId.length > 500,
+      (profileId) => typeof profileId !== "string" || !profileId.trim() || profileId.length > 500,
     )
   ) {
     throw new Error("Invalid GitHub Copilot disconnect response");
@@ -296,16 +296,48 @@ export function parseGitHubCopilotGatewayModels(payload: unknown): GitHubCopilot
 export function invalidateGitHubCopilotAuthStatusCache(): void {
   authStatusCache = null;
   modelCatalogCache = null;
+  modelCatalogInFlight = null;
+  modelCatalogGeneration += 1;
 }
 
-export function buildGitHubCopilotAuthStatusArgs(): string[] {
+export function buildGitHubCopilotModelsArgs(): string[] {
   return [
     "models",
-    "status",
+    "list",
+    "--refresh",
+    "--all",
+    "--provider",
+    "github-copilot",
     "--agent",
     GITHUB_COPILOT_AUTH_AGENT_ID,
     "--json",
   ];
+}
+
+export function parseGitHubCopilotCliModels(output: string): GitHubCopilotModel[] {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(output);
+  } catch {
+    throw new Error("Invalid GitHub Copilot model list");
+  }
+  const models =
+    payload && typeof payload === "object" ? (payload as { models?: unknown }).models : undefined;
+  if (!Array.isArray(models) || models.length > MAX_GATEWAY_MODELS) {
+    throw new Error("Invalid GitHub Copilot model list");
+  }
+  return parseGitHubCopilotGatewayModels({
+    models: models.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const model = entry as Record<string, unknown>;
+      if (typeof model.key !== "string" || !model.key.startsWith("github-copilot/")) return [];
+      return [{ provider: "github-copilot", id: model.key, name: model.name }];
+    }),
+  });
+}
+
+export function buildGitHubCopilotAuthStatusArgs(): string[] {
+  return ["models", "status", "--agent", GITHUB_COPILOT_AUTH_AGENT_ID, "--json"];
 }
 
 export function buildGitHubCopilotLogoutArgs(): string[] {
@@ -322,7 +354,11 @@ export function buildGitHubCopilotLogoutArgs(): string[] {
   ];
 }
 
-async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]): Promise<string> {
+async function runOpenClawJson(
+  runtime: GitHubCopilotAuthRuntime,
+  args: string[],
+  timeoutMs = CLI_TIMEOUT_MS,
+): Promise<string> {
   if (!isSafeNodePath(runtime.nodePath) || !fs.existsSync(runtime.entryPath)) {
     throw new Error("OpenClaw CLI was not found");
   }
@@ -342,7 +378,7 @@ async function runOpenClawJson(runtime: GitHubCopilotAuthRuntime, args: string[]
     const timeout = setTimeout(() => {
       child.kill();
       finish(new Error("OpenClaw model query timed out"));
-    }, CLI_TIMEOUT_MS);
+    }, timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -387,10 +423,9 @@ export async function getGitHubCopilotAuthStatus(
     const value = { authenticated: parseGitHubCopilotAuthStatus(output) };
     authStatusCache = { value, expiresAt: Date.now() + AUTH_STATUS_CACHE_MS };
     return value;
-  })()
-    .finally(() => {
-      authStatusInFlight = null;
-    });
+  })().finally(() => {
+    authStatusInFlight = null;
+  });
   return authStatusInFlight;
 }
 
@@ -407,91 +442,49 @@ export async function disconnectGitHubCopilot(
 
 export async function listGitHubCopilotModels(
   runtime: GitHubCopilotAuthRuntime,
+  queryGateway?: (params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>,
 ): Promise<GitHubCopilotModel[]> {
   if (modelCatalogCache) return modelCatalogCache;
   if (modelCatalogInFlight) return modelCatalogInFlight;
 
-  const authRuntimePath = path.join(
-    runtime.openClawPackageDir,
-    "dist",
-    "plugin-sdk",
-    "provider-auth-login-flow-runtime.js",
-  );
-  if (
-    !isSafeNodePath(runtime.nodePath) ||
-    !fs.existsSync(runtime.workerPath) ||
-    !fs.existsSync(authRuntimePath)
-  ) {
-    throw new Error("GitHub Copilot model catalog components were not found");
-  }
-
-  const request = new Promise<GitHubCopilotModel[]>((resolve, reject) => {
-    const child = spawn(
-      runtime.nodePath,
-      [runtime.workerPath, authRuntimePath, "list-models"],
-      spawnOptions(runtime),
-    );
-    let stdoutBuffer = "";
-    let stderr = "";
-    let models: GitHubCopilotModel[] | undefined;
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve(models ?? []);
-    };
-    const timeout = setTimeout(() => {
-      child.kill();
-      finish(new Error("GitHub Copilot model catalog timed out"));
-    }, CLI_TIMEOUT_MS);
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdoutBuffer += chunk.toString("utf8");
-      if (Buffer.byteLength(stdoutBuffer) > MAX_OUTPUT_BYTES) {
-        child.kill();
-        finish(new Error("GitHub Copilot model catalog returned too much data"));
-        return;
-      }
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line) continue;
-        try {
-          const message = parseGitHubCopilotWorkerLine(line);
-          if (message?.type === "models") models = message.models;
-          if (message?.type === "failure") finish(new Error(message.message));
-        } catch (error) {
-          child.kill();
-          finish(error instanceof Error ? error : new Error(String(error)));
-        }
-      }
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_192);
-    });
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => {
-      if (code === 0 && models) finish();
-      else {
-        finish(
-          new Error(
-            stderr.trim() || `GitHub Copilot model catalog exited with code ${code ?? "unknown"}`,
-          ),
+  const generation = modelCatalogGeneration;
+  const request = (async () => {
+    if (queryGateway) {
+      try {
+        const params = {
+          agentId: GITHUB_COPILOT_AUTH_AGENT_ID,
+          provider: "github-copilot",
+          view: "all",
+        };
+        const prepared = parseGitHubCopilotGatewayModels(
+          await queryGateway({ ...params, preparedOnly: true }, CLI_TIMEOUT_MS),
         );
+        if (prepared.length > 0) return prepared;
+        const refreshed = parseGitHubCopilotGatewayModels(
+          await queryGateway({ ...params, refresh: true }, GITHUB_COPILOT_CATALOG_TIMEOUT_MS),
+        );
+        if (refreshed.length > 0) return refreshed;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
       }
-    });
-  });
-  modelCatalogInFlight = request
+    }
+    const output = await runOpenClawJson(
+      runtime,
+      buildGitHubCopilotModelsArgs(),
+      GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
+    );
+    return parseGitHubCopilotCliModels(output);
+  })();
+  const inFlight = request
     .then((models) => {
-      modelCatalogCache = models;
+      if (models.length > 0 && generation === modelCatalogGeneration) modelCatalogCache = models;
       return models;
     })
     .finally(() => {
-      modelCatalogInFlight = null;
+      if (modelCatalogInFlight === inFlight) modelCatalogInFlight = null;
     });
-  return modelCatalogInFlight;
+  modelCatalogInFlight = inFlight;
+  return inFlight;
 }
 
 export class GitHubCopilotAuthManager {
@@ -516,25 +509,13 @@ export class GitHubCopilotAuthManager {
       "plugin-sdk",
       "provider-catalog-runtime.js",
     );
-    const configRuntimePath = path.join(
-      runtime.openClawPackageDir,
-      "dist",
-      "plugin-sdk",
-      "config-runtime.js",
-    );
-    const modelsProviderRuntimePath = path.join(
-      runtime.openClawPackageDir,
-      "dist",
-      "plugin-sdk",
-      "models-provider-runtime.js",
-    );
+    const configRuntimePath = resolveGitHubCopilotConfigRuntimePath(path.dirname(authRuntimePath));
     if (
       !isSafeNodePath(runtime.nodePath) ||
       !fs.existsSync(runtime.workerPath) ||
       !fs.existsSync(authRuntimePath) ||
       !fs.existsSync(providerCatalogRuntimePath) ||
-      !fs.existsSync(configRuntimePath) ||
-      !fs.existsSync(modelsProviderRuntimePath)
+      !fs.existsSync(configRuntimePath)
     ) {
       throw new Error("GitHub Copilot sign-in components were not found");
     }

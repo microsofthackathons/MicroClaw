@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as path from "node:path";
 import {
   buildGitHubCopilotAuthStatusArgs,
   buildGitHubCopilotLogoutArgs,
+  buildGitHubCopilotModelsArgs,
   getGitHubCopilotAuthStatus,
   GITHUB_COPILOT_AUTH_AGENT_ID,
+  GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
   invalidateGitHubCopilotAuthStatusCache,
+  listGitHubCopilotModels,
   parseGitHubCopilotAuthStatus,
+  parseGitHubCopilotCliModels,
   parseGitHubCopilotDisconnectResult,
   parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
@@ -13,7 +18,10 @@ import {
 } from "./github-copilot-auth";
 import {
   buildGitHubCopilotLoginOptions,
+  extractDevicePrompt,
   GITHUB_COPILOT_AUTH_AGENT_ID as WORKER_AUTH_AGENT_ID,
+  readGitHubCopilotRuntimeConfig,
+  resolveGitHubCopilotConfigRuntimePath,
 } from "./github-copilot-auth-worker";
 
 const missingRuntime = {
@@ -64,6 +72,213 @@ describe("GitHub Copilot auth scope", () => {
       method: "device",
       setDefault: false,
     });
+  });
+});
+
+describe("GitHub Copilot configuration runtime compatibility", () => {
+  it("uses the legacy SDK configuration entry when available", () => {
+    const runtimeDirectory = path.resolve("openclaw", "dist", "plugin-sdk");
+    const legacyPath = path.join(runtimeDirectory, "config-runtime.js");
+    expect(
+      resolveGitHubCopilotConfigRuntimePath(
+        runtimeDirectory,
+        (filename) => filename === legacyPath,
+      ),
+    ).toBe(legacyPath);
+  });
+
+  it("uses the OpenClaw 2026.10.5 runtime snapshot entry without the legacy SDK entry", () => {
+    const runtimeDirectory = path.resolve("openclaw", "dist", "plugin-sdk");
+    expect(resolveGitHubCopilotConfigRuntimePath(runtimeDirectory, () => false)).toBe(
+      path.join(runtimeDirectory, "runtime-config-snapshot.js"),
+    );
+  });
+
+  it.each(["loadConfig", "getRuntimeConfig"] as const)("loads configuration with %s", (method) => {
+    const config = { agents: { defaults: {} } };
+    const loader = vi.fn().mockReturnValue(config);
+    expect(readGitHubCopilotRuntimeConfig({ [method]: loader })).toBe(config);
+    expect(loader).toHaveBeenCalledExactlyOnceWith({ skipPluginValidation: true });
+  });
+
+  it("rejects an incompatible configuration runtime", () => {
+    expect(() => readGitHubCopilotRuntimeConfig({})).toThrow(
+      "OpenClaw configuration runtime is incompatible",
+    );
+  });
+});
+
+describe("GitHub Copilot device prompt compatibility", () => {
+  it.each(["https://github.com/login/device", "<https://github.com/login/device>"])(
+    "extracts the authorization code from URL: %s",
+    (url) => {
+      const prompt = extractDevicePrompt(
+        [
+          "Open this URL in your browser and enter the code below.",
+          `URL: ${url}`,
+          "Code: ABCD-1234",
+          "Code expires in 15 minutes. Never share it.",
+          "",
+          "If a browser does not open automatically after you continue, copy the URL manually.",
+        ].join("\n"),
+      );
+
+      expect(prompt).toEqual({
+        verificationUrl: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        expiresInMs: 900_000,
+      });
+      expect(
+        parseGitHubCopilotWorkerLine(
+          `MICROCLAW_COPILOT_AUTH:${JSON.stringify({ type: "device-code", ...prompt })}`,
+        ),
+      ).toEqual({ type: "device-code", ...prompt });
+    },
+  );
+
+  it.each([
+    "https://example.com/login/device",
+    "<https://example.com/login/device>",
+    "https://github.com/login/device/other",
+    "<https://github.com/login/device/other>",
+    "https://github.com/login/device.example.com",
+    "<https://github.com/login/device.example.com>",
+  ])("rejects an unexpected verification URL: %s", (url) => {
+    expect(
+      extractDevicePrompt(`URL: ${url}\nCode: ABCD-1234\nCode expires in 15 minutes.`),
+    ).toBeNull();
+  });
+
+  it.each([
+    "This will open a GitHub device login to authorize Copilot.",
+    "URL: <https://github.com/login/device>\nCode expires in 15 minutes.",
+    "URL: <https://github.com/login/device>\nCode: ABCD-1234",
+    "URL: <https://github.com/login/device>\nCode: ABCD-1234\nCode expires in 0 minutes.",
+  ])("ignores notes without a complete usable device prompt: %s", (message) => {
+    expect(extractDevicePrompt(message)).toBeNull();
+  });
+});
+
+describe("GitHub Copilot CLI model catalog", () => {
+  it("refreshes the provider-scoped CLI catalog using the shared auth agent", () => {
+    expect(buildGitHubCopilotModelsArgs()).toEqual([
+      "models",
+      "list",
+      "--refresh",
+      "--all",
+      "--provider",
+      "github-copilot",
+      "--agent",
+      "main",
+      "--json",
+    ]);
+  });
+
+  it("normalizes and deduplicates Copilot entries without exposing other providers", () => {
+    expect(
+      parseGitHubCopilotCliModels(
+        JSON.stringify({
+          models: [
+            { key: "openai/gpt-5", name: "Other provider" },
+            { key: "github-copilot/gpt-5", name: "GPT-5" },
+            { key: "github-copilot/gpt-5", name: "GPT-5" },
+            { key: "github-copilot/claude-sonnet" },
+            { key: "github-copilot/" },
+            null,
+          ],
+        }),
+      ),
+    ).toEqual([
+      { id: "github-copilot/claude-sonnet", name: "claude-sonnet" },
+      { id: "github-copilot/gpt-5", name: "GPT-5" },
+    ]);
+  });
+
+  it("accepts an empty catalog before sign-in", () => {
+    expect(parseGitHubCopilotCliModels('{"models":[]}')).toEqual([]);
+  });
+
+  it.each(["invalid", "null", "{}", '{"models":{}}'])("rejects malformed output: %s", (output) => {
+    expect(() => parseGitHubCopilotCliModels(output)).toThrow("Invalid GitHub Copilot model list");
+  });
+
+  it("bounds the model list before normalizing entries", () => {
+    expect(() =>
+      parseGitHubCopilotCliModels(JSON.stringify({ models: Array(5001).fill({}) })),
+    ).toThrow("Invalid GitHub Copilot model list");
+  });
+});
+
+describe("GitHub Copilot model discovery", () => {
+  const catalog = {
+    models: [{ provider: "github-copilot", id: "gpt-5.4", name: "GPT-5.4" }],
+  };
+  const models = [{ id: "github-copilot/gpt-5.4", name: "GPT-5.4" }];
+
+  it("uses an already prepared catalog without refreshing or starting the CLI", async () => {
+    const queryGateway = vi.fn().mockResolvedValue(catalog);
+
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+    expect(queryGateway).toHaveBeenCalledExactlyOnceWith(
+      { agentId: "main", provider: "github-copilot", view: "all", preparedOnly: true },
+      30_000,
+    );
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+    expect(queryGateway).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes an empty prepared catalog before treating the account as having no models", async () => {
+    const queryGateway = vi.fn().mockResolvedValueOnce({ models: [] }).mockResolvedValue(catalog);
+
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+    expect(queryGateway).toHaveBeenNthCalledWith(
+      2,
+      { agentId: "main", provider: "github-copilot", view: "all", refresh: true },
+      GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
+    );
+  });
+
+  it("shares discovery between simultaneous requests", async () => {
+    const queryGateway = vi.fn().mockResolvedValueOnce({ models: [] }).mockResolvedValue(catalog);
+
+    await expect(
+      Promise.all([
+        listGitHubCopilotModels(missingRuntime, queryGateway),
+        listGitHubCopilotModels(missingRuntime, queryGateway),
+      ]),
+    ).resolves.toEqual([models, models]);
+    expect(queryGateway).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to the CLI without caching a failed discovery", async () => {
+    const queryGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ models: [] })
+      .mockResolvedValueOnce({ models: [] });
+
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).rejects.toThrow(
+      "OpenClaw CLI was not found",
+    );
+    queryGateway.mockResolvedValue(catalog);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+  });
+
+  it("does not reuse or cache an in-flight catalog from before a new login", async () => {
+    let resolveOldCatalog!: (payload: unknown) => void;
+    const oldCatalog = new Promise((resolve) => {
+      resolveOldCatalog = resolve;
+    });
+    const oldRequest = listGitHubCopilotModels(missingRuntime, () => oldCatalog);
+    invalidateGitHubCopilotAuthStatusCache();
+    const queryGateway = vi.fn().mockResolvedValue(catalog);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+
+    resolveOldCatalog({ models: [{ provider: "github-copilot", id: "old-model" }] });
+    await expect(oldRequest).resolves.toEqual([
+      { id: "github-copilot/old-model", name: "old-model" },
+    ]);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+    expect(queryGateway).toHaveBeenCalledOnce();
   });
 });
 

@@ -3,12 +3,252 @@ import {
   extractMainSessionKey,
   buildSessionTitlePrompt,
   GatewayClient,
+  GatewayRequestError,
   isAgentWarmupEvent,
   normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
+  shouldHandleGatewayDisconnect,
   type GatewayEventFrame,
 } from "./gateway-client";
-import { AGENT_WARMUP_SESSION_KEY } from "./constants";
+import { AGENT_WARMUP_SESSION_KEY, WS_REQUEST_TIMEOUT_MS } from "./constants";
+import { GatewaySessionObserver } from "./gateway-session-observer";
+
+describe("GatewayClient agent roster", () => {
+  it.each([undefined, 250])("forwards the roster RPC timeout budget %s", async (timeoutMs) => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const result = { agents: [{ id: "main" }] };
+    const request = vi.spyOn(client, "request").mockResolvedValue(result);
+
+    await expect(client.listAgents(timeoutMs)).resolves.toEqual(result);
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "agents.list",
+      undefined,
+      timeoutMs ?? WS_REQUEST_TIMEOUT_MS,
+    );
+  });
+
+  it("clears an unanswered roster request when its remaining budget expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const response = client.listAgents(250);
+      const rejected = expect(response).rejects.toThrow(
+        "request 'agents.list' timed out after 250ms",
+      );
+
+      await vi.advanceTimersByTimeAsync(250);
+      await rejected;
+      expect(client["pending"].size).toBe(0);
+      expect(send).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("GatewayClient WeChat QR login", () => {
+  it.each([
+    undefined,
+    { accountId: "default", force: true, timeoutMs: 10_000 },
+    { accountId: "default", channel: "another-channel" },
+  ])("routes QR creation to WeChat instead of provider autodetection: %j", async (params) => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const result = { qrDataUrl: "test-qr", message: "Scan to log in", sessionKey: "qr-session" };
+    const request = vi.spyOn(client, "request").mockResolvedValue(result);
+
+    await expect(client.weixinLoginQrStart(params)).resolves.toEqual(result);
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("web.login.start", {
+      ...params,
+      channel: "openclaw-weixin",
+    });
+  });
+
+  it("routes QR completion to the same provider and preserves its session", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({ connected: true });
+
+    const params = {
+      accountId: "default",
+      sessionKey: "qr-session",
+      timeoutMs: 35_000,
+      channel: "another-channel",
+    };
+    await client.weixinLoginQrWait(params);
+
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "web.login.wait",
+      {
+        channel: "openclaw-weixin",
+        accountId: "default",
+        sessionKey: "qr-session",
+        timeoutMs: 35_000,
+      },
+      65_000,
+    );
+  });
+
+  it("does not expire the transport before the requested QR long poll finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const response = client.weixinLoginQrWait({ accountId: "default", timeoutMs: 35_000 });
+      const settled = vi.fn();
+      void response.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      const frame = JSON.parse(send.mock.calls[0][0]);
+      client["handleMessage"](
+        JSON.stringify({
+          type: "res",
+          id: frame.id,
+          ok: true,
+          payload: { connected: false, message: "Waiting for scan" },
+        }),
+      );
+      await expect(response).resolves.toEqual({
+        connected: false,
+        message: "Waiting for scan",
+      });
+      expect(send).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels only the named QR session through the plugin without restarting Gateway", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({ cancelled: true });
+    await expect(client.weixinLoginQrCancel("qr-session")).resolves.toEqual({ cancelled: true });
+    expect(request).toHaveBeenCalledExactlyOnceWith("weixin.login.cancel", {
+      sessionKey: "qr-session",
+    });
+  });
+
+  it("keeps an unanswered QR long poll bounded without retrying it", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const response = client.weixinLoginQrWait({ accountId: "default", timeoutMs: 35_000 });
+      const rejected = expect(response).rejects.toThrow(
+        "request 'web.login.wait' timed out after 65000ms",
+      );
+
+      await vi.advanceTimersByTimeAsync(65_000);
+      await rejected;
+      expect(client["pending"].size).toBe(0);
+      expect(send).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("GatewayClient approval capability", () => {
+  it("retains the negotiated version and advertised methods", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, {
+      opts: {},
+      sessionObserver: new GatewaySessionObserver(vi.fn()),
+      connectSent: false,
+      connectTimer: null,
+      connectNonce: "test",
+      deviceIdentity: {
+        deviceId: "test",
+        publicKey: "test",
+        privateKey: Buffer.alloc(32, 1).toString("base64url"),
+      },
+      ws: { readyState: 1 },
+    });
+    vi.spyOn(client, "request").mockResolvedValue({
+      server: { version: "2026.9.3" },
+      features: { methods: ["models.list", "wizard.next", 42] },
+    });
+    client["sendConnect"]();
+    await Promise.resolve();
+    expect(client.serverVersion).toBe("2026.9.3");
+    expect(client.methods).toEqual(["models.list", "wizard.next"]);
+    expect(client.connectionGeneration).toBe(1);
+    client["connectSent"] = false;
+    client["sendConnect"]();
+    await Promise.resolve();
+    expect(client.connectionGeneration).toBe(2);
+  });
+
+  it("retains setup replies without a transport deadline and preserves typed errors", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      const send = vi.fn();
+      Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+      const request = client.request("openclaw.setup.prepare.start", {}, null);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client["pending"].size).toBe(1);
+      const frame = JSON.parse(send.mock.calls[0][0]);
+      const rejected = expect(request).rejects.toMatchObject({
+        name: "GatewayRequestError",
+        code: "INVALID_REQUEST",
+        details: { code: "WIZARD_NOT_FOUND" },
+      });
+      client["handleMessage"](
+        JSON.stringify({
+          type: "res",
+          id: frame.id,
+          ok: false,
+          error: {
+            message: "Not found",
+            code: "INVALID_REQUEST",
+            details: { code: "WIZARD_NOT_FOUND" },
+          },
+        }),
+      );
+      await rejected;
+      expect(new GatewayRequestError("error")).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([true, false])(
+    "passes the handler capability through the connect handshake: %s",
+    async (supportsExecApprovals) => {
+      const client = Object.create(GatewayClient.prototype) as GatewayClient;
+      Object.assign(client, {
+        opts: { port: 18789, token: "test-token", supportsExecApprovals },
+        sessionObserver: new GatewaySessionObserver(vi.fn()),
+        connectSent: false,
+        connectTimer: null,
+        connectNonce: "test-nonce",
+        deviceIdentity: {
+          deviceId: "test-device",
+          publicKey: "test-public-key",
+          privateKey: Buffer.alloc(32, 1).toString("base64url"),
+        },
+        ws: { readyState: 1 },
+      });
+      const request = vi.spyOn(client, "request").mockResolvedValue({});
+
+      client["sendConnect"]();
+      await Promise.resolve();
+
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "connect",
+        expect.objectContaining({
+          caps: supportsExecApprovals ? ["tool-events", "exec-approvals"] : ["tool-events"],
+        }),
+      );
+    },
+  );
+});
 
 describe("normalizeGatewayChannelsStatus", () => {
   it("preserves Gateway order and derives connection state from accounts", () => {
@@ -51,6 +291,29 @@ describe("normalizeGatewayChannelsStatus", () => {
       },
     ]);
   });
+
+  it("requests a local status snapshot with the startup caller's timeout", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const snapshot = {
+      channels: { "openclaw-weixin": { configured: true } },
+      channelAccounts: { "openclaw-weixin": [{ configured: true, running: true }] },
+    };
+    const request = vi.spyOn(client, "request").mockResolvedValue(snapshot);
+
+    expect(await client.getChannelsStatus(1_500)).toBe(snapshot);
+    expect(request).toHaveBeenCalledExactlyOnceWith("channels.status", { probe: false }, 1_500);
+    expect(await client.listChannels()).toEqual({
+      channels: [
+        {
+          id: "openclaw-weixin",
+          name: "openclaw-weixin",
+          icon: "",
+          type: "openclaw-weixin",
+          connected: true,
+        },
+      ],
+    });
+  });
 });
 describe("extractMainSessionKey", () => {
   it("reads the canonical main key from the Gateway hello snapshot", () => {
@@ -59,6 +322,13 @@ describe("extractMainSessionKey", () => {
         snapshot: { sessionDefaults: { mainSessionKey: "global" } },
       }),
     ).toBe("global");
+  });
+
+  describe("Gateway disconnect lifecycle", () => {
+    it("ignores a socket close callback after the client was intentionally stopped", () => {
+      expect(shouldHandleGatewayDisconnect(true)).toBe(false);
+      expect(shouldHandleGatewayDisconnect(false)).toBe(true);
+    });
   });
 
   it("returns null for a malformed Gateway hello snapshot", () => {
@@ -113,6 +383,7 @@ describe("isAgentWarmupEvent", () => {
 describe("GatewayClient.sendChat", () => {
   function createClient() {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { opts: { port: 18789, token: "" } });
     const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
     return { client, request };
   }
@@ -126,6 +397,13 @@ describe("GatewayClient.sendChat", () => {
       "chat.send",
       expect.not.objectContaining({ attachments: expect.anything() }),
     );
+  });
+
+  it("returns the Gateway acknowledgment with its actual run ID", async () => {
+    const { client, request } = createClient();
+    const acknowledgment = { runId: "actual-run", status: "started" };
+    request.mockResolvedValueOnce(acknowledgment);
+    expect(await client.sendChat("session-123", "hello")).toBe(acknowledgment);
   });
 
   it("adds gateway-compatible attachment objects when provided", async () => {
@@ -156,6 +434,83 @@ describe("GatewayClient.sendChat", () => {
       }),
     );
   });
+
+  it("does not issue or queue chat.send when the ingress gate rejects", async () => {
+    const { client, request } = createClient();
+    const beforeChatSend = vi.fn().mockRejectedValue(new Error("MXC ingress is locked"));
+    Object.assign(client, { opts: { port: 18789, token: "", beforeChatSend } });
+
+    await expect(client.sendChat("session-123", "blocked")).rejects.toThrow(
+      "MXC ingress is locked",
+    );
+    expect(request).not.toHaveBeenCalled();
+
+    beforeChatSend.mockResolvedValue(undefined);
+    await Promise.resolve();
+    expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("GatewayClient.loadHistory", () => {
+  it("canonicalizes an echoed alias and learns main identity without hello defaults", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null, _connectionGeneration: 1 });
+    const history = {
+      sessionKey: "main",
+      messages: [{ role: "user", content: "Existing WeChat message" }],
+      sessionInfo: {
+        key: "agent:main:main",
+        isMain: true,
+        hasActiveRun: false,
+        activeRunIds: [],
+      },
+    };
+    const request = vi.spyOn(client, "request").mockResolvedValue(history);
+    await expect(client.loadHistory("main")).resolves.toEqual({
+      ...history,
+      sessionKey: "agent:main:main",
+    });
+    expect(request).toHaveBeenCalledExactlyOnceWith("chat.history", {
+      sessionKey: "main",
+      limit: 200,
+    });
+    expect(client.mainSessionKey).toBe("agent:main:main");
+  });
+
+  it("does not mistake another agent's main session for the default main alias", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null });
+    vi.spyOn(client, "request").mockResolvedValue({
+      sessionKey: "agent:other:main",
+      sessionInfo: {
+        key: "agent:other:main",
+        isMain: true,
+        hasActiveRun: false,
+        activeRunIds: [],
+      },
+    });
+    await client.loadHistory("agent:other:main");
+    expect(client.mainSessionKey).toBeNull();
+  });
+
+  it("does not cache main identity from a previous connection", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null, _connectionGeneration: 1 });
+    vi.spyOn(client, "request").mockImplementation(async () => {
+      Object.assign(client, { _connectionGeneration: 2 });
+      return {
+        sessionKey: "main",
+        sessionInfo: {
+          key: "agent:main:main",
+          isMain: true,
+          hasActiveRun: false,
+          activeRunIds: [],
+        },
+      };
+    });
+    await client.loadHistory("main");
+    expect(client.mainSessionKey).toBeNull();
+  });
 });
 
 describe("GatewayClient.deleteSession", () => {
@@ -170,7 +525,12 @@ describe("GatewayClient.deleteSession", () => {
 
   it("deletes ordinary sessions and their transcripts", async () => {
     const client = createClient();
-    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "agent:main:session-123", isMain: false },
+      });
 
     await client.deleteSession("agent:main:session-123");
 
@@ -178,12 +538,17 @@ describe("GatewayClient.deleteSession", () => {
       key: "agent:main:session-123",
       deleteTranscript: true,
     });
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("resets the exact canonical main session from the Gateway handshake", async () => {
     const client = createClient("global");
-    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "global" },
+      });
 
     await client.deleteSession("global");
 
@@ -191,19 +556,139 @@ describe("GatewayClient.deleteSession", () => {
       key: "global",
       reason: "reset",
     });
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("deletes a non-default agent's main-named session", async () => {
+  it("resets a non-default agent's protected main session", async () => {
     const client = createClient("agent:painter:main");
-    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "agent:writer:main", isMain: true },
+      });
 
     await client.deleteSession("agent:writer:main");
 
-    expect(request).toHaveBeenCalledWith("sessions.delete", {
+    expect(request).toHaveBeenCalledWith("sessions.reset", {
+      key: "agent:writer:main",
+      reason: "reset",
+    });
+  });
+
+  it.each(["main", "agent:main:main"])(
+    "resolves %s without hello defaults and revokes canonical approvals before resetting",
+    async (key) => {
+      const client = createClient(null);
+      const request = vi
+        .spyOn(client, "request")
+        .mockResolvedValue(undefined)
+        .mockResolvedValueOnce({
+          session: { key: "agent:main:main", isMain: true },
+        });
+      const beforeDelete = vi.fn(async () => {
+        expect(request).toHaveBeenCalledTimes(1);
+      });
+      await client.deleteSession(key, beforeDelete);
+      expect(request).toHaveBeenNthCalledWith(1, "sessions.describe", {
+        key,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+      });
+      expect(beforeDelete).toHaveBeenCalledExactlyOnceWith("agent:main:main");
+      expect(request).toHaveBeenNthCalledWith(2, "sessions.reset", {
+        key: "agent:main:main",
+        reason: "reset",
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not infer protection from a main-named suffix", async () => {
+    const client = createClient(null);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({
+        session: { key: "agent:writer:main", isMain: false },
+      });
+    await client.deleteSession("agent:writer:main");
+    expect(request).toHaveBeenLastCalledWith("sessions.delete", {
       key: "agent:writer:main",
       deleteTranscript: true,
     });
+  });
+
+  it("exposes an explicit reset operation", async () => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValue(undefined);
+
+    await client.resetSession("agent:writer:main");
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sessions.reset", {
+      key: "agent:writer:main",
+      reason: "reset",
+    });
+  });
+
+  it("allows idempotent deletion of a session no longer in the catalog", async () => {
+    const client = createClient(null);
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValue(undefined)
+      .mockResolvedValueOnce({ session: null });
+    await client.deleteSession("agent:main:removed");
+    expect(request).toHaveBeenLastCalledWith("sessions.delete", {
+      key: "agent:main:removed",
+      deleteTranscript: true,
+    });
+  });
+
+  it.each([
+    undefined,
+    {},
+    { session: {} },
+    { session: { key: "" } },
+    { session: { key: " agent:main:session-123" } },
+    { session: { key: "agent:main:session-123", isMain: "true" } },
+    { session: { key: "agent:other:main", isMain: true } },
+  ])("rejects malformed or mismatched session descriptions %# without mutation", async (result) => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValueOnce(result);
+    const beforeDelete = vi.fn();
+    await expect(client.deleteSession("agent:main:session-123", beforeDelete)).rejects.toThrow();
+    expect(beforeDelete).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset or delete after a connection change during resolution or revocation", async () => {
+    for (const phase of ["describe", "revoke"]) {
+      const client = createClient();
+      Object.assign(client, { _connectionGeneration: 1 });
+      const request = vi.spyOn(client, "request").mockImplementation(async () => {
+        if (phase === "describe") Object.assign(client, { _connectionGeneration: 2 });
+        return { session: { key: "agent:main:main", isMain: true } };
+      });
+      await expect(
+        client.deleteSession("main", async () => {
+          Object.assign(client, { _connectionGeneration: 2 });
+        }),
+      ).rejects.toThrow("Gateway connection changed");
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not mutate a session when approval revocation fails", async () => {
+    const client = createClient();
+    const request = vi.spyOn(client, "request").mockResolvedValueOnce({
+      session: { key: "agent:main:main", isMain: true },
+    });
+    await expect(
+      client.deleteSession("main", async () => {
+        throw new Error("revocation failed");
+      }),
+    ).rejects.toThrow("revocation failed");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   describe("GatewayClient.warmUpAgent", () => {
@@ -211,11 +696,11 @@ describe("GatewayClient.deleteSession", () => {
       handleMessage(raw: string): void;
     };
 
-    function createClient() {
+    function createClient(beforeChatSend?: () => Promise<void>) {
       const onEvent = vi.fn();
       const client = Object.create(GatewayClient.prototype) as GatewayClient;
       Object.assign(client, {
-        opts: { port: 18789, token: "", onEvent },
+        opts: { port: 18789, token: "", onEvent, beforeChatSend },
         _mainSessionKey: "agent:main:main",
         agentWarmupPromise: null,
         agentWarmupWaiter: null,
@@ -301,6 +786,21 @@ describe("GatewayClient.deleteSession", () => {
       });
     });
 
+    it("does not issue or replay a warm-up turn while ingress is locked", async () => {
+      const beforeChatSend = vi.fn().mockRejectedValue(new Error("MXC ingress is locked"));
+      const { client, request } = createClient(beforeChatSend);
+
+      await expect(client.warmUpAgent(30_000)).resolves.toEqual({
+        outcome: "error",
+        transcriptDeleted: false,
+      });
+      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
+
+      beforeChatSend.mockResolvedValue(undefined);
+      await Promise.resolve();
+      expect(request).not.toHaveBeenCalledWith("chat.send", expect.anything());
+    });
+
     it("fails open at the timeout and starts cleanup", async () => {
       vi.useFakeTimers();
       const { client, request } = createClient();
@@ -343,6 +843,19 @@ describe("GatewayClient.deleteSession", () => {
       "permission denied",
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reset an ordinary session after deletion is rejected", async () => {
+    const client = createClient();
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValueOnce({ session: { key: "agent:main:session-123", isMain: false } })
+      .mockRejectedValueOnce(new Error("permission denied"));
+    await expect(client.deleteSession("agent:main:session-123")).rejects.toThrow(
+      "permission denied",
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).not.toHaveBeenCalledWith("sessions.reset", expect.anything());
   });
 });
 

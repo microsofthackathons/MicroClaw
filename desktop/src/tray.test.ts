@@ -15,9 +15,6 @@ vi.mock("electron", () => {
     destroy = vi.fn();
   }
   return {
-    app: {
-      quit: vi.fn(),
-    },
     Tray: MockTray,
     Menu: {
       buildFromTemplate: vi.fn((template: Electron.MenuItemConstructorOptions[]) => {
@@ -38,7 +35,6 @@ vi.mock("path", async () => {
 });
 
 import { createTray, updateTrayMenu, destroyTray } from "./tray";
-import { app } from "electron";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -51,6 +47,7 @@ describe("createTray", () => {
     const callbacks = {
       onShowWindow: vi.fn(),
       onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
     };
     expect(() => createTray(callbacks, "en-US")).not.toThrow();
   });
@@ -59,6 +56,7 @@ describe("createTray", () => {
     const callbacks = {
       onShowWindow: vi.fn(),
       onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
     };
     createTray(callbacks, "en-US");
 
@@ -73,6 +71,7 @@ describe("updateTrayMenu", () => {
     const callbacks = {
       onShowWindow: vi.fn(),
       onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
     };
     createTray(callbacks, "en-US");
 
@@ -95,6 +94,7 @@ describe("updateTrayMenu", () => {
     const callbacks = {
       onShowWindow: vi.fn(),
       onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
     };
     createTray(callbacks, "en-US");
 
@@ -116,6 +116,7 @@ describe("updateTrayMenu", () => {
       {
         onShowWindow: vi.fn(),
         onRestartGateway: vi.fn(),
+        onQuit: vi.fn(),
       },
       "en-US",
     );
@@ -130,19 +131,18 @@ describe("updateTrayMenu", () => {
   });
 
   it("quits the app from the menu", () => {
-    createTray(
-      {
-        onShowWindow: vi.fn(),
-        onRestartGateway: vi.fn(),
-      },
-      "en-US",
-    );
+    const callbacks = {
+      onShowWindow: vi.fn(),
+      onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
+    };
+    createTray(callbacks, "en-US");
     const menu = menuTemplates.at(-1)!;
     const quit = menu.find((item) => item.label === "Quit");
 
     quit?.click?.({} as Electron.MenuItem, undefined as never, {} as Electron.KeyboardEvent);
 
-    expect(app.quit).toHaveBeenCalledOnce();
+    expect(callbacks.onQuit).toHaveBeenCalledOnce();
   });
 });
 
@@ -151,6 +151,7 @@ describe("destroyTray", () => {
     const callbacks = {
       onShowWindow: vi.fn(),
       onRestartGateway: vi.fn(),
+      onQuit: vi.fn(),
     };
     createTray(callbacks, "en-US");
     expect(() => destroyTray()).not.toThrow();

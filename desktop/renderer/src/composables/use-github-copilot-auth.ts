@@ -27,12 +27,8 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
   let pendingEvent: GitHubCopilotLoginEvent | null = null;
   let removeListener: (() => void) | undefined;
 
-  const loginInProgress = computed(
-    () => state.value === "signing-in" || state.value === "code",
-  );
-  const codeExpiryMinutes = computed(() =>
-    Math.max(1, Math.ceil(codeExpiresInMs.value / 60_000)),
-  );
+  const loginInProgress = computed(() => state.value === "signing-in" || state.value === "code");
+  const codeExpiryMinutes = computed(() => Math.max(1, Math.ceil(codeExpiresInMs.value / 60_000)));
 
   function applyModels(
     generation: number,
@@ -46,12 +42,16 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
       options.setError(t("modelSetup.copilotNoModels"));
       return;
     }
-    selectedModel.value =
-      catalog.find((model) => model.id === preferredModel)?.id ?? catalog[0].id;
+    selectedModel.value = catalog.find((model) => model.id === preferredModel)?.id ?? catalog[0].id;
     state.value = "authenticated";
   }
 
   async function loadModels(generation: number, preferredModel?: string): Promise<void> {
+    const preparation = await window.openclaw.model.prepareGitHubCopilot();
+    if (generation !== requestGeneration || !options.isActive()) return;
+    if (preparation.restartRequired)
+      await window.openclaw.gateway.restart({ reason: "copilot-plugin-activation" });
+    if (generation !== requestGeneration || !options.isActive()) return;
     const catalog = await window.openclaw.model.listGitHubCopilotModels();
     applyModels(generation, catalog, preferredModel);
   }

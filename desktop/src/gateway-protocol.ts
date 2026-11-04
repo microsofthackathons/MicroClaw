@@ -1,5 +1,11 @@
 export const GATEWAY_MIN_PROTOCOL_VERSION = 3;
 export const GATEWAY_MAX_PROTOCOL_VERSION = 4;
+export const GATEWAY_OPERATOR_SCOPES = [
+  "operator.admin",
+  "operator.read",
+  "operator.write",
+  "operator.approvals",
+] as const;
 
 export type GatewayConnectInput = {
   token: string;
@@ -9,6 +15,7 @@ export type GatewayConnectInput = {
   signature: string;
   signedAt: number;
   nonce: string;
+  supportsExecApprovals?: boolean;
 };
 
 export function buildGatewayConnectParams(input: GatewayConnectInput): Record<string, unknown> {
@@ -22,7 +29,7 @@ export function buildGatewayConnectParams(input: GatewayConnectInput): Record<st
       mode: "backend",
     },
     role: "operator",
-    scopes: ["operator.admin", "operator.read", "operator.write"],
+    scopes: [...GATEWAY_OPERATOR_SCOPES],
     device: {
       id: input.deviceId,
       publicKey: input.publicKey,
@@ -30,7 +37,7 @@ export function buildGatewayConnectParams(input: GatewayConnectInput): Record<st
       signedAt: input.signedAt,
       nonce: input.nonce,
     },
-    caps: ["tool-events"],
+    caps: ["tool-events", ...(input.supportsExecApprovals ? ["exec-approvals"] : [])],
   };
   if (input.token) params.auth = { token: input.token };
   return params;

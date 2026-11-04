@@ -23,10 +23,7 @@ function removeCopilotPrimary(value: unknown, fallbackModelRef?: string): unknow
     return value.startsWith(GITHUB_COPILOT_PREFIX) ? fallbackModelRef : value;
   }
   if (!isJsonObject(value)) return value;
-  if (
-    typeof value.primary !== "string" ||
-    !value.primary.startsWith(GITHUB_COPILOT_PREFIX)
-  ) {
+  if (typeof value.primary !== "string" || !value.primary.startsWith(GITHUB_COPILOT_PREFIX)) {
     return value;
   }
   const next = { ...value };

@@ -99,6 +99,19 @@
         font-size: 14px;
         line-height: 1.55;
         letter-spacing: 0;
+        white-space: pre-line;
+        max-height: 100px;
+        overflow: auto;
+      }
+      progress {
+        width: 100%;
+        height: 8px;
+        margin-top: 16px;
+        accent-color: var(--danger);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: wait;
       }
       .actions {
         display: flex;
@@ -142,13 +155,7 @@
       aria-describedby="message"
     >
       <div class="drag-region"></div>
-      <button
-        id="close"
-        class="close-btn"
-        type="button"
-        title="Close"
-        aria-label="Close"
-      >
+      <button id="close" class="close-btn" type="button" title="Close" aria-label="Close">
         <svg
           width="12"
           height="12"
@@ -166,6 +173,7 @@
       </button>
       <h1 id="title"></h1>
       <p id="message"></p>
+      <progress id="progress" max="100" value="0" hidden></progress>
       <div class="actions">
         <button id="cancel" type="button"></button>
         <button id="confirm" class="confirm" type="button"></button>
@@ -173,18 +181,62 @@
     </main>
     <script>
       const bootstrap = __BOOTSTRAP_JSON__;
+      const strings = bootstrap.strings;
+      const title = document.getElementById("title");
+      const message = document.getElementById("message");
+      const progress = document.getElementById("progress");
+      const cancel = document.getElementById("cancel");
+      const confirm = document.getElementById("confirm");
+      const close = document.getElementById("close");
+      let started = false;
       document.documentElement.lang = bootstrap.lang === "zh" ? "zh-CN" : "en-US";
-      document.getElementById("title").textContent = bootstrap.strings.title;
-      document.getElementById("message").textContent = bootstrap.strings.message;
-      document.getElementById("cancel").textContent = bootstrap.strings.cancel;
-      document.getElementById("confirm").textContent = bootstrap.strings.confirm;
-      document.getElementById("close").onclick = () => window.pywebview.api.cancel();
-      document.getElementById("cancel").onclick = () => window.pywebview.api.cancel();
-      document.getElementById("confirm").onclick = () => window.pywebview.api.confirm();
+      title.textContent = strings.title;
+      message.textContent = strings.message;
+      cancel.textContent = strings.cancel;
+      confirm.textContent = strings.confirm;
+      close.title = strings.close;
+      close.setAttribute("aria-label", strings.close);
+      progress.setAttribute("aria-label", strings.progressTitle);
+      close.onclick = () => window.pywebview.api.cancel();
+      cancel.onclick = () => window.pywebview.api.cancel();
+
+      async function poll() {
+        try {
+          const state = await window.pywebview.api.get_state();
+          close.disabled = state.running;
+          confirm.hidden = state.running;
+          progress.value = state.progress;
+          if (state.running) {
+            title.textContent = strings.progressTitle;
+            message.textContent = state.progress_text;
+          } else {
+            title.textContent =
+              state.status === "success" ? strings.successTitle : strings.failedTitle;
+            message.textContent = state.error || strings.successMessage;
+            confirm.disabled = false;
+            confirm.textContent = strings.close;
+            confirm.focus();
+            return;
+          }
+        } catch {}
+        window.setTimeout(poll, 250);
+      }
+
+      confirm.onclick = async () => {
+        if (started) return window.pywebview.api.cancel();
+        confirm.disabled = true;
+        close.disabled = true;
+        cancel.hidden = true;
+        if (await window.pywebview.api.confirm()) {
+          started = true;
+          progress.hidden = false;
+          poll();
+        }
+      };
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") window.pywebview.api.cancel();
       });
-      document.getElementById("cancel").focus();
+      cancel.focus();
     </script>
   </body>
 </html>

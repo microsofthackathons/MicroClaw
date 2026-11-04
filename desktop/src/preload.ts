@@ -1,17 +1,27 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { GatewayRestartOptions } from "./gateway-restart-reason";
+import type { ModelConfigUpdate } from "./model-config-application";
+// Sandboxed preloads cannot require local modules; keep runtime IPC adapters self-contained.
 import type {
   ChatAttachment,
   ClipboardImageInput,
   PrepareChatAttachmentsResult,
 } from "./chat-attachments";
 import type { OpenAttachmentRequest } from "./attachment-open";
+import type { LocalModelAPI, LocalModelOperation } from "./local-model-types";
+import type { SessionModelAPI } from "./session-model-types";
 
 contextBridge.exposeInMainWorld("openclaw", {
+  features: {
+    githubCopilot: process.argv.includes("--microclaw-internal-github-copilot"),
+    performance: process.argv.includes("--microclaw-performance"),
+  },
   // --- Gateway lifecycle ---
   gateway: {
     getPort: () => ipcRenderer.invoke("gateway:get-port"),
     getStatus: () => ipcRenderer.invoke("gateway:get-status"),
-    restart: (options?: { hard?: boolean }) => ipcRenderer.invoke("gateway:restart", options),
+    isServiceReady: () => ipcRenderer.invoke("gateway:is-service-ready"),
+    restart: (options?: GatewayRestartOptions) => ipcRenderer.invoke("gateway:restart", options),
     warmUpAgent: () => ipcRenderer.invoke("gateway:warm-up-agent"),
     onStatus: (callback: (status: string) => void) => {
       const handler = (_event: any, status: string) => callback(status);
@@ -33,6 +43,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.on("gateway:ws-disconnected", handler);
       return () => ipcRenderer.removeListener("gateway:ws-disconnected", handler);
     },
+    onServiceReady: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on("gateway:service-ready", handler);
+      return () => ipcRenderer.removeListener("gateway:service-ready", handler);
+    },
   },
 
   // --- Configuration ---
@@ -42,13 +57,18 @@ contextBridge.exposeInMainWorld("openclaw", {
     needsSetup: () => ipcRenderer.invoke("config:needs-setup"),
     read: () => ipcRenderer.invoke("config:read"),
     readEnv: () => ipcRenderer.invoke("config:read-env"),
-    write: (config: any) => ipcRenderer.invoke("config:write", config),
+    write: (config: any, expectedConfig?: unknown) =>
+      ipcRenderer.invoke("config:write", config, expectedConfig),
   },
 
   // --- Settings ---
   settings: {
     get: () => ipcRenderer.invoke("settings:get"),
     set: (key: string, value: any) => ipcRenderer.invoke("settings:set", key, value),
+  },
+  commandConsent: {
+    setMode: (mode: "ask-when-needed" | "allow-always") =>
+      ipcRenderer.invoke("command-consent:set-mode", mode),
   },
 
   // --- Updates ---
@@ -111,6 +131,16 @@ contextBridge.exposeInMainWorld("openclaw", {
 
     /** Load chat history for a session. */
     loadHistory: (sessionKey: string) => ipcRenderer.invoke("chat:load-history", { sessionKey }),
+    observeSession: (sessionKey: string | null) =>
+      ipcRenderer.invoke("chat:observe-session", { sessionKey }),
+    onSessionUpdate: (callback: (payload: { sessionKey: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { sessionKey: string }) =>
+        callback(payload);
+      ipcRenderer.on("chat:session-update", handler);
+      return () => {
+        ipcRenderer.removeListener("chat:session-update", handler);
+      };
+    },
 
     /** Load titles derived by OpenClaw from session transcripts. */
     listSessionTitles: (keys: string[]) => ipcRenderer.invoke("chat:list-session-titles", { keys }),
@@ -125,6 +155,8 @@ contextBridge.exposeInMainWorld("openclaw", {
     /** Delete one persisted session and its transcript. */
     deleteSession: (sessionKey: string) =>
       ipcRenderer.invoke("chat:delete-session", { sessionKey }),
+
+    resetSession: (sessionKey: string) => ipcRenderer.invoke("chat:reset-session", { sessionKey }),
 
     /** Clear ALL persisted chat history on the gateway. */
     clearHistory: () => ipcRenderer.invoke("chat:clear-history"),
@@ -170,16 +202,6 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.on("agent:tool-event", handler);
       return () => ipcRenderer.removeListener("agent:tool-event", handler);
     },
-
-    /**
-     * Subscribe to actual shell command notifications from sandbox-preload.
-     * Fired when the sandbox executes a shell command, providing the real command payload.
-     */
-    onExecCommand: (callback: (data: { shell: string; command: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:exec-command", handler);
-      return () => ipcRenderer.removeListener("sandbox:exec-command", handler);
-    },
   },
 
   // --- Cron / Scheduled Tasks ---
@@ -202,7 +224,31 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- WeChat Plugin ---
   plugin: {
     weixin: {
-      getStatus: () => ipcRenderer.invoke("plugin:weixin:get-status"),
+      getStatus: () =>
+        ipcRenderer.invoke("plugin:weixin:get-status") as Promise<{
+          enabled: boolean;
+          requestedEnabled: boolean;
+          effectiveEnabled: boolean;
+          pausedByMxc: boolean;
+          installed: boolean;
+          loggedIn: boolean;
+          accountCount: number;
+          invariantState: "none" | "single" | "multiple" | "invalid";
+          currentAccount: {
+            accountId: string;
+            userId?: string;
+          } | null;
+          loginInProgress: boolean;
+          loginRequiresRestart?: boolean;
+          connected?: boolean;
+          connecting?: boolean;
+          runtimeKnown?: boolean;
+          ready?: boolean;
+          qrSession?: import("./weixin-connection").WeixinQrSnapshot;
+          mutationLocked: boolean;
+          loginLocked?: boolean;
+          mutationLockRevision: number;
+        }>,
       setEnabled: (enabled: boolean) => ipcRenderer.invoke("plugin:weixin:set-enabled", enabled),
       login: () => ipcRenderer.invoke("plugin:weixin:login"),
       cancelLogin: () => ipcRenderer.invoke("plugin:weixin:cancel-login"),
@@ -222,11 +268,61 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.on("plugin:weixin:login-done", handler);
         return () => ipcRenderer.removeListener("plugin:weixin:login-done", handler);
       },
+      onMutationLock: (
+        callback: (status: { locked: boolean; loginLocked?: boolean; revision: number }) => void,
+      ) => {
+        const handler = (
+          _event: Electron.IpcRendererEvent,
+          status: { locked: boolean; loginLocked?: boolean; revision: number },
+        ) => callback(status);
+        ipcRenderer.on("plugin:weixin:mutation-lock", handler);
+        return () => ipcRenderer.removeListener("plugin:weixin:mutation-lock", handler);
+      },
     },
   },
 
   // --- Model testing ---
   model: {
+    selectDefault: (params: import("./default-model-selection").DefaultModelSelection) =>
+      ipcRenderer.invoke("model:select-default", params),
+    session: {
+      get: (sessionKey) => ipcRenderer.invoke("model:session:get", sessionKey),
+      select: (params) => ipcRenderer.invoke("model:session:select", params),
+      getRecovery: () => ipcRenderer.invoke("model:session:get-recovery"),
+      recover: (params) => ipcRenderer.invoke("model:session:recover", params),
+      onRecoveryChanged: (callback) => {
+        const listener = () => callback();
+        ipcRenderer.on("model:session:recovery-changed", listener);
+        return () => ipcRenderer.removeListener("model:session:recovery-changed", listener);
+      },
+    } satisfies SessionModelAPI,
+    local: {
+      getSnapshot: () => ipcRenderer.invoke("model:local:get-snapshot"),
+      getHardware: () => ipcRenderer.invoke("model:local:get-hardware"),
+      getCapabilities: () => ipcRenderer.invoke("model:local:get-capabilities"),
+      detect: (options) => ipcRenderer.invoke("model:local:detect", options),
+      inspectProvider: () => ipcRenderer.invoke("model:local:inspect-provider"),
+      installProvider: (params) => ipcRenderer.invoke("model:local:install-provider", params),
+      prepare: (params) => ipcRenderer.invoke("model:local:prepare", params),
+      activate: (params) => ipcRenderer.invoke("model:local:activate", params),
+      answer: (params) => ipcRenderer.invoke("model:local:answer", params),
+      cancel: (operationId) => ipcRenderer.invoke("model:local:cancel", operationId),
+      getOperation: () => ipcRenderer.invoke("model:local:get-operation"),
+      resume: () => ipcRenderer.invoke("model:local:resume"),
+      onEvent: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, operation: LocalModelOperation) =>
+          callback(operation);
+        ipcRenderer.on("model:local:event", listener);
+        return () => ipcRenderer.removeListener("model:local:event", listener);
+      },
+    } satisfies LocalModelAPI,
+    discoverModels: (params: import("./provider-model-catalog").ProviderCatalogInput) =>
+      ipcRenderer.invoke("model:discover-models", params) as Promise<
+        import("./provider-model-catalog").ProviderCatalogResult
+      >,
+    registerCatalogModel: (
+      params: import("./provider-model-registration").ProviderCatalogSelection,
+    ) => ipcRenderer.invoke("model:register-catalog-model", params) as Promise<void>,
     testConnection: (params: {
       baseUrl: string;
       apiKey: string;
@@ -234,6 +330,7 @@ contextBridge.exposeInMainWorld("openclaw", {
       modelName: string;
       reasoningEffort?: string;
     }) => ipcRenderer.invoke("model:test-connection", params),
+    applyConfig: (input: ModelConfigUpdate) => ipcRenderer.invoke("model:apply-config", input),
     prepareGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:prepare"),
     startGitHubCopilotLogin: () => ipcRenderer.invoke("model:github-copilot:start-login"),
     cancelGitHubCopilotLogin: (sessionId?: string) =>
@@ -305,96 +402,84 @@ contextBridge.exposeInMainWorld("openclaw", {
       }>,
   },
 
-  // --- Tool Sandbox ---
-  sandbox: {
-    getStatus: () => ipcRenderer.invoke("sandbox:get-status"),
-    setEnabled: (enabled: boolean) => ipcRenderer.invoke("sandbox:set-enabled", enabled),
-    execShell: (params: { command: string; cwd?: string; timeout?: number }) =>
-      ipcRenderer.invoke("sandbox:exec-shell", params),
-    execNode: (params: { code: string; cwd?: string; timeout?: number }) =>
-      ipcRenderer.invoke("sandbox:exec-node", params),
-    provision: () => ipcRenderer.invoke("sandbox:provision"),
-    getExternalApps: () => ipcRenderer.invoke("sandbox:get-external-apps") as Promise<string[]>,
-    setExternalApps: (apps: string[]) => ipcRenderer.invoke("sandbox:set-external-apps", apps),
-    applyExternalApps: () =>
-      ipcRenderer.invoke("sandbox:apply-external-apps") as Promise<{
-        ok: boolean;
-        restarted: boolean;
+  windowsNodeMxc: {
+    getStatus: () => ipcRenderer.invoke("windows-node-mxc:get-status"),
+    getDisplayStatus: () => ipcRenderer.invoke("windows-node-mxc:display-status"),
+    onDisplayStatus: (callback: (snapshot: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: unknown) => callback(snapshot);
+      ipcRenderer.on("windows-node-mxc:display-status", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:display-status", handler);
+    },
+    onApprovalProcessing: (
+      callback: (result: {
+        requestId: string;
+        approvalLayer: "gateway";
+        applyingFolders: boolean;
+      }) => void,
+    ) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: Parameters<typeof callback>[0]) =>
+        callback(result);
+      ipcRenderer.on("windows-node-mxc:approval-processing", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-processing", handler);
+    },
+    getFolders: () =>
+      ipcRenderer.invoke("windows-node-mxc:get-folders") as Promise<{ rw: string[]; ro: string[] }>,
+    setFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      ipcRenderer.invoke("windows-node-mxc:set-folder-policy", draft) as Promise<{
+        rw: string[];
+        ro: string[];
       }>,
-    getCapabilities: () => ipcRenderer.invoke("sandbox:get-capabilities") as Promise<string[]>,
-    setCapabilities: (caps: string[]) =>
-      ipcRenderer.invoke("sandbox:set-capabilities", caps) as Promise<{
+    stageFolder: (params: { access: "rw" | "ro"; draft: { rw: string[]; ro: string[] } }) =>
+      ipcRenderer.invoke("windows-node-mxc:stage-folder", params) as Promise<{
         ok: boolean;
-        caps: string[];
-        needsRestart: boolean;
-      }>,
-    getUserDirs: () =>
-      ipcRenderer.invoke("sandbox:get-user-dirs") as Promise<{ rw: string[]; ro: string[] }>,
-    addUserDir: (params: { access: "rw" | "ro" }) =>
-      ipcRenderer.invoke("sandbox:add-user-dir", params) as Promise<{
-        ok: boolean;
+        canceled?: boolean;
         reason?: string;
         parentDir?: string;
         parentAccess?: string;
         removedChildren?: string[];
         dirs: { rw: string[]; ro: string[] };
       }>,
-    removeUserDir: (params: { dir: string; access: "rw" | "ro" }) =>
-      ipcRenderer.invoke("sandbox:remove-user-dir", params) as Promise<{
-        ok: boolean;
-        dirs: { rw: string[]; ro: string[] };
-      }>,
-    onPermissionRequest: (
-      callback: (data: {
-        requestId: string;
-        type: "file" | "shell" | "shell-async" | "app-approval";
-        targetPath: string;
-        dirPath: string;
-        command?: string;
-        callerStack?: string;
-        accessNeeded?: string;
-      }) => void,
+    setEnabled: (params: { enabled: boolean }) =>
+      ipcRenderer.invoke("windows-node-mxc:set-enabled", params),
+    validateFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      ipcRenderer.invoke("windows-node-mxc:validate-folder-policy", draft),
+    applyFolderPolicy: (draft: { rw: string[]; ro: string[] }) =>
+      ipcRenderer.invoke("windows-node-mxc:apply-folder-policy", draft),
+    listDurableApprovals: () => ipcRenderer.invoke("windows-node-mxc:durable-approvals:list"),
+    revokeDurableApproval: (id: string) =>
+      ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke", id),
+    revokeAllDurableApprovals: () =>
+      ipcRenderer.invoke("windows-node-mxc:durable-approvals:revoke-all"),
+    getPendingApproval: () =>
+      ipcRenderer.invoke("windows-node-mxc:approval-current") as Promise<
+        import("./windows-node-mxc").WindowsNodeMxcRendererApproval | null
+      >,
+    respondApproval: (params: {
+      requestId: string;
+      decision: "deny" | "allow-once" | "allow-always";
+      origin?: "desktop" | "timeout";
+    }) => ipcRenderer.invoke("windows-node-mxc:approval-respond", params),
+    onApprovalRequest: (
+      callback: (
+        request: import("./windows-node-mxc").WindowsNodeMxcRendererApproval | null,
+      ) => void,
     ) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:permission-request", handler);
-      return () => ipcRenderer.removeListener("sandbox:permission-request", handler);
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        request: import("./windows-node-mxc").WindowsNodeMxcRendererApproval | null,
+      ) => callback(request);
+      ipcRenderer.on("windows-node-mxc:approval-request", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-request", handler);
     },
-    respondPermission: (requestId: string, decision: string) =>
-      ipcRenderer.invoke("sandbox:permission-respond", requestId, decision),
-    onAclTimeout: (callback: (data: { dir: string; access: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:acl-timeout", handler);
-      return () => ipcRenderer.removeListener("sandbox:acl-timeout", handler);
+    onApprovalResolved: (callback: (result: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: unknown) => callback(result);
+      ipcRenderer.on("windows-node-mxc:approval-resolved", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:approval-resolved", handler);
     },
-    onAclIneffective: (
-      callback: (data: { dir: string; deniedPath: string; access: string }) => void,
-    ) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:acl-ineffective", handler);
-      return () => ipcRenderer.removeListener("sandbox:acl-ineffective", handler);
+    onLifecycleState: (callback: (state: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state);
+      ipcRenderer.on("windows-node-mxc:lifecycle-state", handler);
+      return () => ipcRenderer.removeListener("windows-node-mxc:lifecycle-state", handler);
     },
-    onPermissionCompleted: (
-      callback: (data: {
-        requestId: string;
-        result: "verified" | "verify-timeout" | "failed";
-        dir: string;
-        access: string;
-      }) => void,
-    ) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on("sandbox:permission-completed", handler);
-      return () => ipcRenderer.removeListener("sandbox:permission-completed", handler);
-    },
-    verifyAcls: () =>
-      ipcRenderer.invoke("sandbox:verify-acl") as Promise<{
-        missing: Array<{ dir: string; access: string; reason: string }>;
-        stale: Array<{ dir: string; rights: string }>;
-        ok: Array<{ dir: string; access: string }>;
-        errors: Array<{ dir: string; error: string }>;
-      }>,
-    repairAcl: (params: { dir: string; access: "rw" | "ro" }) =>
-      ipcRenderer.invoke("sandbox:repair-acl", params) as Promise<{ ok: boolean }>,
-    revokeStaleAcl: (dir: string) =>
-      ipcRenderer.invoke("sandbox:revoke-stale-acl", dir) as Promise<{ ok: boolean }>,
   },
 });

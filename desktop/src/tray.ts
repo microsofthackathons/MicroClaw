@@ -1,4 +1,4 @@
-import { app, Tray, Menu, nativeImage } from "electron";
+import { Tray, Menu, nativeImage } from "electron";
 import * as path from "path";
 import type { GatewayStatus } from "./constants";
 import { t, type SupportedLocale } from "./i18n";
@@ -8,6 +8,7 @@ let tray: Tray | null = null;
 interface TrayCallbacks {
   onShowWindow: () => void;
   onRestartGateway: () => void;
+  onQuit: () => void;
 }
 
 let trayCallbacks: TrayCallbacks | null = null;
@@ -72,9 +73,7 @@ export function updateTrayMenu(gatewayStatus: GatewayStatus, locale?: SupportedL
     { type: "separator" },
     {
       label: t(trayLocale, "tray.quit"),
-      click: () => {
-        app.quit();
-      },
+      click: () => trayCallbacks?.onQuit(),
     },
   ];
 

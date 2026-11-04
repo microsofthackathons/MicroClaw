@@ -7,19 +7,19 @@ import os
 from pathlib import Path
 
 MANIFEST_NAME = "install-manifest.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _BUILD_KEYS = (
     "desktopArchiveSha256",
     "installerBundleId",
     "managedSkillsId",
     "openClawVersion",
-    "appContainerSchema",
+    "mxcSchema",
 )
 
 
 def load_install_manifest(path: Path) -> dict | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:

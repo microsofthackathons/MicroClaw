@@ -3,6 +3,7 @@ import {
   buildGatewayConnectParams,
   GATEWAY_MAX_PROTOCOL_VERSION,
   GATEWAY_MIN_PROTOCOL_VERSION,
+  GATEWAY_OPERATOR_SCOPES,
 } from "./gateway-protocol";
 
 describe("buildGatewayConnectParams", () => {
@@ -27,7 +28,7 @@ describe("buildGatewayConnectParams", () => {
         mode: "backend",
       },
       role: "operator",
-      scopes: ["operator.admin", "operator.read", "operator.write"],
+      scopes: ["operator.admin", "operator.read", "operator.write", "operator.approvals"],
       device: {
         id: "device",
         publicKey: "public",
@@ -40,6 +41,12 @@ describe("buildGatewayConnectParams", () => {
     });
     expect(GATEWAY_MIN_PROTOCOL_VERSION).toBe(3);
     expect(GATEWAY_MAX_PROTOCOL_VERSION).toBe(4);
+    expect(GATEWAY_OPERATOR_SCOPES).toEqual([
+      "operator.admin",
+      "operator.read",
+      "operator.write",
+      "operator.approvals",
+    ]);
   });
 
   it("omits auth when no token is configured", () => {
@@ -55,4 +62,24 @@ describe("buildGatewayConnectParams", () => {
 
     expect(params).not.toHaveProperty("auth");
   });
+
+  it.each([true, false])(
+    "advertises approval delivery only when the handler is enabled: %s",
+    (supportsExecApprovals) => {
+      const params = buildGatewayConnectParams({
+        token: "token",
+        platform: "win32",
+        deviceId: "device",
+        publicKey: "public",
+        signature: "signature",
+        signedAt: 123,
+        nonce: "nonce",
+        supportsExecApprovals,
+      });
+
+      expect(params.caps).toEqual(
+        supportsExecApprovals ? ["tool-events", "exec-approvals"] : ["tool-events"],
+      );
+    },
+  );
 });

@@ -9,26 +9,33 @@
     "dev:renderer": "cd renderer && npm run dev",
     "dev:electron": "tsc && electron .",
     "build": "tsc && cd renderer && npm run build",
-    "pack": "npm run build && electron-builder --win --x64 --dir",
-    "dist": "npm run build && electron-builder --win",
+    "pack": "npm run prepare-packaged-resources && npm run pack:prepared",
+    "pack:prepared": "npm run build && electron-builder --win --x64 --dir",
+    "dist": "npm run prepare-packaged-resources && npm run build && electron-builder --win",
     "dist:msix": "npm run prepare-resources && npm run build && node scripts/build-msix.mjs",
-    "test": "vitest run",
+    "prepare-packaged-resources": "npm run prepare-windows-node-resources && npm run prepare-weixin-plugin-resource",
+    "prepare-weixin-plugin-resource": "node scripts/prepare-weixin-plugin-resource.mjs",
+    "prepare-windows-node-resources": "node scripts/prepare-windows-node-resources.mjs --arch=x64",
+    "prepare-windows-node-resources:arm64": "node scripts/prepare-windows-node-resources.mjs --arch=arm64",
+    "test": "npm run test:weixin-runtime && vitest run",
+    "test:weixin-runtime": "node --test scripts/stage-weixin-runtime.test.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "lint:weixin": "node scripts/lint-weixin.mjs",
     "lint:sarif": "eslint . --format @microsoft/eslint-formatter-sarif --output-file eslint-results.sarif",
     "prepare-resources": "node scripts/prepare-resources.mjs",
-    "postinstall": "cd renderer && npm install"
+    "postinstall": "install-electron && cd renderer && npm install"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@microsoft/mxc-sdk": "0.7.0",
     "@microsoft/eslint-formatter-sarif": "^3.1.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.1",
     "concurrently": "^9.0.0",
-    "electron": "^33.4.11",
-    "electron-builder": "^26.8.1",
+    "electron": "^44.9.3",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
     "typescript": "^5.7.0",
@@ -39,6 +46,6 @@
     "@electron/asar": "^3.4.1",
     "electron-store": "^8.2.0",
     "node-addon-api": "^8.7.0",
-    "ws": "^8.19.0"
+    "ws": "^8.22.0"
   }
 }

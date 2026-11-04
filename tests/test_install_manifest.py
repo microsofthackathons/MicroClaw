@@ -14,12 +14,12 @@ from deployer.install_manifest import (
 
 def _manifest(**overrides):
     return {
-        "schema": 1,
+        "schema": 2,
         "desktopArchiveSha256": "desktop",
         "installerBundleId": "installer",
         "managedSkillsId": "skills",
-        "openClawVersion": "2026.7.1-1",
-        "appContainerSchema": 1,
+        "openClawVersion": "2026.8.2",
+        "mxcSchema": 1,
         **overrides,
     }
 
@@ -48,10 +48,15 @@ class InstallManifestTests(unittest.TestCase):
             "installerBundleId",
             "managedSkillsId",
             "openClawVersion",
-            "appContainerSchema",
+            "mxcSchema",
         ):
             with self.subTest(key=key):
                 self.assertFalse(build_identity_matches(bundled, _manifest(**{key: "changed"})))
+
+    def test_load_accepts_windows_powershell_utf8_bom(self):
+        path = self.root / "install-manifest.json"
+        path.write_text(json.dumps(_manifest()), encoding="utf-8-sig")
+        self.assertEqual(load_install_manifest(path), _manifest())
 
     def test_committed_manifest_normalizes_runtime_registry(self):
         committed = committed_install_manifest(_manifest(), " HTTPS://Registry.Example/ ")
@@ -99,7 +104,7 @@ class InstallManifestTests(unittest.TestCase):
             "installerBundleId",
             "managedSkillsId",
             "openClawVersion",
-            "appContainerSchema",
+            "mxcSchema",
         ):
             self.assertIn(field, build_script)
         self.assertIn("dist\\install-manifest.json", build_script)

@@ -50,6 +50,20 @@ describe("useSessionStore", () => {
     expect(store.sessions).toHaveLength(1);
   });
 
+  it("preserves other agents' empty main sessions during startup reconciliation", () => {
+    const store = useSessionStore();
+    store.ensureSession("agent:writer:main", "writer");
+    store.togglePinned("agent:writer:main");
+    store.ensureSession("session-stale");
+
+    store.reconcileEmptySessions("agent:main:main", "main");
+
+    expect(store.sessions).toEqual([
+      expect.objectContaining({ key: "agent:writer:main", agentId: "writer", pinned: true }),
+      expect.objectContaining({ key: "agent:main:main", agentId: "main" }),
+    ]);
+  });
+
   it("never creates or selects the reserved warm-up session", () => {
     const store = useSessionStore();
 
@@ -234,6 +248,94 @@ describe("useSessionStore", () => {
     const store = useSessionStore();
     expect(store.sessions).toHaveLength(1);
     expect(store.sessions[0].key).toBe("loaded");
+  });
+
+  it("keeps historical Singer sessions visible under Creative Muse", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:singer:legacy",
+        title: "Legacy draft",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "lyrics",
+        agentId: "singer",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:singer:legacy",
+      agentId: "creative-muse",
+      title: "Legacy draft",
+    });
+  });
+
+  it("keeps historical Master sessions visible under Dr. Pulse", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:master:legacy",
+        title: "Legacy system check",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "diagnose",
+        agentId: "master",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:master:legacy",
+      agentId: "dr-pulse",
+      title: "Legacy system check",
+    });
+  });
+
+  it("keeps historical Leopard sessions visible under Market Sentinel", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:leopard:legacy",
+        title: "Legacy market review",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "market",
+        agentId: "leopard",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:leopard:legacy",
+      agentId: "market-sentinel",
+      title: "Legacy market review",
+    });
+  });
+
+  it("keeps historical Painter sessions visible under Office Artisan", () => {
+    storage["openclaw-sessions"] = JSON.stringify([
+      {
+        key: "agent:painter:legacy",
+        title: "Legacy design session",
+        createdAt: 1,
+        updatedAt: 1,
+        preview: "slides",
+        agentId: "painter",
+      },
+    ]);
+    setActivePinia(createPinia());
+
+    const store = useSessionStore();
+
+    expect(store.sessions[0]).toMatchObject({
+      key: "agent:painter:legacy",
+      agentId: "office-artisan",
+      title: "Legacy design session",
+    });
   });
 
   it("removes a persisted reserved warm-up session on load", () => {

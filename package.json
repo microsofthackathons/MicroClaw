@@ -1,6 +1,8 @@
 {
   "private": true,
   "scripts": {
+    "perf": "node scripts/performance/cli.mjs",
+    "test:perf": "node --test scripts/performance/*.test.mjs",
     "test": "npm test --prefix desktop && npm test --prefix desktop/renderer",
     "test:main": "npm test --prefix desktop",
     "test:renderer": "npm test --prefix desktop/renderer",
@@ -12,7 +14,8 @@
     "format:check": "prettier --check ."
   },
   "devDependencies": {
-    "esbuild": "^0.27.4",
+    "esbuild": "^0.28.1",
+    "playwright": "^1.64.1",
     "prettier": "^3.8.3"
   }
 }

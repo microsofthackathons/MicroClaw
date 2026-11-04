@@ -44,18 +44,22 @@
 
       <div class="skills-dev-summary">
         <span v-if="statusLoading" class="skills-dev-status-checking">
-          {{ statusProgress
-            ? t("skills.dev.statusCheckingAll", {
-                current: statusProgress.current,
-                total: statusProgress.total,
-              })
-            : t("skills.dev.statusChecking") }}
+          {{
+            statusProgress
+              ? t("skills.dev.statusCheckingAll", {
+                  current: statusProgress.current,
+                  total: statusProgress.total,
+                })
+              : t("skills.dev.statusChecking")
+          }}
         </span>
         <span v-else-if="status">
-          {{ t("skills.dev.modelVisibleSummary", {
-            visible: status.summary.modelVisible,
-            total: status.summary.total,
-          }) }}
+          {{
+            t("skills.dev.modelVisibleSummary", {
+              visible: status.summary.modelVisible,
+              total: status.summary.total,
+            })
+          }}
         </span>
         <span v-else-if="!statusError" class="skills-dev-status-hint">
           {{ t("skills.dev.statusNotChecked") }}
@@ -129,6 +133,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { useAgentStore } from "@/stores/agents";
 import { AGENT_CATALOG, ALL_SKILL_IDS, matchesSkill } from "../../../../src/agent-catalog";
+import { readAgentRoster } from "../../../../src/agent-roster";
 
 const agentStore = useAgentStore();
 
@@ -169,9 +174,7 @@ const globalDirty = computed(() => {
   }
   return false;
 });
-const dirty = computed(
-  () => !setsEqual(pending.value, persisted.value) || globalDirty.value,
-);
+const dirty = computed(() => !setsEqual(pending.value, persisted.value) || globalDirty.value);
 // The status fetch succeeded (non-null) and isn't in flight — used to show the
 // "Not installed" badge for catalog slugs that returned no record (e.g. `canvas`).
 const showNotInstalled = computed(() => !statusLoading.value && status.value !== null);
@@ -258,21 +261,13 @@ async function loadAgentSkills(agentId: string): Promise<void> {
   feedback.value = "";
   try {
     const config = await window.openclaw.config.read();
-    const list = Array.isArray(config?.agents?.list) ? config.agents.list : [];
-    const entry = list.find(
-      (candidate: unknown) =>
-        typeof candidate === "object" &&
-        candidate !== null &&
-        (candidate as { id?: unknown }).id === agentId,
-    ) as { skills?: unknown } | undefined;
+    const entry = readAgentRoster(config?.agents).find(({ id }) => id === agentId)?.config;
     const stored = Array.isArray(entry?.skills)
       ? entry.skills.filter((id: unknown): id is string => typeof id === "string")
       : [];
     // A stored value counts as ON if it matches EITHER the slug or the mapped
     // OpenClaw match-name, so both older slug-form and current name-form register.
-    const skills = allSkillIds.filter((slug) =>
-      stored.some((value) => matchesSkill(value, slug)),
-    );
+    const skills = allSkillIds.filter((slug) => stored.some((value) => matchesSkill(value, slug)));
     persisted.value = new Set(skills);
     pending.value = new Set(skills);
   } catch (error) {

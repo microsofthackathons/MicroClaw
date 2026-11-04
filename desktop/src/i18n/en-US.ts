@@ -14,4 +14,14 @@ export default {
   "tray.open": "Open MicroClaw",
   "tray.restartGateway": "Restart Gateway",
   "tray.quit": "Quit",
+  "weixinRemoteApproval.consentTitle": "Remote command approval",
+  "weixinRemoteApproval.consentMessage":
+    "Choose whether the currently signed-in WeChat account can approve commands for this MXC activation.",
+  "weixinRemoteApproval.consentRisk":
+    "A compromised WeChat session could approve commands, add displayed RO/RW folder grants, or save exact-scope command approvals on this PC. For folder prompts, 1 saves the displayed grants until removed in Settings and approves the current command once; 3 denies. Other command prompts retain 1/2/3: a delayed reply can affect a newer prompt. 2 requires existing exact-conversation durable consent and command eligibility. Disabled keeps approval on this desktop.",
+  "weixinRemoteApproval.disable": "Disabled",
+  "weixinRemoteApproval.enable": "Enabled",
+  "weixinRemoteApproval.cancelActivation": "Cancel MXC activation",
+  "mxc.assessingLimitedAmbientAccess": "Assessing Limited-mode ambient filesystem access",
+  "mxc.verifyingFullBackend": "Verifying the Full AppContainer backend",
 } as Record<string, string>;

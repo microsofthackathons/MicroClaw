@@ -1,0 +1,546 @@
+<template>
+  <section class="weixin-card" :class="{ 'weixin-inline': inline }">
+    <header class="weixin-header">
+      <img :src="weixinIcon" :alt="t('plugins.weixinName')" />
+      <div class="weixin-info">
+        <h3 :id="headingId">{{ t("plugins.weixinName") }}</h3>
+        <p v-if="!inline" :title="t('plugins.weixinDesc')">{{ t("plugins.weixinDesc") }}</p>
+      </div>
+      <span
+        v-if="connectionLabel"
+        class="connection-badge"
+        :class="{ connected }"
+        data-testid="weixin-account-status"
+      >
+        {{ connectionLabel }}
+      </span>
+      <button
+        v-if="inline"
+        type="button"
+        class="connection-close"
+        :aria-label="t('plugins.closeQr')"
+        @click="$emit('close')"
+      >
+        <IconClose :size="16" />
+      </button>
+      <div
+        v-if="
+          !inlineAccountChangePending &&
+          !inlineSharedQr &&
+          (!inline || connected || !dialogOpen || error)
+        "
+        class="connection-actions"
+      >
+        <el-button
+          v-if="!connected"
+          type="primary"
+          :disabled="connectDisabled"
+          :loading="starting"
+          @click="dialogOpen ? startQr() : openConnection()"
+        >
+          {{ t("plugins.connectWeixin") }}
+        </el-button>
+        <el-button v-if="connected && showMessages" @click="viewMessages">
+          {{ t("plugins.viewWeixinMessages") }}
+        </el-button>
+        <el-button
+          v-if="hasStoredAccount"
+          type="danger"
+          :disabled="disconnectDisabled"
+          :loading="disconnecting"
+          @click="disconnectWeixin"
+          >{{ t("plugins.disconnect") }}</el-button
+        >
+      </div>
+    </header>
+    <div
+      v-if="
+        !inlineAccountChangePending &&
+        !inlineSharedQr &&
+        (showLoginLock ||
+          status?.loginRequiresRestart ||
+          invalidAccounts ||
+          error ||
+          (!status?.ready && !connected && !dialogOpen))
+      "
+      class="weixin-body"
+    >
+      <el-alert
+        v-if="showLoginLock"
+        type="info"
+        :closable="false"
+        :title="
+          t(mutationLockKnown ? 'plugins.weixinLoginLocked' : 'plugins.weixinMutationUnknown')
+        "
+      />
+      <el-alert
+        v-if="status?.loginRequiresRestart"
+        type="warning"
+        :closable="false"
+        :title="t('plugins.loginRecoveryRequired')"
+      />
+      <el-alert
+        v-if="invalidAccounts"
+        type="warning"
+        :closable="false"
+        :title="t('plugins.multipleAccountsInvalid')"
+      />
+      <p v-if="error" class="connection-error" role="alert">{{ error }}</p>
+      <p v-if="!status?.ready && !connected && !dialogOpen" class="connection-hint">
+        {{ t("plugins.weixinPreparing") }}
+      </p>
+    </div>
+    <WeixinQrCode
+      v-if="inline && (dialogOpen || inlineAccountChangePending || inlineSharedQr)"
+      :data="dialogOpen ? qrData : inlineSharedQr ? (status?.qrSession?.qrDataUrl ?? '') : ''"
+      :message="dialogOpen ? qrMessage : inlineSharedQr ? (status?.qrSession?.message ?? '') : ''"
+      :expired="dialogOpen ? qrExpired : inlineSharedQr && status?.qrSession?.state === 'expired'"
+      :disabled="starting || connectDisabled"
+      :loading="starting || inlineAccountChangePending"
+      :error="error"
+      @refresh="dialogOpen ? startQr() : openConnection()"
+      @render-error="error = t('plugins.qrRenderFailed')"
+    />
+    <el-dialog
+      v-if="!inline"
+      v-model="dialogOpen"
+      :title="t('plugins.connectWeixin')"
+      width="380px"
+      align-center
+      destroy-on-close
+    >
+      <WeixinQrCode
+        v-if="dialogOpen"
+        :data="qrData"
+        :message="qrMessage"
+        :expired="qrExpired"
+        :disabled="starting || connectDisabled"
+        :loading="starting"
+        :error="error"
+        @refresh="startQr"
+        @render-error="error = t('plugins.qrRenderFailed')"
+      />
+      <template #footer>
+        <el-button @click="dialogOpen = false">{{ t("plugins.closeQr") }}</el-button>
+      </template>
+    </el-dialog>
+  </section>
+</template>
+
+<script setup lang="ts">
+import { computed, inject, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { useRouter } from "vue-router";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { t } from "@/i18n";
+import { useChatStore } from "@/stores/chat";
+import { useWeixinMutationLock } from "@/composables/useWeixinMutationLock";
+import IconClose from "@/components/icons/IconClose.vue";
+import WeixinQrCode from "@/components/WeixinQrCode.vue";
+import weixinIcon from "@/assets/wechat.png";
+import { windowsNodeMxcLifecycleStateKey } from "@/windows-node-mxc-lifecycle";
+
+const props = defineProps<{
+  showMessages?: boolean;
+  inline?: boolean;
+  active?: boolean;
+  headingId?: string;
+}>();
+const emit = defineEmits<{ close: []; confirmationChange: [pending: boolean] }>();
+type WeixinStatus = Awaited<ReturnType<typeof window.openclaw.plugin.weixin.getStatus>>;
+const router = useRouter();
+const chatStore = useChatStore();
+const { loginLocked, known: mutationLockKnown, applyStatus, canLogin } = useWeixinMutationLock();
+const mxcLifecycleState = inject(windowsNodeMxcLifecycleStateKey, ref(null));
+const status = ref<WeixinStatus | null>(null);
+const dialogOpen = ref(false);
+const starting = ref(false);
+const disconnecting = ref(false);
+const confirming = ref(false);
+const error = ref("");
+const qrData = ref("");
+const qrMessage = ref("");
+const qrExpired = ref(false);
+let inlineAttempted = false;
+let alive = true;
+let ownsQr = false;
+let loginRevision = 0;
+const cancelling = shallowRef<Promise<void> | null>(null);
+let timer: ReturnType<typeof setTimeout> | undefined;
+let refreshing: Promise<void> | null = null;
+let pollRevision = 0;
+
+const hasStoredAccount = computed(
+  () => status.value?.invariantState === "single" && status.value.loggedIn,
+);
+const invalidAccounts = computed(() =>
+  ["multiple", "invalid"].includes(status.value?.invariantState ?? ""),
+);
+const connected = computed(
+  () =>
+    hasStoredAccount.value &&
+    status.value?.runtimeKnown === true &&
+    status.value.connected === true,
+);
+const inlineSharedQr = computed(() => {
+  const session = status.value?.qrSession;
+  return (
+    props.inline &&
+    !dialogOpen.value &&
+    !connected.value &&
+    !cancelling.value &&
+    !status.value?.loginRequiresRestart &&
+    !invalidAccounts.value &&
+    !error.value &&
+    Boolean(session?.qrDataUrl) &&
+    (session?.state === "expired" || (session?.state === "waiting" && loginLocked.value))
+  );
+});
+const inlineAccountChangePending = computed(
+  () =>
+    props.inline &&
+    loginLocked.value &&
+    !connected.value &&
+    !dialogOpen.value &&
+    !inlineSharedQr.value &&
+    !status.value?.loginRequiresRestart &&
+    !invalidAccounts.value &&
+    !error.value &&
+    (cancelling.value !== null ||
+      ["connecting-weixin", "disconnecting-weixin"].includes(mxcLifecycleState.value?.phase ?? "")),
+);
+const showLoginLock = computed(
+  () =>
+    loginLocked.value && !connected.value && !dialogOpen.value && !status.value?.loginInProgress,
+);
+const pendingQr = computed(() =>
+  ["starting", "waiting"].includes(status.value?.qrSession?.state ?? ""),
+);
+const connectDisabled = computed(
+  () =>
+    loginLocked.value ||
+    !status.value?.ready ||
+    status.value.loginRequiresRestart ||
+    disconnecting.value ||
+    (status.value.loginInProgress && !pendingQr.value),
+);
+const disconnectDisabled = computed(
+  () =>
+    loginLocked.value ||
+    !status.value?.runtimeKnown ||
+    status.value.loginRequiresRestart ||
+    starting.value ||
+    pendingQr.value ||
+    disconnecting.value,
+);
+const connectionLabel = computed(() => {
+  if (connected.value) return t("channels.connected");
+  if (!status.value?.runtimeKnown) return t("plugins.checkingWeixinConnection");
+  if (hasStoredAccount.value && status.value.connecting) return t("plugins.connectingWeixin");
+  return "";
+});
+
+function refreshStatus(force = false): Promise<void> {
+  if (refreshing) return force ? refreshing.then(() => refreshStatus()) : refreshing;
+  refreshing = (async () => {
+    const revision = loginRevision;
+    try {
+      const next = await window.openclaw.plugin.weixin.getStatus();
+      if (!alive) return;
+      applyStatus(next);
+      status.value = next;
+      if (revision === loginRevision && dialogOpen.value && ownsQr && !starting.value) {
+        if (next.qrSession?.qrDataUrl) qrData.value = next.qrSession.qrDataUrl;
+        if (next.qrSession?.message) qrMessage.value = next.qrSession.message;
+        qrExpired.value = next.qrSession?.state === "expired";
+        if (next.qrSession?.state === "connected") {
+          ownsQr = false;
+          dialogOpen.value = false;
+        }
+        if (next.qrSession?.state === "error") {
+          qrData.value = "";
+          error.value = next.qrSession.message;
+        }
+      }
+    } catch (reason) {
+      if (alive) {
+        status.value = null;
+        error.value = reason instanceof Error ? reason.message : String(reason);
+      }
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
+async function pollStatus(force = false): Promise<void> {
+  const revision = ++pollRevision;
+  clearTimeout(timer);
+  await refreshStatus(force);
+  if (alive && revision === pollRevision && (!props.inline || props.active)) {
+    timer = setTimeout(pollStatus, dialogOpen.value || inlineSharedQr.value ? 800 : 5_000);
+  }
+}
+
+watch(loginLocked, (locked, wasLocked) => {
+  if (!locked && wasLocked && (!props.inline || props.active)) void pollStatus(true);
+});
+watch(status, () => {
+  if (
+    !props.inline ||
+    !props.active ||
+    inlineAttempted ||
+    connectDisabled.value ||
+    inlineSharedQr.value
+  )
+    return;
+  inlineAttempted = true;
+  if (!connected.value) void openConnection();
+});
+watch(
+  () => props.active,
+  (active) => {
+    if (!props.inline) return;
+    inlineAttempted = false;
+    if (active) void pollStatus();
+    else {
+      dialogOpen.value = false;
+      clearTimeout(timer);
+      pollRevision++;
+    }
+  },
+);
+watch(dialogOpen, (open) => {
+  if (!open) stopConnection();
+  void pollStatus();
+});
+
+async function openConnection(): Promise<void> {
+  if (
+    !alive ||
+    (props.inline && !props.active) ||
+    dialogOpen.value ||
+    connected.value ||
+    !canLogin() ||
+    connectDisabled.value
+  )
+    return;
+  dialogOpen.value = true;
+  await startQr();
+}
+
+async function startQr(): Promise<void> {
+  if (!dialogOpen.value || starting.value || !canLogin() || connectDisabled.value) return;
+  const revision = ++loginRevision;
+  starting.value = true;
+  error.value = "";
+  qrData.value = "";
+  qrMessage.value = "";
+  qrExpired.value = false;
+  try {
+    if (cancelling.value) await cancelling.value;
+    if (!alive || revision !== loginRevision || !dialogOpen.value || !canLogin()) return;
+    ownsQr = true;
+    const result = await window.openclaw.plugin.weixin.loginQrStart({
+      force: hasStoredAccount.value || invalidAccounts.value,
+    });
+    if (!alive || revision !== loginRevision || !dialogOpen.value) return;
+    if (!result.ok) error.value = result.message;
+    else {
+      qrData.value = result.qrDataUrl ?? "";
+      qrMessage.value = result.message;
+    }
+    await refreshStatus(true);
+  } catch (reason) {
+    if (alive && revision === loginRevision) {
+      error.value = reason instanceof Error ? reason.message : String(reason);
+    }
+  } finally {
+    if (alive && revision === loginRevision) starting.value = false;
+  }
+}
+
+function stopConnection(): void {
+  loginRevision++;
+  starting.value = false;
+  qrData.value = "";
+  qrMessage.value = "";
+  qrExpired.value = false;
+  error.value = "";
+  if (!ownsQr) return;
+  ownsQr = false;
+  const cancellation = window.openclaw.plugin.weixin.cancelLogin();
+  cancelling.value = cancellation;
+  void cancellation
+    .catch((reason) => {
+      if (alive && !dialogOpen.value) {
+        error.value = reason instanceof Error ? reason.message : String(reason);
+      }
+    })
+    .finally(() => {
+      if (cancelling.value === cancellation) cancelling.value = null;
+      if (alive) void refreshStatus(true);
+    });
+}
+
+async function disconnectWeixin(): Promise<void> {
+  if (confirming.value || !canLogin() || disconnectDisabled.value) return;
+  confirming.value = true;
+  emit("confirmationChange", true);
+  try {
+    await ElMessageBox.confirm(t("plugins.disconnectConfirm"), t("plugins.confirm"), {
+      type: "warning",
+    });
+  } catch {
+    return;
+  } finally {
+    confirming.value = false;
+    emit("confirmationChange", false);
+  }
+  if (!alive || !canLogin() || disconnectDisabled.value) return;
+  const accountId = status.value?.currentAccount?.accountId;
+  if (!accountId) return;
+  disconnecting.value = true;
+  error.value = "";
+  try {
+    const result = await window.openclaw.plugin.weixin.disconnect({ accountId });
+    if (!alive) return;
+    if (!result.ok) error.value = result.error ?? t("plugins.disconnectFailed");
+    else {
+      ElMessage.success(t("plugins.disconnected"));
+      if (props.inline) emit("close");
+    }
+    await refreshStatus(true);
+  } catch (reason) {
+    if (alive) error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    if (alive) disconnecting.value = false;
+  }
+}
+
+function viewMessages(): void {
+  if (props.inline) emit("close");
+  chatStore.switchToMainSession();
+  void router.push("/chat");
+}
+
+onMounted(() => {
+  void pollStatus();
+});
+onUnmounted(() => {
+  stopConnection();
+  alive = false;
+  clearTimeout(timer);
+});
+</script>
+
+<style scoped>
+.weixin-card {
+  background: var(--bg-grouped);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.weixin-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+}
+.weixin-header img {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+.weixin-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.weixin-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.weixin-header p,
+.connection-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.weixin-header p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connection-badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.connection-badge.connected {
+  color: var(--success-color, #18a874);
+}
+.weixin-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 20px 14px;
+}
+.weixin-body p {
+  margin: 0;
+}
+.connection-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+.connection-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+.connection-error {
+  color: var(--danger-color, #f56c6c);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.weixin-inline {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.weixin-inline .weixin-header {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 12px;
+}
+.weixin-inline .weixin-header img {
+  width: 24px;
+  height: 24px;
+}
+.weixin-inline .connection-actions {
+  flex: 1 0 100%;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.weixin-inline .weixin-body {
+  padding: 0 0 12px;
+}
+.connection-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.connection-close:hover {
+  background: var(--bg-tertiary);
+}
+</style>

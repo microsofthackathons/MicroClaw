@@ -1,0 +1,2483 @@
+using MicroClaw.WindowsNodeHost;
+using OpenClaw.Shared;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.IO.Pipes;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Security.AccessControl;
+using OpenClaw.Shared.Mxc;
+using OpenClaw.Shared.ExecApprovals;
+using Xunit;
+
+namespace MicroClaw.WindowsNodeHost.Tests;
+
+public sealed class CwdPolicyTests : IDisposable
+{
+    private static readonly Func<CancellationToken, Task> NoopIsolationGuard =
+        _ => Task.CompletedTask;
+    private readonly string _root = Path.Combine(
+        Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_SCRATCH") ?? Path.GetTempPath(),
+        "microclaw-cwd-tests-" + Guid.NewGuid().ToString("N"));
+
+    public CwdPolicyTests()
+    {
+        Directory.CreateDirectory(_root);
+    }
+
+    [Fact]
+    public void PreparedPlanRetainsRequiredNullFieldsInTheNodeWireFormat()
+    {
+        var plan = new PreparedSystemRunPlan(
+            ["cmd.exe"], null, "cmd.exe", null, null, null,
+            @"C:\Windows\System32\cmd.exe", new string('a', 64),
+            CwdPolicyContract.ScratchBinding, [], null);
+        var wire = JsonSerializer.SerializeToElement(plan, new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        });
+
+        foreach (var name in new[] { "cwd", "commandPreview", "agentId", "sessionKey" })
+            Assert.Equal(JsonValueKind.Null, wire.GetProperty(name).ValueKind);
+        Assert.False(wire.TryGetProperty("providerInitialization", out _));
+    }
+
+    [Fact]
+    public async Task HostExecutionUsesConsentProofAndItsApprovedWorkingDirectory()
+    {
+        using var store = new ExecApprovalsStore(_root, NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var leasePath = Path.Combine(_root, "host-lease.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "host-test-generation";
+        var fingerprint = new string('b', 64);
+        var nodeId = new string('c', 64);
+        await WriteActivationLease(leasePath, leaseSecret, ActivationLeaseMode.Active,
+            generation, fingerprint, DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [], DeniedRoots = [], Canvas = CreateCanvasHostPolicy(),
+            WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            RequestedStrength = "off", EffectiveTier = "host", NetworkAllowed = true,
+        };
+        var capability = new BundledSystemCapability(
+            policy,
+            "unused-host-approval-pipe",
+            Path.Combine(_root, "legacy-approvals.json"),
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            approvalProof: new ApprovalProofVerifier(proofSecret, generation, fingerprint, nodeId),
+            isolationGuard: NoopIsolationGuard,
+            policyFingerprint: fingerprint,
+            commandConsent: consent);
+
+        async Task<JsonElement> Run(string payload, string? cwd, string decision)
+        {
+            var input = JsonSerializer.SerializeToElement(new
+            {
+                command = new[] { Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", payload },
+                cwd, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            });
+            var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+            {
+                Command = "system.run.prepare", Args = input,
+            }, TestContext.Current.CancellationToken);
+            Assert.True(prepared.Ok, prepared.Error);
+            var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan").Clone();
+            Assert.True(plan.GetProperty("commandConsent").GetProperty("required").GetBoolean());
+            var argv = plan.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray();
+            var commandText = plan.GetProperty("commandText").GetString()!;
+            var identity = DurableApprovalIdentity.Create(
+                plan.GetProperty("executablePath").GetString()!,
+                argv.Skip(1).ToArray(),
+                plan.GetProperty("cwdBinding").GetString()!);
+            var dispatch = JsonSerializer.SerializeToElement(new
+            {
+                command = argv, cwd, rawCommand = commandText,
+                agentId = "main", sessionKey = "agent:main:test", systemRunPlan = plan,
+            });
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var proof = new ApprovalProofRecord(
+                ApprovalProofContract.Version, Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString(),
+                generation, fingerprint, nodeId, ApprovalProofVerifier.ComputePlanSha256(dispatch, identity),
+                now, now + ApprovalProofContract.MaximumLifetimeMs, "", decision);
+            proof = proof with { Signature = ApprovalProofVerifier.ComputeSignature(proofSecret, proof) };
+            var request = JsonSerializer.SerializeToElement(new
+            {
+                command = argv, cwd, rawCommand = commandText,
+                agentId = "main", sessionKey = "agent:main:test",
+                systemRunPlan = plan, microclawApprovalProof = proof,
+            });
+            var response = await capability.ExecuteAsync(new NodeInvokeRequest
+            {
+                Command = "system.run", Args = request,
+            }, TestContext.Current.CancellationToken);
+            Assert.True(response.Ok, response.Error);
+            return JsonSerializer.SerializeToElement(response.Payload);
+        }
+
+        var scratch = await Run("cd", null, "allow-once");
+        Assert.True(scratch.GetProperty("success").GetBoolean(), scratch.GetRawText());
+        Assert.Equal("host", scratch.GetProperty("containment").GetString());
+        Assert.Equal("off", scratch.GetProperty("containmentStrength").GetString());
+        var scratchPath = scratch.GetProperty("stdout").GetString()!.Trim();
+        Assert.StartsWith("microclaw-host-", Path.GetFileName(scratchPath));
+        Assert.False(Directory.Exists(scratchPath));
+
+        var explicitCwd = await Run("cd", _root, "allow-once");
+        Assert.True(explicitCwd.GetProperty("success").GetBoolean(), explicitCwd.GetRawText());
+        Assert.Equal(_root, explicitCwd.GetProperty("stdout").GetString()!.Trim(), ignoreCase: true);
+
+        var folder = Directory.CreateDirectory(Path.Combine(_root, "notes folder")).FullName;
+        var file = Path.Combine(folder, "notes.txt");
+        await File.WriteAllTextAsync(file, "consent-file-content", TestContext.Current.CancellationToken);
+        var fileRead = await Run($"type \"{file}\"", _root, "allow-once");
+        Assert.True(fileRead.GetProperty("success").GetBoolean(), fileRead.GetRawText());
+        Assert.Equal("consent-file-content", fileRead.GetProperty("stdout").GetString()!.Trim());
+
+        var denied = await Run("echo should-not-run", _root, "policy");
+        Assert.False(denied.GetProperty("success").GetBoolean());
+        Assert.Equal("command-consent-denied", denied.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task LivePreparationCollectsMissingGrantsButExecutionStillRejectsThem()
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_root, "unlisted")).FullName;
+        var policy = Policy([]);
+        var capability = Capability(policy, policyFingerprint: new string('a', 64));
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var args = Parse(JsonSerializer.Serialize(new
+        {
+            command, cwd = folder, agentId = "main", sessionKey = "agent:main:test",
+        }));
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare", Args = args,
+        }, TestContext.Current.CancellationToken);
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        Assert.Equal(new string('a', 64), plan.GetProperty("policyFingerprint").GetString());
+        Assert.Equal(WindowsPathCanonicalizer.CanonicalizeDirectory(folder),
+            plan.GetProperty("cwdBinding").GetString());
+        var execution = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run", Args = args,
+        }, TestContext.Current.CancellationToken);
+        AssertRejectedBeforeExecution(execution, "cwd-outside-approved-roots");
+        var wirePayload = JsonSerializer.SerializeToElement(execution.Payload,
+            new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            });
+        Assert.Equal(JsonValueKind.Null, wirePayload.GetProperty("exitCode").ValueKind);
+        var declaration = await PrepareDeclared(capability, "rw", folder);
+        Assert.True(declaration.Ok, declaration.Error);
+        Assert.Throws<HostPolicyException>(() =>
+            DeclaredAccessParser.ParseAndValidate($"# [declare-access]rw:{folder}[/declare-access]\necho test", policy));
+    }
+
+    [Fact]
+    public void LivePreparationCannotRequestProtectedRootsOrTheirAncestors()
+    {
+        var secret = Directory.CreateDirectory(Path.Combine(_root, "protected")).FullName;
+        var policy = Policy([], [secret]);
+        Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(secret, allowMissingGrants: true));
+        Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(_root, allowMissingGrants: true));
+    }
+
+    [Fact]
+    public async Task LivePolicyReaderVerifiesSignatureRevisionAndImmutableRuntime()
+    {
+        using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var file = Path.Combine(_root, "live-policy.json");
+        var reader = new LivePolicyReader(file,
+            Convert.ToBase64String(signer.ExportSubjectPublicKeyInfo()), "gateway-1");
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        string PolicyJson(bool withGrant, bool network = true, string? epoch = null,
+            string consent = CommandConsent.AskWhenNeeded) => JsonSerializer.Serialize(new
+        {
+            approvedRoots = withGrant
+                ? new[] { new { path = _root, access = "ReadOnly" } } : [],
+            deniedRoots = Array.Empty<string>(), wxcExecPath = wxc,
+            canvas = CreateCanvasPolicyInput(wxc), networkAllowed = network,
+            allowWindowsUi = true, clipboard = "none", inputInjection = false,
+            strictNoHostFallback = true, commandConsentMode = consent, livePolicyEpoch = epoch,
+        });
+        string Envelope(int revision, string policyJson, string generation = "gateway-1", object? approval = null)
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                contract = "microclaw.windows-node-live-policy.v1", gatewayGeneration = generation,
+                revision, policyJson, approval,
+                policyFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(policyJson))).ToLowerInvariant(),
+            });
+            return JsonSerializer.Serialize(new
+            {
+                payload,
+                signature = Convert.ToBase64String(signer.SignData(Encoding.UTF8.GetBytes(payload),
+                    HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)),
+            });
+        }
+        var first = Envelope(1, PolicyJson(false));
+        await File.WriteAllTextAsync(file, first, TestContext.Current.CancellationToken);
+        Assert.Empty((await reader.ReadAsync()).Policy.ApprovedRoots);
+        Assert.Equal(1, (await reader.ReadAsync()).Revision);
+        var tampered = System.Text.Json.Nodes.JsonNode.Parse(first)!;
+        tampered["signature"] = Convert.ToBase64String(new byte[64]);
+        await File.WriteAllTextAsync(file, tampered.ToJsonString(), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-signature",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        var folderEpoch = Guid.NewGuid().ToString("D");
+        await File.WriteAllTextAsync(file, Envelope(2, PolicyJson(true, epoch: folderEpoch)), TestContext.Current.CancellationToken);
+        Assert.Single((await reader.ReadAsync()).Policy.ApprovedRoots);
+        await File.WriteAllTextAsync(file, first, TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-stale",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, PolicyJson(true)), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-epoch",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, PolicyJson(true, epoch: folderEpoch)), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-epoch",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, PolicyJson(true, false, Guid.NewGuid().ToString("D"))), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-runtime-change",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, PolicyJson(true), "other"), TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-stale",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        var allowEpoch = Guid.NewGuid().ToString("D");
+        var allowPolicy = PolicyJson(true, epoch: allowEpoch, consent: CommandConsent.AllowAlways);
+        await File.WriteAllTextAsync(file, Envelope(3, allowPolicy, approval: new { approvalId = "old" }),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-consent-approval",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+        await File.WriteAllTextAsync(file, Envelope(3, allowPolicy), TestContext.Current.CancellationToken);
+        var allowed = await reader.ReadAsync();
+        Assert.Equal(CommandConsent.AllowAlways, allowed.Policy.CommandConsentMode);
+        await File.WriteAllTextAsync(file, Envelope(4, PolicyJson(true, epoch: Guid.NewGuid().ToString("D"))),
+            TestContext.Current.CancellationToken);
+        var restored = await reader.ReadAsync();
+        Assert.Equal(CommandConsent.AskWhenNeeded, restored.Policy.CommandConsentMode);
+        Assert.NotEqual(allowed.Fingerprint, restored.Fingerprint);
+        await File.WriteAllTextAsync(file, Envelope(5, PolicyJson(true, epoch: allowEpoch)),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("live-policy-epoch",
+            (await Assert.ThrowsAsync<HostPolicyException>(async () => await reader.ReadAsync())).Code);
+    }
+
+    [Theory]
+    [InlineData(0, false, true)]
+    [InlineData(7, false, false)]
+    [InlineData(0, true, false)]
+    public void CompletedSystemRunPayloadIncludesRequiredSuccess(
+        int exitCode,
+        bool timedOut,
+        bool expectedSuccess)
+    {
+        var response = BundledSystemCapability.Completed(
+            "stdout",
+            "stderr",
+            exitCode,
+            timedOut,
+            123,
+            "limited-dacl",
+            "limited-dacl");
+
+        Assert.True(response.Ok);
+        var payload = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.Equal(expectedSuccess, payload.GetProperty("success").GetBoolean());
+        Assert.Equal(exitCode, payload.GetProperty("exitCode").GetInt32());
+        Assert.Equal(timedOut, payload.GetProperty("timedOut").GetBoolean());
+        Assert.Equal("stdout", payload.GetProperty("stdout").GetString());
+        Assert.Equal("stderr", payload.GetProperty("stderr").GetString());
+    }
+
+    [Theory]
+    [InlineData("New-Item -ItemType Directory -Path \"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\"")]
+    [InlineData("mkdir \"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\"")]
+    public void PowerShellRunStripsDeclarationBeforeMxcCommandLine(string command)
+    {
+        var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
+        var rawCommand = $"# [declare-access]rw:{desktop}[/declare-access]\n{command}";
+        var argv = new[]
+        {
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            rawCommand,
+        };
+        var capability = Capability(Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]));
+
+        var run = capability.ParseRun(Parse(JsonSerializer.Serialize(new
+        {
+            command = argv,
+            rawCommand,
+        })));
+
+        Assert.Equal(command, run.Argv[^1]);
+        Assert.Equal(command, run.RawCommand);
+        Assert.Equal(rawCommand, run.CommandPreview);
+        var config = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]),
+            run.Argv[0],
+            run.Argv[1..],
+            desktop,
+            Path.Combine(_root, "scratch"),
+            run.TimeoutMs);
+        Assert.DoesNotContain("declare-access", config.Process.CommandLine);
+        Assert.Equal(WindowsCommandLine.Join(run.Argv), config.Process.CommandLine);
+        Assert.Contains("\\\"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\\\"", config.Process.CommandLine);
+    }
+
+    [Fact]
+    public async Task CanonicalCmdMxcCommandLinePreservesQuotedPathsAndMetacharacters()
+    {
+        var file = Path.Combine(_root, "notes with spaces.txt");
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch")).FullName;
+        await File.WriteAllTextAsync(file, "file contents\r\n", TestContext.Current.CancellationToken);
+        var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        var payload = $"type \"{file}\" & echo completed";
+        var config = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]),
+            cmd,
+            ["/d", "/s", "/c", payload],
+            _root,
+            scratch,
+            10_000);
+        var commandLine = config.Process.CommandLine;
+        Assert.EndsWith(payload + "\"", commandLine);
+        var argumentsStart = commandLine.IndexOf(" /D /S /C ", StringComparison.Ordinal);
+        Assert.True(argumentsStart > 0);
+        Assert.Equal(cmd, commandLine[..argumentsStart].Trim('"'), ignoreCase: true);
+        Assert.NotNull(config.Filesystem);
+        Assert.NotNull(config.Filesystem.ReadonlyPaths);
+        Assert.NotNull(config.Filesystem.ReadwritePaths);
+        Assert.Equal([_root], config.Filesystem.ReadonlyPaths);
+        Assert.Equal([scratch], config.Filesystem.ReadwritePaths);
+
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = cmd,
+            Arguments = commandLine[(argumentsStart + 1)..],
+            WorkingDirectory = _root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!;
+        var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, process.ExitCode);
+        Assert.Equal("file contents\r\ncompleted", (await output).TrimEnd());
+        Assert.Equal(string.Empty, await error);
+    }
+
+    [Fact]
+    public void OmittedCwdUsesBoundScratchSemantic()
+    {
+        var policy = Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]);
+
+        var result = policy.ResolveCwd(null);
+
+        Assert.Equal(CwdPolicyContract.ScratchBinding, result.ApprovalBinding);
+        Assert.Equal(FolderAccess.ReadWrite, result.Access);
+    }
+
+    [Theory]
+    [InlineData(@"\\server\share")]
+    [InlineData(@"\\?\C:\Windows")]
+    [InlineData(@"\??\C:\Windows")]
+    [InlineData(@"\Device\HarddiskVolume1")]
+    public void RejectsNonLocalPathNamespaces(string path)
+    {
+        var error = Assert.Throws<HostPolicyException>(() => WindowsPathCanonicalizer.CanonicalizeDirectory(path));
+        Assert.Equal("path-nonlocal", error.Code);
+    }
+
+    [Fact]
+    public void CanonicalizesDotSegmentsAndInheritsExactRootAccess()
+    {
+        var child = Directory.CreateDirectory(Path.Combine(_root, "approved", "child")).FullName;
+        var approved = Path.Combine(_root, "approved");
+        var policy = Policy([new ApprovedRoot(WindowsPathCanonicalizer.CanonicalizeDirectory(approved), FolderAccess.ReadOnly)]);
+
+        var result = policy.ResolveCwd(Path.Combine(child, "..", "child"));
+
+        Assert.Equal(WindowsPathCanonicalizer.CanonicalizeDirectory(child), result.LaunchPath, ignoreCase: true);
+        Assert.Equal(FolderAccess.ReadOnly, result.Access);
+    }
+
+    [Fact]
+    public void PreservesDriveRootAsFullyQualified()
+    {
+        var root = Path.GetPathRoot(_root)!;
+
+        var canonical = WindowsPathCanonicalizer.CanonicalizeDirectory(root);
+
+        Assert.Equal(root, canonical, ignoreCase: true);
+        Assert.True(Path.IsPathFullyQualified(canonical));
+    }
+
+    [Fact]
+    public void DeniesOutsideAndSensitiveRoots()
+    {
+        var approved = Directory.CreateDirectory(Path.Combine(_root, "approved")).FullName;
+        var sensitive = Directory.CreateDirectory(Path.Combine(approved, "secrets")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "outside")).FullName;
+        var policy = Policy(
+            [new ApprovedRoot(WindowsPathCanonicalizer.CanonicalizeDirectory(approved), FolderAccess.ReadWrite)],
+            [WindowsPathCanonicalizer.CanonicalizeDirectory(sensitive)]);
+
+        Assert.Equal("cwd-sensitive-root", Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(sensitive)).Code);
+        Assert.Equal("cwd-outside-approved-roots", Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(outside)).Code);
+    }
+
+    [Fact]
+    public void RejectsJunctionComponent()
+    {
+        var target = Directory.CreateDirectory(Path.Combine(_root, "target")).FullName;
+        var link = Path.Combine(_root, "link");
+        CreateDirectoryReparsePoint(link, target);
+        try
+        {
+            var error = Assert.Throws<HostPolicyException>(() => WindowsPathCanonicalizer.CanonicalizeDirectory(link));
+            Assert.Equal("path-reparse-point", error.Code);
+        }
+        finally { Directory.Delete(link); }
+    }
+
+    [Fact]
+    public void LaunchRevalidationRejectsChangedCwdBinding()
+    {
+        var first = Directory.CreateDirectory(Path.Combine(_root, "first")).FullName;
+        var second = Directory.CreateDirectory(Path.Combine(_root, "second")).FullName;
+        var policy = Policy([new ApprovedRoot(WindowsPathCanonicalizer.CanonicalizeDirectory(_root), FolderAccess.ReadWrite)]);
+        var approved = policy.ResolveCwd(first);
+
+        var error = Assert.Throws<HostPolicyException>(() => policy.RevalidateCwd(second, approved.ApprovalBinding));
+
+        Assert.Equal("cwd-binding-changed", error.Code);
+    }
+
+    [Fact]
+    public void DirectoryLeaseBlocksCwdReplacementThroughLaunchWindow()
+    {
+        var cwd = Directory.CreateDirectory(Path.Combine(_root, "leased-cwd")).FullName;
+        var replacement = Path.Combine(_root, "moved-cwd");
+        using (DirectoryPathLease.Acquire([cwd]))
+        {
+            Assert.Throws<IOException>(() => Directory.Move(cwd, replacement));
+        }
+        Directory.Move(cwd, replacement);
+        Assert.True(Directory.Exists(replacement));
+    }
+
+    public static bool NativeMxcAvailable =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")) &&
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_SCRATCH"));
+
+    [Fact(SkipUnless = nameof(NativeMxcAvailable), Skip = "Requires a verified native SDK and isolated test scratch.")]
+    public async Task RealMxcExecutionPreservesCmdConsentAndContainment()
+    {
+        var allowed = Directory.CreateDirectory(Path.Combine(_root, "allowed folder")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "outside folder")).FullName;
+        var allowedFile = Path.Combine(allowed, "notes with spaces.txt");
+        var outsideFile = Path.Combine(outside, "private.txt");
+        await File.WriteAllTextAsync(allowedFile, "allowed-content", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(outsideFile, "outside-secret", TestContext.Current.CancellationToken);
+        using var store = new ExecApprovalsStore(Path.Combine(_root, "consent"), NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var leasePath = Path.Combine(_root, "mxc-lease.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "mxc-test-generation";
+        var fingerprint = new string('b', 64);
+        var nodeId = new string('c', 64);
+        await WriteActivationLease(leasePath, leaseSecret, ActivationLeaseMode.Active,
+            generation, fingerprint, DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [new ApprovedRoot(allowed, FolderAccess.ReadWrite)],
+            DeniedRoots = [], Canvas = CreateCanvasHostPolicy(),
+            WxcExecPath = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!,
+            RequestedStrength = "full", EffectiveTier = "base-container", NetworkAllowed = false,
+            AllowWindowsUi = true,
+        };
+        var capability = new BundledSystemCapability(policy, "unused-mxc-approval-pipe",
+            Path.Combine(_root, "legacy-approvals.json"),
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            approvalProof: new ApprovalProofVerifier(proofSecret, generation, fingerprint, nodeId),
+            isolationGuard: NoopIsolationGuard, ambientGuard: NoopIsolationGuard,
+            policyFingerprint: fingerprint, commandConsent: consent);
+
+        async Task<JsonElement> Run(
+            string payload,
+            bool promptRequired,
+            string[]? commandOverride = null,
+            bool isolatedScratch = false,
+            bool? expectedRememberable = null,
+            bool expectUnmodifiedPayload = false)
+        {
+            var requestedCwd = isolatedScratch ? null : allowed;
+            var input = JsonSerializer.SerializeToElement(new
+            {
+                command = commandOverride ?? [Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", payload],
+                cwd = requestedCwd, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            });
+            var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+            {
+                Command = "system.run.prepare", Args = input,
+            }, TestContext.Current.CancellationToken);
+            Assert.True(prepared.Ok, prepared.Error);
+            var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan").Clone();
+            Assert.Equal(promptRequired, plan.GetProperty("commandConsent").GetProperty("required").GetBoolean());
+            if (expectedRememberable is not null)
+                Assert.Equal(expectedRememberable.Value,
+                    plan.GetProperty("commandConsent").GetProperty("allowAlwaysAvailable").GetBoolean());
+            var argv = plan.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray();
+            if (expectUnmodifiedPayload)
+            {
+                Assert.Equal(DeclaredAccessParser.StripLeadingDeclarations(payload), argv[^1]);
+                Assert.False(plan.TryGetProperty("providerInitialization", out _));
+            }
+            var commandText = plan.GetProperty("commandText").GetString()!;
+            var declaredAccess = plan.GetProperty("declaredAccess").EnumerateArray()
+                .Select(entry => new DurableApprovalAccess(
+                    entry.GetProperty("access").GetString()!, entry.GetProperty("path").GetString()!))
+                .ToArray();
+            var identity = DurableApprovalIdentity.Create(plan.GetProperty("executablePath").GetString()!,
+                argv.Skip(1).ToArray(), plan.GetProperty("cwdBinding").GetString()!, declaredAccess);
+            var dispatch = JsonSerializer.SerializeToElement(new
+            {
+                command = argv, cwd = requestedCwd, rawCommand = commandText,
+                agentId = "main", sessionKey = "agent:main:test", systemRunPlan = plan,
+            });
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var proof = new ApprovalProofRecord(
+                ApprovalProofContract.Version, Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString(),
+                generation, fingerprint, nodeId, ApprovalProofVerifier.ComputePlanSha256(dispatch, identity),
+                now, now + ApprovalProofContract.MaximumLifetimeMs, "", promptRequired ? "allow-once" : "policy");
+            proof = proof with { Signature = ApprovalProofVerifier.ComputeSignature(proofSecret, proof) };
+            var request = JsonSerializer.SerializeToElement(new
+            {
+                command = argv, cwd = requestedCwd, rawCommand = commandText,
+                agentId = "main", sessionKey = "agent:main:test",
+                systemRunPlan = plan, microclawApprovalProof = proof,
+            });
+            var response = await capability.ExecuteAsync(new NodeInvokeRequest
+            {
+                Command = "system.run", Args = request,
+            }, TestContext.Current.CancellationToken);
+            Assert.True(response.Ok, response.Error);
+            return JsonSerializer.SerializeToElement(response.Payload);
+        }
+
+        var allowedRead = await Run($"type \"{allowedFile}\" & echo completed", true);
+        Assert.True(allowedRead.GetProperty("success").GetBoolean(), allowedRead.GetRawText());
+        Assert.Equal("mxc", allowedRead.GetProperty("containment").GetString());
+        Assert.Equal("full", allowedRead.GetProperty("containmentStrength").GetString());
+        Assert.Contains("allowed-content", allowedRead.GetProperty("stdout").GetString());
+        Assert.Contains("completed", allowedRead.GetProperty("stdout").GetString());
+
+        var deniedRead = await Run($"type \"{outsideFile}\"", true);
+        Assert.False(deniedRead.GetProperty("success").GetBoolean(), deniedRead.GetRawText());
+        Assert.DoesNotContain("outside-secret", deniedRead.GetProperty("stdout").GetString());
+
+        var scratchProbe = await Run("echo %TEMP%&echo %TMP%&echo %TMPDIR%", true);
+        Assert.True(scratchProbe.GetProperty("success").GetBoolean(), scratchProbe.GetRawText());
+        var scratchPaths = scratchProbe.GetProperty("stdout").GetString()!
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.True(scratchPaths.Length == 3, scratchProbe.GetRawText());
+        Assert.All(scratchPaths, path => Assert.Equal(scratchPaths[0], path, ignoreCase: true));
+        Assert.StartsWith("microclaw-mxc-", Path.GetFileName(scratchPaths[0]));
+        Assert.False(Directory.Exists(scratchPaths[0]));
+
+        const string directTempCheck =
+            "$ErrorActionPreference = 'Stop'; $file = Join-Path $env:TEMP 'microclaw-temp-check.txt'; " +
+            "[IO.File]::WriteAllText($file, 'ok'); [IO.File]::Delete($file); 'direct-temp-ok'";
+        var directPowerShell = await Run(directTempCheck, true,
+        [
+            Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
+            "-NoProfile", "-NonInteractive", "-Command", directTempCheck,
+        ]);
+        Assert.True(directPowerShell.GetProperty("success").GetBoolean(), directPowerShell.GetRawText());
+        Assert.Equal("", directPowerShell.GetProperty("stderr").GetString());
+        Assert.Contains("direct-temp-ok", directPowerShell.GetProperty("stdout").GetString());
+
+        var createdFile = Path.Combine(allowed, "created-by-unquoted-script.txt");
+        var escapedFile = createdFile.Replace("'", "''");
+        var unquotedScript = $"powershell -Command New-Item -Path '{escapedFile}' -ItemType File -Force";
+        var cmdRequest = CommandConsent.Request(
+            [Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", unquotedScript],
+            allowed, 10_000, "main", "agent:main:test");
+        var preview = (await consent.PrepareAsync(cmdRequest)).Preview;
+        Assert.True(preview.Required);
+        Assert.True(preview.AllowAlwaysAvailable);
+        await consent.AuthorizeAsync(cmdRequest, "allow-always");
+        var created = await Run(unquotedScript, false);
+        Assert.True(created.GetProperty("success").GetBoolean(), $"Command: {unquotedScript}; payload: {created.GetRawText()}");
+        Assert.True(File.Exists(createdFile));
+        var repeated = await Run(unquotedScript, false);
+        Assert.True(repeated.GetProperty("success").GetBoolean(), repeated.GetRawText());
+
+        var directDeleteScript = $"[IO.File]::Delete('{escapedFile}')";
+        var directDelete = await Run(directDeleteScript, true,
+        [
+            Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
+            "-NoProfile", "-NonInteractive", "-Command", directDeleteScript,
+        ]);
+        Assert.True(directDelete.GetProperty("success").GetBoolean(), directDelete.GetRawText());
+        Assert.False(File.Exists(createdFile), "The contained command did not remove the created file.");
+
+        var hostCreatedFile = Path.Combine(allowed, "created-by-host.txt");
+        await File.WriteAllTextAsync(hostCreatedFile, "host-created", TestContext.Current.CancellationToken);
+        var hostCreatedLiteral = hostCreatedFile.Replace("'", "''");
+        var removedHostFile = await Run(
+            $"powershell -NoProfile -Command \"[IO.File]::Delete('{hostCreatedLiteral}')\"", true);
+        Assert.True(removedHostFile.GetProperty("success").GetBoolean(), removedHostFile.GetRawText());
+        Assert.False(File.Exists(hostCreatedFile), "The contained command did not remove the host-created file.");
+
+        string AgentInitializedRemove(string file)
+        {
+            var literal = file.Replace("'", "''");
+            return "powershell.exe -NoProfile -Command \"" +
+                "New-PSDrive -Name MicroClawCwd -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) " +
+                "-Scope Script -ErrorAction Stop | Out-Null; " +
+                "Set-Location -LiteralPath 'MicroClawCwd:\\' -ErrorAction Stop; " +
+                $"Remove-Item -LiteralPath '{literal}' -Force -ErrorAction Stop\"";
+        }
+
+        var agentInitializedFile = Path.Combine(allowed, "agent-initialized-delete.txt");
+        await File.WriteAllTextAsync(agentInitializedFile, "delete", TestContext.Current.CancellationToken);
+        var agentInitializedDelete = await Run(
+            AgentInitializedRemove(agentInitializedFile), true, isolatedScratch: true,
+            expectedRememberable: false, expectUnmodifiedPayload: true);
+        Assert.True(agentInitializedDelete.GetProperty("success").GetBoolean(), agentInitializedDelete.GetRawText());
+        Assert.False(File.Exists(agentInitializedFile), "The agent-initialized command did not remove the file.");
+
+        var declaredFile = Path.Combine(allowed, "agent-declared-delete.txt");
+        await File.WriteAllTextAsync(declaredFile, "delete", TestContext.Current.CancellationToken);
+        var declaredPayload =
+            $"REM [declare-access]rw:{allowed}[/declare-access]\r\n{AgentInitializedRemove(declaredFile)}";
+        var declaredDelete = await Run(
+            declaredPayload, true, isolatedScratch: true,
+            expectedRememberable: false, expectUnmodifiedPayload: true);
+        Assert.True(declaredDelete.GetProperty("success").GetBoolean(), declaredDelete.GetRawText());
+        Assert.False(File.Exists(declaredFile), "The declared agent command did not remove the file.");
+
+        var outsideLiteral = outsideFile.Replace("'", "''");
+        var deniedInitializedDelete = await Run(
+            AgentInitializedRemove(outsideFile), true, isolatedScratch: true,
+            expectedRememberable: false, expectUnmodifiedPayload: true);
+        Assert.False(deniedInitializedDelete.GetProperty("success").GetBoolean(), deniedInitializedDelete.GetRawText());
+        Assert.True(File.Exists(outsideFile), "The agent-initialized command removed an ungranted file.");
+        var deniedDelete = await Run(
+            $"powershell -NoProfile -Command \"[IO.File]::Delete('{outsideLiteral}')\"", true);
+        Assert.False(deniedDelete.GetProperty("success").GetBoolean(), deniedDelete.GetRawText());
+        Assert.True(File.Exists(outsideFile), "The contained command removed an ungranted file.");
+        var deniedExternal = await Run(
+            $"powershell -Command Get-Content -Path '{outsideLiteral}' -ErrorAction Stop", true);
+        Assert.False(deniedExternal.GetProperty("success").GetBoolean(), deniedExternal.GetRawText());
+        Assert.DoesNotContain("outside-secret", deniedExternal.GetProperty("stdout").GetString());
+
+        await consent.SetModeAsync(CommandConsent.AllowAlways);
+        var autoApproved = await Run($"type \"{allowedFile}\"", false);
+        Assert.True(autoApproved.GetProperty("success").GetBoolean(), autoApproved.GetRawText());
+        Assert.Contains("allowed-content", autoApproved.GetProperty("stdout").GetString());
+        Assert.Equal("outside-secret", await File.ReadAllTextAsync(outsideFile, TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PowerShellFilesystemScopePreservesLiteralOperationBeforePreparation(bool nested)
+    {
+        var operation = @"Remove-Item -Path 'C:\workspace\folder' -Recurse -Force";
+        var payload = nested ? $"powershell -NoProfile -Command \"{operation}\"" : operation;
+        string[] argv = [@"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", payload];
+        DeclaredAccess[] access = [new("rw", @"C:\workspace")];
+        var initialized = PowerShellFilesystemScope.Create(argv, access);
+        Assert.NotNull(initialized);
+        Assert.Equal(nested ? "nested" : "direct", initialized.Form);
+        Assert.Equal(payload, initialized.OriginalArgv[^1]);
+        Assert.Equal(argv[..^1], initialized.FinalArgv.Take(argv.Length - 1));
+        Assert.Equal(PowerShellFilesystemScope.Preview(access, payload), initialized.OriginalCommandPreview);
+        Assert.Equal(nested
+            ? $"powershell -NoProfile -Command \"{PowerShellFilesystemScope.Initializer}{operation}\""
+            : PowerShellFilesystemScope.Initializer + operation, initialized.FinalArgv[^1]);
+        argv[^1] = "changed source";
+        Assert.Equal(payload, initialized.OriginalArgv[^1]);
+        Assert.DoesNotContain('$', PowerShellFilesystemScope.Initializer);
+        Assert.DoesNotContain('\n', PowerShellFilesystemScope.Initializer);
+    }
+
+    [Theory]
+    [InlineData("New-Item -ItemType Directory -Path '.\\relative' -Force")]
+    [InlineData("New-Item -ItemType Directory -Path 'C:\\workspace\\..\\outside' -Force")]
+    [InlineData("New-Item -ItemType Directory -Path 'C:\\workspace\\folder'; Write-Output secret")]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\*' -Recurse")]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\folder' -Path 'C:\\workspace\\other'")]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\folder' -ErrorAction SilentlyContinue")]
+    [InlineData("powershell -NoProfile -EncodedCommand ZmFrZQ==")]
+    [InlineData("powershell -NoProfile -File C:\\workspace\\script.ps1")]
+    [InlineData("powershell -Command \"Remove-Item -Path 'C:\\workspace\\folder'\"")]
+    [InlineData("$target='C:\\workspace\\folder'; Remove-Item $target")]
+    [InlineData("Get-Date")]
+    public void PowerShellFilesystemScopeDoesNotRewriteUnsupportedForms(string payload)
+    {
+        string[] argv = ["powershell.exe", "-NoProfile", "-Command", payload];
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", @"C:\workspace")]));
+    }
+
+    [Theory]
+    [InlineData("limited-dacl", "appcontainer-dacl")]
+    [InlineData("full", "base-container")]
+    [InlineData("full", "appcontainer-bfs")]
+    public void PowerShellFilesystemScopeReconstructsExactPreparedMetadataAndRejectsTampering(
+        string strength, string tier)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "scope-grant")).FullName;
+        var operation = $"New-Item -ItemType Directory -Path '{grant}\\child' -Force";
+        string[] argv = ["powershell.exe", "-NoProfile", "-Command", operation];
+        DeclaredAccess[] access = [new("rw", grant)];
+        var initialization = PowerShellFilesystemScope.Create(argv, access)!;
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [new ApprovedRoot(grant, FolderAccess.ReadWrite)],
+            DeniedRoots = [], Canvas = Policy([]).Canvas,
+            WxcExecPath = Policy([]).WxcExecPath,
+            RequestedStrength = strength, EffectiveTier = tier,
+        };
+        var preview = PowerShellFilesystemScope.Preview(access, initialization.FinalArgv[^1]);
+        var result = PowerShellFilesystemScope.Validate(
+            JsonSerializer.SerializeToElement(initialization), initialization.FinalArgv, preview, policy);
+        Assert.Equal(initialization.FinalArgv, result.Initialization.FinalArgv);
+        foreach (var changed in new[]
+        {
+            initialization with { Contract = "unknown" },
+            initialization with { Form = "encoded" },
+            initialization with { OriginalCommandPreview = initialization.OriginalCommandPreview + " " },
+            initialization with { OriginalArgv = ["powershell.exe", "-NoProfile", "-Command", "Get-Date"] },
+            initialization with { FinalArgv = argv },
+        })
+            Assert.Throws<HostPolicyException>(() => PowerShellFilesystemScope.Validate(
+                JsonSerializer.SerializeToElement(changed), initialization.FinalArgv, preview, policy));
+        Assert.Throws<HostPolicyException>(() => PowerShellFilesystemScope.Validate(
+            JsonSerializer.SerializeToElement(initialization), argv, preview, policy));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("ro", grant)]));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", Path.Combine(grant, "different"))]));
+    }
+
+    public static bool NativeApprovalBridgeAvailable => NativeMxcAvailable &&
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE"));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PowerShellFilesystemScopeRejectsTargetReparseAtPrepareOrRevalidation(bool replaceAfterPrepare)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "reparse-grant")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "ungranted")).FullName;
+        var target = Path.Combine(grant, "child");
+        DeclaredAccess[] access = [new("rw", grant)];
+        var initialization = PowerShellFilesystemScope.Create(
+            ["powershell.exe", "-NoProfile", "-Command", $"Remove-Item -LiteralPath '{target}' -Recurse"], access)!;
+        if (replaceAfterPrepare)
+        {
+            Directory.CreateDirectory(target);
+            PowerShellFilesystemScope.ValidateTarget(initialization, access);
+            Directory.Delete(target);
+        }
+        CreateDirectoryReparsePoint(target, outside);
+        try
+        {
+            var error = Assert.Throws<HostPolicyException>(() =>
+                PowerShellFilesystemScope.ValidateTarget(initialization, access));
+            Assert.Equal("powershell-initialization-target-reparse", error.Code);
+            Assert.True(Directory.Exists(outside));
+        }
+        finally { Directory.Delete(target); }
+    }
+
+    [Fact]
+    public void PowerShellFilesystemScopeAllowsMissingCreationTailButNotReadOnlyOrSiblingAccess()
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "literal-grant")).FullName;
+        DeclaredAccess[] access = [new("rw", grant)];
+        string[] argv = ["powershell.exe", "-NoProfile", "-Command",
+            $"New-Item -ItemType Directory -Path '{grant}\\missing\\child' -Force"];
+        var initialization = PowerShellFilesystemScope.Create(argv, access)!;
+        PowerShellFilesystemScope.ValidateTarget(initialization, access);
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("ro", grant)]));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", Path.Combine(_root, "sibling"))]));
+    }
+
+    [Fact(SkipUnless = nameof(NativeApprovalBridgeAvailable), Skip = "Requires the isolated Node approval bridge.")]
+    public async Task PowerShellFilesystemScopeNativeApprovalBridge()
+    {
+        var bridge = Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE")!;
+        var runtime = Environment.GetEnvironmentVariable("MICROCLAW_MXC_NATIVE_TEST_RUNTIME")!;
+        var proofSecret = Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE_SECRET")!;
+        Environment.SetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE_SECRET", null);
+        const string generation = "test-generation";
+        var fingerprint = new string('b', 64);
+        var nodeId = new string('c', 64);
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "operation-root")).FullName;
+        var cwd = Directory.CreateDirectory(Path.Combine(_root, "canonical-cwd")).FullName;
+        var state = Directory.CreateDirectory(Path.Combine(_root, "sdk-state")).FullName;
+        var ancestors = new Dictionary<string, string>();
+        for (var directory = Directory.GetParent(_root); directory is not null; directory = directory.Parent)
+            ancestors[directory.FullName] = Convert.ToHexString(SHA256.HashData(
+                directory.GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorBinaryForm()));
+        using var environment = ProcessEnvironmentOverride.Apply(new Dictionary<string, string> { ["MXC_DACL_STATE_DIR"] = state });
+        var leasePath = Path.Combine(_root, "test-lease.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        await WriteActivationLease(leasePath, leaseSecret, ActivationLeaseMode.Active,
+            generation, fingerprint, DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeMilliseconds());
+        var policy = new HostPolicy
+        {
+            ApprovedRoots = [new ApprovedRoot(grant, FolderAccess.ReadWrite), new ApprovedRoot(cwd, FolderAccess.ReadWrite)],
+            DeniedRoots = [], Canvas = Policy([]).Canvas, WxcExecPath = runtime,
+            RequestedStrength = "limited-dacl", EffectiveTier = "appcontainer-dacl", NetworkAllowed = false,
+        };
+        var capability = new BundledSystemCapability(policy, "unused-test-approval-pipe",
+            Path.Combine(_root, "test-approvals.json"),
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            approvalProof: new ApprovalProofVerifier(proofSecret, generation, fingerprint, nodeId),
+            isolationGuard: NoopIsolationGuard, ambientGuard: NoopIsolationGuard);
+        async Task Write(string file, object value)
+        {
+            var destination = Path.Combine(bridge, file);
+            await File.WriteAllTextAsync(destination + ".pending", JsonSerializer.Serialize(value),
+                TestContext.Current.CancellationToken);
+            File.Move(destination + ".pending", destination, overwrite: true);
+        }
+        async Task<JsonElement> Read(string file)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            var path = Path.Combine(bridge, file);
+            while (!File.Exists(path) && DateTime.UtcNow < deadline)
+            {
+                if (File.Exists(Path.Combine(bridge, "abort"))) throw new OperationCanceledException("Node bridge aborted");
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+            Assert.True(File.Exists(path), "Node bridge deadline elapsed");
+            return Parse(await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+        }
+        var results = new List<object>();
+        try
+        {
+            await Write("ready.json", new { grant, cwd, nodeId, generation, fingerprint });
+            for (var step = 0; step < 8; step++)
+            {
+                var input = await Read($"{step}.input.json");
+                var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+                {
+                    Command = "system.run.prepare", Args = input,
+                }, TestContext.Current.CancellationToken);
+                Assert.True(prepared.Ok, prepared.Error);
+                var preparedPayload = JsonSerializer.SerializeToElement(prepared.Payload);
+                var plan = preparedPayload.GetProperty("plan");
+                Assert.True(plan.TryGetProperty("providerInitialization", out _));
+                Assert.NotEqual(grant, plan.GetProperty("cwdBinding").GetString());
+                await Write($"{step}.prepared.json", prepared.Payload!);
+                var approved = await Read($"{step}.approved.json");
+                foreach (var mutation in new[] { "missing", "partial", "source", "argv" })
+                {
+                    var changed = System.Text.Json.Nodes.JsonNode.Parse(approved.GetRawText())!;
+                    var changedPlan = changed["systemRunPlan"]!;
+                    if (mutation == "missing") changedPlan.AsObject().Remove("providerInitialization");
+                    else if (mutation == "partial") changedPlan["providerInitialization"]!.AsObject().Remove("form");
+                    else if (mutation == "source") changedPlan["providerInitialization"]!["originalArgv"]![5] = "Get-Date";
+                    else changed["command"]![5] = changed["command"]![5]!.GetValue<string>() + "; Get-Date";
+                    var rejected = await capability.ExecuteAsync(new NodeInvokeRequest
+                    {
+                        Command = "system.run", Args = JsonSerializer.SerializeToElement(changed),
+                    }, TestContext.Current.CancellationToken);
+                    AssertRejectedBeforeExecution(rejected, mutation == "missing"
+                        ? "powershell-initialization-metadata-required" : "powershell-initialization-invalid");
+                }
+                var response = await capability.ExecuteAsync(new NodeInvokeRequest
+                {
+                    Command = "system.run", Args = approved,
+                }, TestContext.Current.CancellationToken);
+                Assert.True(response.Ok, response.Error);
+                var payload = JsonSerializer.SerializeToElement(response.Payload);
+                var expectedExit = step % 4 is 1 or 3 ? 1 : 0;
+                Assert.Equal(expectedExit, payload.GetProperty("exitCode").GetInt32());
+                Assert.Equal(expectedExit == 0, payload.GetProperty("success").GetBoolean());
+                var stdout = payload.GetProperty("stdout").GetString()!;
+                var stderr = payload.GetProperty("stderr").GetString()!;
+                Assert.DoesNotContain("MC_NATIVE_PROBE", stdout);
+                Assert.DoesNotContain("MicroClawCwd", stdout);
+                if (expectedExit != 0) Assert.NotEmpty(stderr);
+                if (step % 4 == 2) Assert.Empty(stdout);
+                var target = Path.Combine(grant, step < 4 ? "direct-child" : "nested-child");
+                Assert.Equal(step % 4 is 0 or 1, Directory.Exists(target));
+                var replay = await capability.ExecuteAsync(new NodeInvokeRequest
+                {
+                    Command = "system.run", Args = approved,
+                }, TestContext.Current.CancellationToken);
+                AssertRejectedBeforeExecution(replay, "approval-proof-replayed");
+                await Write($"{step}.result.json", response.Payload!);
+                results.Add(new { step, exitCode = expectedExit, success = expectedExit == 0,
+                    mutationRejects = 4, replayRejected = true, explicitCwdDistinctFromGrant = true,
+                    planSha256 = approved.GetProperty("microclawApprovalProof").GetProperty("planSha256").GetString() });
+            }
+        }
+        finally
+        {
+            var after = ancestors.Select(entry => new
+            {
+                pathHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(entry.Key))),
+                unchanged = entry.Value == Convert.ToHexString(SHA256.HashData(
+                    new DirectoryInfo(entry.Key).GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorBinaryForm())),
+            }).ToArray();
+            var privateStateEmpty = !Directory.EnumerateFiles(state, "*", SearchOption.AllDirectories).Any();
+            await Write("evidence.json", new { results, ancestors = after, privateStateEmpty });
+            Assert.All(after, entry => Assert.True(entry.unchanged));
+            Assert.True(privateStateEmpty);
+        }
+    }
+
+    [Fact]
+    public void DurableApprovalBindsExecutableArgsAndCwd()
+    {
+        var executable = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var first = WindowsPathCanonicalizer.CanonicalizeDirectory(_root);
+        var second = Directory.CreateDirectory(Path.Combine(_root, "second")).FullName;
+        var readAccess = new[]
+        {
+            new DurableApprovalAccess("ro", Path.Combine(_root, "documents")),
+        };
+        var writeAccess = new[]
+        {
+            new DurableApprovalAccess("rw", Path.Combine(_root, "documents")),
+        };
+        var approval = DurableApprovalIdentity.Create(executable, ["--example"], first, readAccess);
+
+        Assert.True(DurableApprovalIdentity.Matches(approval, executable, ["--example"], first, readAccess));
+        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--other"], first, readAccess));
+        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--example"], second, readAccess));
+        Assert.False(DurableApprovalIdentity.Matches(approval, executable, ["--example"], first, writeAccess));
+        Assert.False(DurableApprovalIdentity.Matches(
+            approval with { SchemaVersion = 2 },
+            executable,
+            ["--example"],
+            first,
+            readAccess));
+    }
+
+
+    [Fact]
+    public void ApprovalIdentityDetectsExecutableReplacement()
+    {
+        var executable = Path.Combine(_root, "replaceable.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "hostname.exe"), executable);
+        var approved = DurableApprovalIdentity.Create(executable, [], CwdPolicyContract.ScratchBinding);
+        File.AppendAllText(executable, "changed");
+        var current = DurableApprovalIdentity.Create(executable, [], CwdPolicyContract.ScratchBinding);
+
+        Assert.False(DurableApprovalIdentity.Matches(approved, current));
+    }
+
+    [Fact]
+    public void ExecutableLeaseBlocksReplacementThroughLaunchWindow()
+    {
+        var executable = Path.Combine(_root, "locked.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "hostname.exe"), executable);
+        using var lease = ExecutableApprovalLease.Acquire(executable);
+        var approved = lease.Capture([], CwdPolicyContract.ScratchBinding);
+
+        Assert.Throws<IOException>(() => File.AppendAllText(executable, "changed"));
+        Assert.True(
+            DurableApprovalIdentity.Matches(
+                approved,
+                lease.Capture([], CwdPolicyContract.ScratchBinding)));
+    }
+
+    [Fact]
+    public void GatewayOwnershipRequiresCurrentLoopbackListenerProcess()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        Assert.True(GatewayListenerOwnership.IsLoopbackListenerOwnedBy(port, Environment.ProcessId));
+        Assert.False(GatewayListenerOwnership.IsLoopbackListenerOwnedBy(port, Environment.ProcessId + 1));
+        listener.Stop();
+        Assert.False(GatewayListenerOwnership.IsLoopbackListenerOwnedBy(port, Environment.ProcessId));
+    }
+
+    [Fact]
+    public void AttestationRequiresEverySecurityProperty()
+    {
+        var attestation = CwdPolicyAttestation.Current;
+
+        Assert.Equal("microclaw.windows-cwd.v1", attestation.Contract);
+        Assert.True(attestation.ApprovedRootOnly);
+        Assert.True(attestation.CanonicalFinalPath);
+        Assert.True(attestation.RejectsReparseComponents);
+        Assert.False(attestation.DurableApprovalBindsCwd);
+        Assert.False(attestation.DurableApprovalBindsDeclaredAccess);
+        Assert.True(attestation.LaunchTimeRevalidation);
+        Assert.True(attestation.OmittedCwdUsesIsolatedScratch);
+        Assert.True(attestation.HostFallbackAbsent);
+        Assert.Equal("microclaw.windows-activation.v1", attestation.ActivationLeaseContract);
+        Assert.True(attestation.GenerationBoundActivation);
+        Assert.True(attestation.PolicyBoundActivation);
+        Assert.True(attestation.LaunchTimeLeaseRevalidation);
+        Assert.Equal("microclaw.windows-node-approval.v2", attestation.ApprovalProofContract);
+        Assert.True(attestation.ActiveRunsRequireApprovalProof);
+        Assert.True(attestation.ApprovalProofOneUse);
+        Assert.True(attestation.ApprovalProofBindsPreparedPlan);
+        Assert.True(attestation.ApprovalProofBindsActivation);
+        Assert.Equal("microclaw.windows-node-readiness.v1", attestation.ReadinessProofContract);
+        Assert.True(attestation.ReadinessProofBindsTransition);
+        Assert.True(attestation.ReadinessProofBindsPreparedPlan);
+        Assert.True(attestation.ReadinessProofExactBuiltInsOnly);
+        Assert.True(attestation.ReadinessProofOneUse);
+        Assert.True(attestation.OutboundNetworkEnabled);
+        Assert.True(attestation.CanvasPhase1Enabled);
+        Assert.True(attestation.CanvasExactCommandSet);
+        Assert.True(attestation.CanvasExactActionSet);
+        Assert.True(attestation.CanvasNativeA2uiOnly);
+        Assert.True(attestation.CanvasHostTreeBound);
+        Assert.True(attestation.CanvasEvalAbsent);
+        Assert.True(attestation.CanvasNavigationAbsent);
+        Assert.True(attestation.CanvasLocalFilesAbsent);
+        Assert.True(attestation.CanvasSurfaceOnlySnapshot);
+        Assert.False(attestation.DurableApprovalsPresent);
+    }
+
+    [Fact]
+    public void AttestationUsesTheVersionedCamelCaseWireContract()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(CwdPolicyAttestation.Current));
+        var root = document.RootElement;
+
+        Assert.Equal("microclaw.windows-cwd.v1", root.GetProperty("contract").GetString());
+        Assert.True(root.GetProperty("approvedRootOnly").GetBoolean());
+        Assert.True(root.GetProperty("canonicalFinalPath").GetBoolean());
+        Assert.True(root.GetProperty("rejectsReparseComponents").GetBoolean());
+        Assert.False(root.GetProperty("durableApprovalBindsCwd").GetBoolean());
+        Assert.False(root.GetProperty("durableApprovalBindsDeclaredAccess").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeRevalidation").GetBoolean());
+        Assert.True(root.GetProperty("omittedCwdUsesIsolatedScratch").GetBoolean());
+        Assert.True(root.GetProperty("hostFallbackAbsent").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-activation.v1",
+            root.GetProperty("activationLeaseContract").GetString());
+        Assert.True(root.GetProperty("generationBoundActivation").GetBoolean());
+        Assert.True(root.GetProperty("policyBoundActivation").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeLeaseRevalidation").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-node-approval.v2",
+            root.GetProperty("approvalProofContract").GetString());
+        Assert.True(root.GetProperty("activeRunsRequireApprovalProof").GetBoolean());
+        Assert.True(root.GetProperty("approvalProofOneUse").GetBoolean());
+        Assert.True(root.GetProperty("approvalProofBindsPreparedPlan").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-node-approval-plan.v2",
+            root.GetProperty("approvalProofPlanContract").GetString());
+        Assert.True(root.GetProperty("approvalProofBindsExecutableContent").GetBoolean());
+        Assert.True(root.GetProperty("approvalProofBindsActivation").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeApprovalProofRevalidation").GetBoolean());
+        Assert.Equal(
+            "microclaw.windows-node-readiness.v1",
+            root.GetProperty("readinessProofContract").GetString());
+        Assert.True(root.GetProperty("readinessProofBindsTransition").GetBoolean());
+        Assert.True(root.GetProperty("readinessProofBindsPreparedPlan").GetBoolean());
+        Assert.True(root.GetProperty("readinessProofExactBuiltInsOnly").GetBoolean());
+        Assert.True(root.GetProperty("readinessProofOneUse").GetBoolean());
+        Assert.True(root.GetProperty("launchTimeReadinessProofRevalidation").GetBoolean());
+        Assert.True(root.GetProperty("exactFilesystemIsolationRequired").GetBoolean());
+        Assert.True(root.GetProperty("degradedIsolationTierRejected").GetBoolean());
+        Assert.True(root.GetProperty("durableApprovalStoreProtected").GetBoolean());
+        Assert.False(root.GetProperty("durableApprovalsPresent").GetBoolean());
+        Assert.False(root.TryGetProperty("Contract", out _));
+    }
+
+    [Fact]
+    public async Task LoadedPolicyMustMatchTheBootstrapFingerprint()
+    {
+        var policyPath = Path.Combine(_root, "verified-policy.json");
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            approvedRoots = new[] { new { path = _root, access = "ReadOnly" } },
+            deniedRoots = Array.Empty<string>(),
+            wxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            canvas = CreateCanvasPolicyInput(Path.Combine(Environment.SystemDirectory, "hostname.exe")),
+            networkAllowed = true,
+            allowWindowsUi = true,
+            clipboard = "none",
+            inputInjection = false,
+            strictNoHostFallback = true,
+        });
+        await File.WriteAllTextAsync(policyPath, json, TestContext.Current.CancellationToken);
+        var fingerprint = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+
+        var policy = await HostPolicy.LoadVerifiedAsync(policyPath, fingerprint);
+
+        Assert.True(policy.StrictNoHostFallback);
+        await File.AppendAllTextAsync(policyPath, " ", TestContext.Current.CancellationToken);
+        var error = await Assert.ThrowsAsync<HostPolicyException>(
+            () => HostPolicy.LoadVerifiedAsync(policyPath, fingerprint));
+        Assert.Equal("policy-fingerprint-mismatch", error.Code);
+    }
+
+    [Fact]
+    public async Task ActivationLeaseIsGenerationPolicyExpiryAndSignatureBound()
+    {
+        var leasePath = Path.Combine(_root, "activation.json");
+        var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds();
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Active,
+            "gateway-1",
+            "policy-1",
+            expiresAt);
+        var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
+        var argv = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+
+        var validated = guard.Validate(argv);
+
+        Assert.Equal(ActivationLeaseMode.Active, validated.Mode);
+        Assert.Equal(
+            "activation-lease-generation",
+            Assert.Throws<HostPolicyException>(
+                () => new ActivationLeaseGuard(leasePath, secret, "gateway-2", "policy-1").Validate(argv)).Code);
+        Assert.Equal(
+            "activation-lease-policy",
+            Assert.Throws<HostPolicyException>(
+                () => new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-2").Validate(argv)).Code);
+        await File.AppendAllTextAsync(leasePath, " ", TestContext.Current.CancellationToken);
+        var record = System.Text.Json.JsonSerializer.Deserialize<ActivationLeaseRecord>(
+            await File.ReadAllTextAsync(leasePath, TestContext.Current.CancellationToken),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+            })!;
+        await File.WriteAllTextAsync(
+            leasePath,
+            System.Text.Json.JsonSerializer.Serialize(record with { Signature = new string('0', 64) }),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(
+            "activation-lease-signature",
+            Assert.Throws<HostPolicyException>(() => guard.Validate(argv)).Code);
+    }
+
+    [Fact]
+    public async Task DiagnosticLeasePermitsOnlyTheFixedSmokesAndRevalidatesBeforeLaunch()
+    {
+        var leasePath = Path.Combine(_root, "diagnostic-activation.json");
+        var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds();
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            "gateway-1",
+            "policy-1",
+            expiresAt);
+        var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
+        var smoke = ReadinessProbeContract.Probes["execution"];
+        var validated = guard.Validate(smoke);
+
+        Assert.Equal(
+            "activation-lease-diagnostic-scope",
+            Assert.Throws<HostPolicyException>(
+                () => guard.Validate([Path.Combine(Environment.SystemDirectory, "hostname.exe")])).Code);
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Active,
+            "gateway-1",
+            "policy-1",
+            expiresAt);
+        Assert.Equal(
+            "activation-lease-changed",
+            Assert.Throws<HostPolicyException>(() => guard.Revalidate(validated, smoke)).Code);
+    }
+
+    [Fact]
+    public async Task MissingAndExpiredActivationLeasesFailClosed()
+    {
+        var leasePath = Path.Combine(_root, "expired-activation.json");
+        var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var guard = new ActivationLeaseGuard(leasePath, secret, "gateway-1", "policy-1");
+        var argv = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+
+        Assert.Equal(
+            "activation-lease-unavailable",
+            Assert.Throws<HostPolicyException>(() => guard.Validate(argv)).Code);
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Active,
+            "gateway-1",
+            "policy-1",
+            DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds());
+        Assert.Equal(
+            "activation-lease-expired",
+            Assert.Throws<HostPolicyException>(() => guard.Validate(argv)).Code);
+    }
+
+    [Fact]
+    public async Task LoadsElectronPolicyWithNamedFolderAccess()
+    {
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var policyPath = Path.Combine(_root, "policy.json");
+        await File.WriteAllTextAsync(
+            policyPath,
+            $$"""
+            {
+              "approvedRoots": [
+                { "path": {{System.Text.Json.JsonSerializer.Serialize(_root)}}, "access": "ReadOnly" }
+              ],
+              "deniedRoots": [],
+              "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
+              "networkAllowed": true,
+              "allowWindowsUi": true,
+              "clipboard": "none",
+              "inputInjection": false,
+              "strictNoHostFallback": true
+            }
+            """,
+            TestContext.Current.CancellationToken);
+
+        var policy = await HostPolicy.LoadAsync(policyPath);
+
+        Assert.Equal(FolderAccess.ReadOnly, Assert.Single(policy.ApprovedRoots).Access);
+        Assert.True(policy.NetworkAllowed);
+    }
+
+    [Fact]
+    public async Task RejectsPolicyWithoutContainedOutboundNetwork()
+    {
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var policyPath = Path.Combine(_root, "network-disabled-policy.json");
+        await File.WriteAllTextAsync(
+            policyPath,
+            $$"""
+            {
+              "approvedRoots": [
+                { "path": {{System.Text.Json.JsonSerializer.Serialize(_root)}}, "access": "ReadOnly" }
+              ],
+              "deniedRoots": [],
+              "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
+              "networkAllowed": false,
+              "allowWindowsUi": true,
+              "clipboard": "none",
+              "inputInjection": false,
+              "strictNoHostFallback": true
+            }
+            """,
+            TestContext.Current.CancellationToken);
+
+        var error = await Assert.ThrowsAsync<HostPolicyException>(
+            () => HostPolicy.LoadAsync(policyPath));
+
+        Assert.Equal("outbound-network-disabled", error.Code);
+    }
+
+    [Fact]
+    public async Task RejectsUnknownFolderAccessAsMalformedPolicy()
+    {
+        var policyPath = Path.Combine(_root, "invalid-policy.json");
+        await File.WriteAllTextAsync(
+            policyPath,
+            $$"""
+            {
+              "approvedRoots": [
+                { "path": {{System.Text.Json.JsonSerializer.Serialize(_root)}}, "access": "Owner" }
+              ]
+            }
+            """,
+            TestContext.Current.CancellationToken);
+
+        var error = await Assert.ThrowsAsync<HostPolicyException>(() => HostPolicy.LoadAsync(policyPath));
+
+        Assert.Equal("malformed-policy", error.Code);
+    }
+
+    [Fact]
+    public async Task MissingProtectedRootRemainsDeniedIfCreatedLater()
+    {
+        var protectedRoot = Path.Combine(_root, "future-credentials");
+        var approvedRoot = Directory.CreateDirectory(Path.Combine(_root, "approved")).FullName;
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var policyPath = Path.Combine(_root, "protected-policy.json");
+        await File.WriteAllTextAsync(
+            policyPath,
+            $$"""
+            {
+              "approvedRoots": [
+                { "path": {{System.Text.Json.JsonSerializer.Serialize(approvedRoot)}}, "access": "ReadWrite" }
+              ],
+              "deniedRoots": [{{System.Text.Json.JsonSerializer.Serialize(protectedRoot)}}],
+              "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
+              "networkAllowed": true,
+              "allowWindowsUi": true,
+              "clipboard": "none",
+              "inputInjection": false,
+              "strictNoHostFallback": true
+            }
+            """,
+            TestContext.Current.CancellationToken);
+        var policy = await HostPolicy.LoadAsync(policyPath);
+        Directory.CreateDirectory(protectedRoot);
+
+        var error = Assert.Throws<HostPolicyException>(() => policy.ResolveCwd(protectedRoot));
+
+        Assert.Equal("cwd-sensitive-root", error.Code);
+    }
+
+    [Fact]
+    public async Task RejectsBroadGrantContainingProtectedRoot()
+    {
+        var protectedRoot = Path.Combine(_root, "credentials");
+        var wxc = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var policyPath = Path.Combine(_root, "overlapping-policy.json");
+        await File.WriteAllTextAsync(
+            policyPath,
+            $$"""
+            {
+              "approvedRoots": [
+                { "path": {{System.Text.Json.JsonSerializer.Serialize(_root)}}, "access": "ReadWrite" }
+              ],
+              "deniedRoots": [{{System.Text.Json.JsonSerializer.Serialize(protectedRoot)}}],
+              "wxcExecPath": {{System.Text.Json.JsonSerializer.Serialize(wxc)}},
+              "canvas": {{System.Text.Json.JsonSerializer.Serialize(CreateCanvasPolicyInput(wxc))}},
+              "networkAllowed": true,
+              "allowWindowsUi": true,
+              "clipboard": "none",
+              "inputInjection": false,
+              "strictNoHostFallback": true
+            }
+            """,
+            TestContext.Current.CancellationToken);
+
+        var error = await Assert.ThrowsAsync<HostPolicyException>(() => HostPolicy.LoadAsync(policyPath));
+
+        Assert.Equal("approved-root-overlaps-sensitive-root", error.Code);
+    }
+
+    [Fact]
+    public async Task RunPrepareReturnsPinnedOpenClawApprovalPlan()
+    {
+        var policy = Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]);
+        var capability = Capability(policy);
+        var args = Parse(
+            """
+            {
+              "command": ["cmd.exe", "/d", "/s", "/c", "echo hello"],
+              "rawCommand": "echo hello",
+              "agentId": "main",
+              "sessionKey": "agent:main:approval-regression"
+            }
+            """);
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = args,
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(response.Ok);
+        var payload = JsonSerializer.SerializeToElement(response.Payload);
+        var plan = payload.GetProperty("plan");
+        Assert.Equal(
+            ["cmd.exe", "/d", "/s", "/c", "echo hello"],
+            plan.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray());
+        Assert.Equal(
+            WindowsCommandLine.Join(["cmd.exe", "/d", "/s", "/c", "echo hello"]),
+            plan.GetProperty("commandText").GetString());
+        Assert.Equal("echo hello", plan.GetProperty("commandPreview").GetString());
+        Assert.Equal("main", plan.GetProperty("agentId").GetString());
+        Assert.Equal("agent:main:approval-regression", plan.GetProperty("sessionKey").GetString());
+        var executablePath = plan.GetProperty("executablePath").GetString();
+        Assert.NotNull(executablePath);
+        Assert.True(Path.IsPathFullyQualified(executablePath));
+        Assert.Matches("^[a-f0-9]{64}$", plan.GetProperty("executableSha256").GetString());
+        Assert.Equal("isolated-scratch:v1", plan.GetProperty("cwdBinding").GetString());
+        Assert.Empty(plan.GetProperty("declaredAccess").EnumerateArray());
+        Assert.Equal(plan.GetProperty("commandText").GetString(), payload.GetProperty("cmdText").GetString());
+    }
+
+    [Fact]
+    public async Task RunPrepareValidatesDeclaredReadAndWriteAccess()
+    {
+        var child = Directory.CreateDirectory(Path.Combine(_root, "child")).FullName;
+        var policy = Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]);
+        var rawCommand = $"# [declare-access]ro:{_root}\\.;rw:{child}\\.[/declare-access]\necho hello";
+        var capability = Capability(policy);
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command = new[] { "cmd.exe", "/d", "/s", "/c", rawCommand },
+                    rawCommand,
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(response.Ok);
+        var payload = JsonSerializer.SerializeToElement(response.Payload);
+        var access = payload.GetProperty("declaredAccess").EnumerateArray().ToArray();
+        Assert.Equal(2, access.Length);
+        Assert.Contains(access, item =>
+            item.GetProperty("access").GetString() == "ro"
+            && string.Equals(item.GetProperty("path").GetString(), _root, StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(access, item =>
+            item.GetProperty("access").GetString() == "rw"
+            && string.Equals(item.GetProperty("path").GetString(), child, StringComparison.OrdinalIgnoreCase));
+        var plan = payload.GetProperty("plan");
+        Assert.Equal(
+            access.Select(item => item.GetRawText()),
+            plan.GetProperty("declaredAccess").EnumerateArray().Select(item => item.GetRawText()));
+        var expectedPreview = $"# [declare-access]ro:{_root};rw:{child}[/declare-access]\necho hello";
+        Assert.Equal(expectedPreview, plan.GetProperty("commandPreview").GetString());
+        Assert.Equal(
+            "echo hello",
+            plan.GetProperty("argv").EnumerateArray().Last().GetString());
+        Assert.DoesNotContain("declare-access", plan.GetProperty("commandText").GetString());
+    }
+
+    [Theory]
+    [InlineData("# [declare-access]rw:C:\\Temp")]
+    [InlineData("# [declare-access][/declare-access]")]
+    [InlineData("# [declare-access]execute:C:\\Temp[/declare-access]")]
+    [InlineData("# [declare-access]rw:[/declare-access]")]
+    public async Task RunPrepareRejectsMalformedDeclarations(string rawCommand)
+    {
+        var capability = Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]));
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command = new[] { "cmd.exe", "/d", "/s", "/c", rawCommand },
+                    rawCommand,
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Ok);
+        Assert.Contains("declare-access-", response.Error);
+    }
+
+    [Fact]
+    public async Task RunPrepareRejectsOutOfRootAndReadWriteEscalation()
+    {
+        var outside = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))).FullName;
+        try
+        {
+            var capability = Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]));
+            var outsideResponse = await PrepareDeclared(capability, "ro", outside);
+            var escalationResponse = await PrepareDeclared(capability, "rw", _root);
+
+            Assert.False(outsideResponse.Ok);
+            Assert.Contains("declare-access-outside-approved-roots", outsideResponse.Error);
+            Assert.False(escalationResponse.Ok);
+            Assert.Contains("declare-access-exceeds-approved-root", escalationResponse.Error);
+        }
+        finally
+        {
+            Directory.Delete(outside);
+        }
+    }
+
+    [Theory]
+    [InlineData("ro", false, "declare-access-outside-approved-roots")]
+    [InlineData("rw", true, "declare-access-exceeds-approved-root")]
+    public async Task InvalidDeclarationStopsBeforePromptOrDurableApproval(
+        string access,
+        bool useApprovedRoot,
+        string expectedCode)
+    {
+        var outside = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))).FullName;
+        var approvalsPath = Path.Combine(_root, Guid.NewGuid().ToString("N"), "approvals.json");
+        try
+        {
+            var requested = useApprovedRoot ? _root : outside;
+            var rawCommand = $"# [declare-access]{access}:{requested}[/declare-access]\necho denied";
+            var capability = new BundledSystemCapability(
+                Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]),
+                "missing-approval-pipe-" + Guid.NewGuid().ToString("N"),
+                approvalsPath,
+                new ActivationLeaseGuard(
+                    Path.Combine(_root, "missing-lease.json"),
+                    Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                    "unused-generation",
+                    "unused-fingerprint"),
+                isolationGuard: NoopIsolationGuard);
+
+            var response = await capability.ExecuteAsync(
+                new NodeInvokeRequest
+                {
+                    Command = "system.run",
+                    Args = Parse(JsonSerializer.Serialize(new
+                    {
+                        command = new[] { "cmd.exe", "/d", "/s", "/c", rawCommand },
+                        rawCommand,
+                    })),
+                },
+                TestContext.Current.CancellationToken);
+
+            AssertRejectedBeforeExecution(response, expectedCode);
+            Assert.False(File.Exists(approvalsPath));
+        }
+        finally
+        {
+            Directory.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public async Task DeclarationPolicyErrorsProvideLocalizedSettingsRemediation()
+    {
+        var outside = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))).FullName;
+        try
+        {
+            var english = await PrepareDeclared(
+                Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]), "en-US"),
+                "rw",
+                _root);
+            var chinese = await PrepareDeclared(
+                Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadOnly)]), "zh-CN"),
+                "ro",
+                outside);
+
+            Assert.Contains("Open Settings > Security", english.Error);
+            Assert.Contains("change it to Read/write", english.Error);
+            Assert.Contains("设置 > 安全", chinese.Error);
+            Assert.Contains("添加为只读或读写", chinese.Error);
+        }
+        finally
+        {
+            Directory.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public void OmittedDeclarationCannotExpandMxcFilesystemPolicy()
+    {
+        var readOnly = Directory.CreateDirectory(Path.Combine(_root, "readonly")).FullName;
+        var readWrite = Directory.CreateDirectory(Path.Combine(_root, "readwrite")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "outside")).FullName;
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch")).FullName;
+        var policy = Policy(
+        [
+            new ApprovedRoot(readOnly, FolderAccess.ReadOnly),
+            new ApprovedRoot(readWrite, FolderAccess.ReadWrite),
+        ]);
+
+        var config = BundledSystemCapability.BuildMxcConfig(
+            policy,
+            Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            ["/d", "/s", "/c", $"type \"{outside}\\secret.txt\""],
+            scratch,
+            scratch,
+            30_000);
+
+        var filesystem = Assert.IsType<OpenClaw.Shared.Mxc.MxcFilesystem>(config.Filesystem);
+        var readonlyPaths = Assert.IsType<string[]>(filesystem.ReadonlyPaths);
+        var readwritePaths = Assert.IsType<string[]>(filesystem.ReadwritePaths);
+        Assert.Equal([readOnly], readonlyPaths);
+        Assert.Equal([readWrite, scratch], readwritePaths);
+        Assert.DoesNotContain(
+            readonlyPaths.Concat(readwritePaths),
+            item => string.Equals(item, outside, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            ["internetClient"],
+            Assert.IsType<string[]>(config.ProcessContainer!.Capabilities));
+        Assert.Equal("allow", config.Network!.DefaultPolicy);
+        Assert.Equal("capabilities", config.Network.EnforcementMode);
+    }
+
+    [Fact]
+    public void DeniedRootsOverrideApprovedRootsWhenBuildingMxcPolicy()
+    {
+        var denied = Directory.CreateDirectory(Path.Combine(_root, "approved", "sensitive")).FullName;
+        var approved = Directory.GetParent(denied)!.FullName;
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch-denied")).FullName;
+
+        var error = Assert.Throws<HostPolicyException>(() =>
+            BundledSystemCapability.BuildMxcConfig(
+                Policy(
+                    [new ApprovedRoot(approved, FolderAccess.ReadWrite)],
+                    [WindowsPathCanonicalizer.CanonicalizeDirectory(denied)]),
+                Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+                [],
+                approved,
+                scratch,
+                30_000));
+
+        Assert.Equal("approved-root-overlaps-sensitive-root", error.Code);
+    }
+
+    [Fact]
+    public void FilesystemPolicyKeepsApprovalSeparateFromConfiguredRootCapabilities()
+    {
+        var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
+        var nestedDesktop = Directory.CreateDirectory(Path.Combine(desktop, "nested")).FullName;
+        var downloads = Directory.CreateDirectory(Path.Combine(_root, "Downloads")).FullName;
+        var scratch = Directory.CreateDirectory(Path.Combine(_root, "scratch-boundary")).FullName;
+        var executable = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        var arguments = new[]
+        {
+            "-NoProfile",
+            "-Command",
+            $"Set-Content -Path '{Path.Combine(downloads, "outside.txt")}' -Value denied",
+        };
+
+        var desktopReadWrite = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]),
+            executable,
+            arguments,
+            nestedDesktop,
+            scratch,
+            30_000);
+        Assert.Equal([desktop, scratch], desktopReadWrite.Filesystem!.ReadwritePaths!);
+        Assert.Empty(desktopReadWrite.Filesystem.ReadonlyPaths!);
+        Assert.DoesNotContain(
+            downloads,
+            desktopReadWrite.Filesystem.ReadwritePaths!,
+            StringComparer.OrdinalIgnoreCase);
+        using (var serialized = JsonDocument.Parse(
+            BundledSystemCapability.SerializeMxcConfig(desktopReadWrite)))
+        {
+            Assert.False(
+                serialized.RootElement
+                    .GetProperty("fallback")
+                    .GetProperty("allowDaclMutation")
+                    .GetBoolean());
+        }
+        using (var serialized = JsonDocument.Parse(
+            BundledSystemCapability.SerializeMxcConfig(
+                desktopReadWrite,
+                allowDaclMutation: true)))
+        {
+            Assert.True(
+                serialized.RootElement
+                    .GetProperty("fallback")
+                    .GetProperty("allowDaclMutation")
+                    .GetBoolean());
+        }
+
+        var desktopReadOnly = BundledSystemCapability.BuildMxcConfig(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadOnly)]),
+            executable,
+            arguments,
+            desktop,
+            scratch,
+            30_000);
+        Assert.Equal([desktop], desktopReadOnly.Filesystem!.ReadonlyPaths!);
+        Assert.DoesNotContain(
+            desktop,
+            desktopReadOnly.Filesystem.ReadwritePaths!,
+            StringComparer.OrdinalIgnoreCase);
+
+        var downloadsReadWrite = BundledSystemCapability.BuildMxcConfig(
+            Policy(
+            [
+                new ApprovedRoot(desktop, FolderAccess.ReadWrite),
+                new ApprovedRoot(downloads, FolderAccess.ReadWrite),
+            ]),
+            executable,
+            arguments,
+            desktop,
+            scratch,
+            30_000);
+        Assert.Contains(
+            downloads,
+            downloadsReadWrite.Filesystem!.ReadwritePaths!,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("base-container")]
+    [InlineData("appcontainer-bfs")]
+    public void ExactFilesystemIsolationTiersAreAccepted(string tier)
+    {
+        var actual = MxcIsolationTierGuard.ValidateProbeResult(
+            0,
+            $$"""{"tier":{{JsonSerializer.Serialize(tier)}},"needsDaclAugmentation":false}""",
+            string.Empty);
+
+        Assert.Equal(tier, actual);
+    }
+
+    [Theory]
+    [InlineData("appcontainer-dacl", false)]
+    [InlineData("base-container", true)]
+    [InlineData("future-tier", false)]
+    public void DegradedFilesystemIsolationTiersFailClosed(string tier, bool needsDaclAugmentation)
+    {
+        var error = Assert.Throws<HostPolicyException>(() =>
+            MxcIsolationTierGuard.ValidateProbeResult(
+                0,
+                $$"""{"tier":{{JsonSerializer.Serialize(tier)}},"needsDaclAugmentation":{{JsonSerializer.Serialize(needsDaclAugmentation)}}}""",
+                string.Empty));
+
+        Assert.Equal("mxc-filesystem-isolation-insufficient", error.Code);
+    }
+
+    [Fact]
+    public void LimitedContainmentAcceptsOnlyAppContainerDacl()
+    {
+        var accepted = MxcIsolationTierGuard.ValidateProbeResult(
+            0,
+            """{"tier":"appcontainer-dacl","needsDaclAugmentation":true}""",
+            string.Empty,
+            "limited-dacl",
+            "appcontainer-dacl");
+        Assert.Equal("appcontainer-dacl", accepted);
+
+        var error = Assert.Throws<HostPolicyException>(() =>
+            MxcIsolationTierGuard.ValidateProbeResult(
+                0,
+                """{"tier":"base-container","needsDaclAugmentation":false}""",
+                string.Empty,
+                "limited-dacl",
+                "appcontainer-dacl"));
+        Assert.Equal("mxc-filesystem-isolation-drift", error.Code);
+    }
+
+    [Fact]
+    public void LimitedAmbientAssessmentBlocksSensitiveAccessAndBindsAttestation()
+    {
+        var deniedEntries = new[]
+        {
+            new AmbientAccessEntry("desktop", "denied", Path.Combine(_root, "Desktop")),
+            new AmbientAccessEntry("documents", "denied", Path.Combine(_root, "Documents")),
+            new AmbientAccessEntry("downloads", "read-write", Path.Combine(_root, "Downloads")),
+            new AmbientAccessEntry("microclaw-state", "denied", Path.Combine(_root, "MicroClaw")),
+            new AmbientAccessEntry("openclaw-state", "denied", Path.Combine(_root, "OpenClaw")),
+            new AmbientAccessEntry(
+                "openclaw-roaming-state",
+                "denied",
+                Path.Combine(_root, "OpenClawRoaming")),
+            new AmbientAccessEntry("ssh", "denied", Path.Combine(_root, ".ssh")),
+            new AmbientAccessEntry("gnupg", "denied", Path.Combine(_root, ".gnupg")),
+            new AmbientAccessEntry("aws", "denied", Path.Combine(_root, ".aws")),
+            new AmbientAccessEntry("azure", "denied", Path.Combine(_root, ".azure")),
+            new AmbientAccessEntry("kube", "denied", Path.Combine(_root, ".kube")),
+            new AmbientAccessEntry("gcloud", "denied", Path.Combine(_root, "gcloud")),
+            new AmbientAccessEntry(
+                "windows-credentials",
+                "denied",
+                Path.Combine(_root, "Credentials")),
+            new AmbientAccessEntry(
+                "powershell-history",
+                "denied",
+                Path.Combine(_root, "PSReadLine")),
+            new AmbientAccessEntry("browser-chrome", "denied", Path.Combine(_root, "Chrome")),
+            new AmbientAccessEntry("browser-edge", "denied", Path.Combine(_root, "Edge")),
+            new AmbientAccessEntry("browser-brave", "denied", Path.Combine(_root, "Brave")),
+            new AmbientAccessEntry("browser-firefox", "denied", Path.Combine(_root, "Firefox")),
+        };
+        var policy = new AmbientAccessPolicy(
+            AmbientAccessAssessmentContract.Version,
+            AmbientAccessAssessment.ComputeHash(deniedEntries),
+            deniedEntries);
+        AmbientAccessAssessment.ValidatePolicy(policy);
+
+        var hostPolicy = new HostPolicy
+        {
+            ApprovedRoots = [],
+            DeniedRoots = [],
+            WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            Canvas = CreateCanvasHostPolicy(),
+            AllowWindowsUi = true,
+            StrictNoHostFallback = true,
+            RequestedStrength = "limited-dacl",
+            EffectiveTier = "appcontainer-dacl",
+            AmbientAccess = policy,
+            AmbientAssessmentScratchRoot = _root,
+        };
+        var attestation = hostPolicy.Attestation;
+        Assert.False(attestation.ExactFilesystemIsolationRequired);
+        Assert.False(attestation.FolderPolicyIsExclusiveBoundary);
+        Assert.False(attestation.DurableApprovalsAllowed);
+        Assert.True(attestation.AmbientAssessmentBound);
+
+        var accessibleEntries = deniedEntries
+            .Select(entry =>
+                entry.Category == "ssh" ? entry with { Status = "read" } : entry)
+            .ToArray();
+        var error = Assert.Throws<HostPolicyException>(() =>
+            AmbientAccessAssessment.ValidatePolicy(
+                new AmbientAccessPolicy(
+                    AmbientAccessAssessmentContract.Version,
+                    AmbientAccessAssessment.ComputeHash(accessibleEntries),
+                    accessibleEntries)));
+        Assert.Equal("ambient-sensitive-access", error.Code);
+    }
+
+    [Fact]
+    public void LockedExecutableContentMustMatchExpectedHash()
+    {
+        var executable = Path.Combine(_root, "fake-wxc-exec.exe");
+        File.WriteAllText(executable, "not the pinned runtime");
+        using var lease = ExecutableApprovalLease.Acquire(executable);
+
+        var error = Assert.Throws<HostPolicyException>(() =>
+            lease.VerifySha256(new string('0', 64)));
+
+        Assert.Equal("executable-hash-mismatch", error.Code);
+    }
+
+    [Fact]
+    public async Task DiagnosticDeclaredCommandRetainsAttendedPromptAndDenyStopsExecution()
+    {
+        var desktop = Directory.CreateDirectory(Path.Combine(_root, "Desktop")).FullName;
+        var leasePath = Path.Combine(_root, "active-lease.json");
+        var approvalsPath = Path.Combine(_root, "approvals.json");
+        var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "prepare-regression";
+        const string fingerprint = "policy-fingerprint";
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-approval-test-" + Guid.NewGuid().ToString("N");
+        using var server = new System.IO.Pipes.NamedPipeServerStream(
+            pipeName,
+            System.IO.Pipes.PipeDirection.InOut,
+            1,
+            System.IO.Pipes.PipeTransmissionMode.Byte,
+            System.IO.Pipes.PipeOptions.Asynchronous);
+        var observedRequest = ReadApprovalAndRespond(server, "deny");
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(desktop, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
+            isolationGuard: NoopIsolationGuard);
+        var command = ReadinessProbeContract.Probes["execution"];
+        var commandText = WindowsCommandLine.Join(command);
+        var commandPreview =
+            $"# [declare-access]rw:{desktop}[/declare-access]\n{command[^1]}";
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    rawCommand = commandText,
+                    agentId = "main",
+                    sessionKey = "agent:main:approval-regression",
+                    systemRunPlan = new
+                    {
+                        argv = command,
+                        commandText,
+                        commandPreview,
+                        agentId = "main",
+                        sessionKey = "agent:main:approval-regression",
+                    },
+                })),
+            },
+            TestContext.Current.CancellationToken);
+        Assert.True(server.IsConnected, response.Error);
+        var approval = await observedRequest;
+
+        Assert.True(response.Ok);
+        using var responsePayload = JsonDocument.Parse(JsonSerializer.Serialize(response.Payload));
+        Assert.False(responsePayload.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(
+            "approval-denied",
+            responsePayload.RootElement.GetProperty("errorCode").GetString());
+        Assert.Equal(
+            "rejectedBeforeExecution",
+            responsePayload.RootElement.GetProperty("executionState").GetString());
+        Assert.Equal(1, approval.GetProperty("declaredAccess").GetArrayLength());
+        Assert.Equal("rw", approval.GetProperty("declaredAccess")[0].GetProperty("access").GetString());
+        Assert.Equal(desktop, approval.GetProperty("declaredAccess")[0].GetProperty("path").GetString(), ignoreCase: true);
+        Assert.Equal(
+            command[^1],
+            approval.GetProperty("arguments").EnumerateArray().Last().GetString());
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task NormalCommandIdenticalToReadinessProbeStillRequiresAttendedApproval()
+    {
+        var leasePath = Path.Combine(_root, "normal-readiness-lease.json");
+        var approvalsPath = Path.Combine(_root, "normal-readiness-approvals.json");
+        var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "normal-readiness-generation";
+        const string fingerprint = "normal-readiness-policy";
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-normal-readiness-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        var observedRequest = ReadApprovalAndRespond(server, "deny");
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
+            isolationGuard: NoopIsolationGuard);
+        var command = ReadinessProbeContract.Probes["execution"];
+        var commandText = WindowsCommandLine.Join(command);
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    rawCommand = commandText,
+                    agentId = "main",
+                    sessionKey = "agent:main:normal-command",
+                })),
+            },
+            TestContext.Current.CancellationToken);
+        var approval = await observedRequest;
+
+        AssertRejectedBeforeExecution(response, "approval-denied");
+        Assert.Equal(command[0], approval.GetProperty("executable").GetString(), ignoreCase: true);
+        Assert.Equal("main", approval.GetProperty("agent").GetString());
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task DirectReadinessCommandWithoutLifecycleProofFailsBeforeAttendedPrompt()
+    {
+        var leasePath = Path.Combine(_root, "direct-readiness-lease.json");
+        var approvalsPath = Path.Combine(_root, "direct-readiness-approvals.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "direct-readiness-generation";
+        var fingerprint = new string('a', 64);
+        var nodeId = new string('b', 64);
+        var transitionId = Guid.NewGuid().ToString();
+        await WriteActivationLease(
+            leasePath,
+            leaseSecret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-direct-readiness-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        var command = ReadinessProbeContract.Probes["execution"];
+        var commandText = WindowsCommandLine.Join(command);
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            readinessProof: new ReadinessProofVerifier(
+                proofSecret,
+                generation,
+                fingerprint,
+                nodeId,
+                transitionId),
+            isolationGuard: NoopIsolationGuard);
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = ReadinessProbeContract.Command,
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    cwd = (string?)null,
+                    rawCommand = commandText,
+                    agentId = ReadinessProbeContract.AgentId,
+                    sessionKey = ReadinessProbeContract.SessionKey(transitionId),
+                    probeKind = "execution",
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Ok);
+        Assert.Contains("readiness-proof-required", response.Error);
+        Assert.False(server.IsConnected);
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task ReadinessPrepareCompletesAmbientGateBeforeReturningScratchPlan()
+    {
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var transitionId = Guid.NewGuid().ToString();
+        var ambientCompleted = false;
+        var command = ReadinessProbeContract.Probes["execution"];
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            "unused-readiness-pipe",
+            Path.Combine(_root, "unused-readiness-approvals.json"),
+            new ActivationLeaseGuard(
+                Path.Combine(_root, "unused-readiness-lease.json"),
+                Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                "generation",
+                new string('a', 64)),
+            readinessProof: new ReadinessProofVerifier(
+                proofSecret,
+                "generation",
+                new string('a', 64),
+                new string('b', 64),
+                transitionId),
+            isolationGuard: NoopIsolationGuard,
+            ambientGuard: async cancellationToken =>
+            {
+                await Task.Delay(25, cancellationToken);
+                ambientCompleted = true;
+            });
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    cwd = (string?)null,
+                    agentId = ReadinessProbeContract.AgentId,
+                    sessionKey = ReadinessProbeContract.SessionKey(transitionId),
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(response.Ok, response.Error);
+        Assert.True(ambientCompleted);
+        var payload = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.Equal(
+            CwdPolicyContract.ScratchBinding,
+            payload.GetProperty("plan").GetProperty("cwdBinding").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("plan").GetProperty("cwd").ValueKind);
+    }
+
+    [Fact]
+    public async Task ActiveDirectInvokeWithoutGatewayProofFailsBeforeNodePrompt()
+    {
+        var leasePath = Path.Combine(_root, "active-proof-lease.json");
+        var approvalsPath = Path.Combine(_root, "active-proof-approvals.json");
+        var leaseSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var proofSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "active-proof-generation";
+        var fingerprint = new string('a', 64);
+        var nodeId = new string('b', 64);
+        await WriteActivationLease(
+            leasePath,
+            leaseSecret,
+            ActivationLeaseMode.Active,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var pipeName = "microclaw-approval-test-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var commandText = WindowsCommandLine.Join(command);
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            pipeName,
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, leaseSecret, generation, fingerprint),
+            approvalProof: new ApprovalProofVerifier(
+                proofSecret,
+                generation,
+                fingerprint,
+                nodeId),
+            isolationGuard: NoopIsolationGuard);
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    rawCommand = commandText,
+                    agentId = "main",
+                    sessionKey = "agent:main:direct-invoke",
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        AssertRejectedBeforeExecution(response, "approval-proof-required");
+        Assert.False(server.IsConnected);
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task RunPrepareRejectsDeclarationAfterExecutableContent()
+    {
+        var rawCommand = $"echo before\n# [declare-access]rw:{_root}[/declare-access]\necho after";
+        var capability = Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]));
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command = new[] { "cmd.exe", "/d", "/s", "/c", rawCommand },
+                    rawCommand,
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Ok);
+        Assert.Contains("declare-access-position-invalid", response.Error);
+    }
+
+    [Fact]
+    public async Task IsolationTierDegradationAfterPrepareStopsBeforeApprovalOrExecution()
+    {
+        var leasePath = Path.Combine(_root, "degraded-tier-lease.json");
+        var approvalsPath = Path.Combine(_root, "degraded-tier-approvals.json");
+        var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        const string generation = "degraded-tier-generation";
+        const string fingerprint = "degraded-tier-policy";
+        await WriteActivationLease(
+            leasePath,
+            secret,
+            ActivationLeaseMode.Diagnostic,
+            generation,
+            fingerprint,
+            DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds());
+        var strongTier = true;
+        Task Guard(CancellationToken _)
+        {
+            if (!strongTier)
+                throw new HostPolicyException(
+                    "mxc-filesystem-isolation-insufficient",
+                    "MXC isolation degraded.");
+            return Task.CompletedTask;
+        }
+        var capability = new BundledSystemCapability(
+            Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]),
+            "missing-approval-pipe-" + Guid.NewGuid().ToString("N"),
+            approvalsPath,
+            new ActivationLeaseGuard(leasePath, secret, generation, fingerprint),
+            isolationGuard: Guard);
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var args = Parse(JsonSerializer.Serialize(new
+        {
+            command,
+            rawCommand = WindowsCommandLine.Join(command),
+            agentId = "main",
+            sessionKey = "agent:main:degraded-tier",
+        }));
+
+        var prepared = await capability.ExecuteAsync(
+            new NodeInvokeRequest { Command = "system.run.prepare", Args = args },
+            TestContext.Current.CancellationToken);
+        Assert.True(prepared.Ok, prepared.Error);
+
+        strongTier = false;
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest { Command = "system.run", Args = args },
+            TestContext.Current.CancellationToken);
+
+        AssertRejectedBeforeExecution(response, "mxc-filesystem-isolation-insufficient");
+        Assert.False(File.Exists(approvalsPath));
+    }
+
+    [Fact]
+    public async Task RunReplayRejectsDeclarationAfterExecutableContent()
+    {
+        var rawCommand = $"echo before\n# [declare-access]rw:{_root}[/declare-access]\necho after";
+        var command = new[] { "cmd.exe", "/d", "/s", "/c", "echo before\necho after" };
+        var commandText = WindowsCommandLine.Join(command);
+        var capability = Capability(Policy([new ApprovedRoot(_root, FolderAccess.ReadWrite)]));
+
+        var response = await capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command,
+                    rawCommand = commandText,
+                    agentId = "main",
+                    sessionKey = "agent:main:approval-regression",
+                    systemRunPlan = new
+                    {
+                        argv = command,
+                        commandText,
+                        commandPreview = rawCommand,
+                        agentId = "main",
+                        sessionKey = "agent:main:approval-regression",
+                    },
+                })),
+            },
+            TestContext.Current.CancellationToken);
+
+        AssertRejectedBeforeExecution(response, "declare-access-position-invalid");
+    }
+
+    [Theory]
+    [InlineData("deny", "Deny")]
+    [InlineData("allow-once", "AllowOnce")]
+    [InlineData("allow-always", "AllowAlways")]
+    public async Task ApprovalPipePreservesAttendedDecision(
+        string responseDecision,
+        string expectedDecision)
+    {
+        var pipeName = "microclaw-approval-decision-" + Guid.NewGuid().ToString("N");
+        using var server = new System.IO.Pipes.NamedPipeServerStream(
+            pipeName,
+            System.IO.Pipes.PipeDirection.InOut,
+            1,
+            System.IO.Pipes.PipeTransmissionMode.Byte,
+            System.IO.Pipes.PipeOptions.Asynchronous);
+        var serverTask = ReadApprovalAndRespond(server, responseDecision);
+        var decision = await ApprovalPipeClient.RequestAsync(
+            pipeName,
+            new ApprovalRequest(
+                "request",
+                Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+                [],
+                "main",
+                CwdPolicyContract.ScratchBinding,
+                []),
+            TestContext.Current.CancellationToken);
+        await serverTask;
+
+        Assert.Equal(expectedDecision, decision.ToString());
+    }
+
+    [Fact]
+    public void DurableAllowAlwaysIdentityRemainsBoundToCanonicalCwd()
+    {
+        var approvalsPath = Path.Combine(_root, "durable", "approvals.json");
+        var first = Directory.CreateDirectory(Path.Combine(_root, "first-cwd")).FullName;
+        var second = Directory.CreateDirectory(Path.Combine(_root, "second-cwd")).FullName;
+        var executable = Path.Combine(Environment.SystemDirectory, "hostname.exe");
+        var access = new[]
+        {
+            new DurableApprovalAccess("rw", Path.Combine(_root, "Desktop")),
+        };
+        var approval = DurableApprovalIdentity.Create(executable, [], first, access);
+
+        DurableApprovalFile.Add(approvalsPath, approval);
+        var loaded = Assert.Single(DurableApprovalIdentity.Load(approvalsPath));
+
+        Assert.True(DurableApprovalIdentity.Matches(loaded, executable, [], first, access));
+        Assert.False(DurableApprovalIdentity.Matches(loaded, executable, [], second, access));
+        Assert.False(DurableApprovalIdentity.Matches(
+            loaded,
+            executable,
+            [],
+            first,
+            [new DurableApprovalAccess("ro", Path.Combine(_root, "Desktop"))]));
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+            Directory.Delete(_root, recursive: true);
+    }
+
+    private static void CreateDirectoryReparsePoint(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+        }
+        catch (IOException error) when ((error.HResult & 0xFFFF) == 1314)
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                Arguments = $"/d /s /c \"mklink /J \"{link}\" \"{target}\"\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            }) ?? throw new InvalidOperationException("Could not start the junction fixture.");
+            var output = process.StandardOutput.ReadToEnd();
+            var errorOutput = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Assert.True(process.ExitCode == 0, $"Could not create junction: {output} {errorOutput}");
+        }
+    }
+
+    private static void AssertRejectedBeforeExecution(
+        NodeInvokeResponse response,
+        string expectedCode)
+    {
+        Assert.True(response.Ok, response.Error);
+        using var payload = JsonDocument.Parse(JsonSerializer.Serialize(response.Payload));
+        Assert.False(payload.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(expectedCode, payload.RootElement.GetProperty("errorCode").GetString());
+        Assert.Equal(
+            "rejectedBeforeExecution",
+            payload.RootElement.GetProperty("executionState").GetString());
+        Assert.Contains(expectedCode, payload.RootElement.GetProperty("error").GetString());
+    }
+
+    private static HostPolicy Policy(IReadOnlyList<ApprovedRoot> roots, IReadOnlyList<string>? denied = null)
+        => new()
+        {
+            ApprovedRoots = roots,
+            DeniedRoots = denied ?? [],
+            WxcExecPath = Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            Canvas = CreateCanvasHostPolicy(),
+            NetworkAllowed = true,
+            AllowWindowsUi = true,
+            StrictNoHostFallback = true,
+        };
+
+    private static CanvasHostPolicy CreateCanvasHostPolicy() =>
+        new(
+            Path.Combine(Environment.SystemDirectory, "hostname.exe"),
+            new string('0', 64),
+            new string('1', 64),
+            CanvasPhase1Policy.Commands,
+            CanvasPhase1Policy.Actions);
+
+    private static object CreateCanvasPolicyInput(string hostPath) =>
+        new
+        {
+            enabled = true,
+            contract = CanvasPhase1Policy.Contract,
+            hostPath,
+            hostSha256 = new string('0', 64),
+            hostTreeSha256 = new string('1', 64),
+            renderer = CanvasPhase1Policy.Renderer,
+            commands = CanvasPhase1Policy.Commands,
+            actions = CanvasPhase1Policy.Actions,
+            allowEval = false,
+            allowNavigation = false,
+            allowLocalFiles = false,
+            allowRemoteMedia = false,
+            snapshotSurfaceOnly = true,
+        };
+
+    private BundledSystemCapability Capability(HostPolicy policy, string uiLocale = "en-US",
+        string? policyFingerprint = null) =>
+        new(
+            policy,
+            string.Empty,
+            Path.Combine(_root, "approvals-v2.json"),
+            new ActivationLeaseGuard(
+                Path.Combine(_root, "unused-lease.json"),
+                Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                "unused-generation",
+                "unused-fingerprint"),
+            uiLocale,
+            isolationGuard: NoopIsolationGuard,
+            policyFingerprint: policyFingerprint);
+
+    private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
+
+    private static Task<NodeInvokeResponse> PrepareDeclared(
+        BundledSystemCapability capability,
+        string access,
+        string path)
+    {
+        var rawCommand = $"# [declare-access]{access}:{path}[/declare-access]\necho test";
+        return capability.ExecuteAsync(
+            new NodeInvokeRequest
+            {
+                Command = "system.run.prepare",
+                Args = Parse(JsonSerializer.Serialize(new
+                {
+                    command = new[] { "cmd.exe", "/d", "/s", "/c", rawCommand },
+                    rawCommand,
+                })),
+            },
+            TestContext.Current.CancellationToken);
+    }
+
+    private static async Task<JsonElement> ReadApprovalAndRespond(
+        System.IO.Pipes.NamedPipeServerStream server,
+        string decision)
+    {
+        await server.WaitForConnectionAsync(TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(server, Encoding.UTF8, leaveOpen: true);
+        using var writer = new StreamWriter(server, new UTF8Encoding(false), leaveOpen: true)
+        {
+            AutoFlush = true,
+        };
+        var line = await reader.ReadLineAsync(TestContext.Current.CancellationToken);
+        await writer.WriteLineAsync(
+            JsonSerializer.Serialize(new { decision }).AsMemory(),
+            TestContext.Current.CancellationToken);
+        return JsonDocument.Parse(line ?? "{}").RootElement.Clone();
+    }
+
+    private static Task WriteActivationLease(
+        string path,
+        string secret,
+        ActivationLeaseMode mode,
+        string gatewayGeneration,
+        string policyFingerprint,
+        long expiresAtUnixMs)
+    {
+        var record = new ActivationLeaseRecord(
+            ActivationLeaseContract.Version,
+            mode,
+            gatewayGeneration,
+            policyFingerprint,
+            expiresAtUnixMs,
+            ActivationLeaseGuard.ComputeSignature(
+                secret,
+                mode,
+                gatewayGeneration,
+                policyFingerprint,
+                expiresAtUnixMs));
+        var options = new System.Text.Json.JsonSerializerOptions();
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        return File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(record, options));
+    }
+}

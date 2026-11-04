@@ -2,7 +2,8 @@
 #
 # Runs the end-to-end packaging script (build.ps1) on every PR.
 # Verifies that the entire pipeline still produces:
-#   - AppContainerLauncher.exe (.NET 9)
+#   - Native Windows Node + MXC runtime and WeChat resources
+#   - bundled Windows Node host (.NET 10) + official MXC runtime
 #   - desktop\release\win-unpacked\ (electron-builder)
 #   - dist\microclaw-portable.zip
 #   - dist\MicroClawInstaller\ + dist\MicroClawInstaller.zip (PyInstaller)
@@ -40,21 +41,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Toolchain (Node 22) is pre-installed on the self-hosted runner.
+      # Toolchain (Node 26.1+) is pre-installed on the self-hosted runner.
       # actions/setup-node is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues), so just verify the version.
       - name: Verify pre-installed Node.js
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          $parsed = [version]$node
-          $supported =
-            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
-            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
-            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
-          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.7.1-1" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.10.5 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
 
       - name: Install dependencies (all packages)
@@ -96,7 +95,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python 3.12+
         uses: ./.github/actions/setup-python-windows
@@ -133,26 +132,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
 
-      # Toolchain (Node 22, .NET 9 SDK, Python 3.12+) is pre-installed on
+      # Toolchain (Node 26.1+, .NET 10 SDK, Python 3.12+) is pre-installed on
       # the self-hosted runner. We only verify versions here; installing
       # via actions/setup-* is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues).
       - name: Verify pre-installed toolchain
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          $parsed = [version]$node
-          $supported =
-            ($parsed.Major -eq 22 -and $parsed -ge [version]'22.22.3') -or
-            ($parsed.Major -eq 24 -and $parsed -ge [version]'24.15.0') -or
-            ($parsed.Major -ge 25 -and $parsed -ge [version]'25.9.0')
-          if (-not $supported) { throw "Node $node is unsupported by OpenClaw 2026.7.1-1" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.10.5 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
-          $dotnet = & dotnet --version
-          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
-          Write-Host "dotnet $dotnet"
+          $sdks = & dotnet --list-sdks
+          if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
+          Write-Host $sdks
 
       # Resolve a Python 3.12+ interpreter for the NetworkService account.
       - name: Setup Python 3.12+
@@ -166,7 +165,7 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Run build.ps1
-        run: .\build.ps1
+        run: .\build.ps1 -IncludeInstallerZip
 
       - name: Build unsigned MSIX
         run: npm run dist:msix --prefix desktop

@@ -20,6 +20,11 @@ app.use(pinia);
 app.use(router);
 app.use(ElementPlus);
 app.mount("#app");
+if (window.openclaw.features.performance) {
+  void import("./performance-probe").then(({ installPerformanceProbe }) =>
+    installPerformanceProbe(),
+  );
+}
 loadWebFontsAfterPageLoad();
 
 // In browser dev mode, mark gateway ready after pinia stores are initialized

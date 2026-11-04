@@ -13,4 +13,14 @@ export default {
   "tray.open": "打开 MicroClaw",
   "tray.restartGateway": "重启网关",
   "tray.quit": "退出",
+  "weixinRemoteApproval.consentTitle": "远程命令审批",
+  "weixinRemoteApproval.consentMessage":
+    "选择是否允许当前已登录的微信账户为本次 MXC 激活审批命令。",
+  "weixinRemoteApproval.consentRisk":
+    "如果此微信会话遭到入侵，攻击者可能批准命令、添加所示只读/读写文件夹权限或保存精确命令的永久审批。文件夹审批中，1 将保存所示权限直到在设置中移除，并仅批准当前命令一次；3 拒绝。其他命令审批仍使用 1/2/3，延迟回复可能影响更新的审批。2 仅在已有此会话精确范围的永久审批授权且命令符合条件时可用。禁用后仍需在桌面审批。",
+  "weixinRemoteApproval.disable": "禁用",
+  "weixinRemoteApproval.enable": "启用",
+  "weixinRemoteApproval.cancelActivation": "取消 MXC 激活",
+  "mxc.assessingLimitedAmbientAccess": "正在评估 Limited 模式的环境文件系统访问权限",
+  "mxc.verifyingFullBackend": "正在验证 Full AppContainer 后端",
 } as Record<string, string>;

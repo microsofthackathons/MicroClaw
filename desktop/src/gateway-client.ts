@@ -26,8 +26,10 @@ import {
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
 } from "./constants";
-import { buildGatewayConnectParams } from "./gateway-protocol";
+import { buildGatewayConnectParams, GATEWAY_OPERATOR_SCOPES } from "./gateway-protocol";
 import type { ChatAttachment } from "./chat-attachments";
+import { GatewaySessionObserver } from "./gateway-session-observer";
+import { resolveChatHistorySessionKey, type ChatHistoryResult } from "./chat-run-lifecycle";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -43,17 +45,29 @@ export type GatewayResponseFrame = {
   id: string;
   ok: boolean;
   payload?: unknown;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: unknown };
 };
+
+export class GatewayRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "GatewayRequestError";
+  }
+}
 
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
-  state: "delta" | "final" | "aborted" | "error";
+  state: "status" | "delta" | "final" | "aborted" | "error";
   message?: unknown;
   deltaText?: string;
   replace?: boolean;
   errorMessage?: string;
+  lifecyclePhase?: "start" | "end" | "error";
 };
 
 export type AgentWarmupResult = {
@@ -130,12 +144,15 @@ export type ListedGatewayChannel = {
 };
 
 type GatewayChannelState = {
+  accountId?: string;
+  enabled?: boolean;
+  configured?: boolean;
   connected?: boolean;
   running?: boolean;
   linked?: boolean;
 };
 
-type GatewayChannelsStatusPayload = {
+export type GatewayChannelsStatusPayload = {
   channels?: Record<string, GatewayChannelState>;
   channelAccounts?: Record<string, GatewayChannelState[]>;
   channelOrder?: string[];
@@ -181,6 +198,8 @@ type Pending = {
 export type GatewayClientOptions = {
   port: number;
   token: string;
+  supportsExecApprovals?: boolean;
+  beforeChatSend?: () => Promise<void>;
   onEvent?: (evt: GatewayEventFrame) => void;
   onConnected?: (hello: Record<string, unknown>) => void;
   onDisconnected?: (reason: string) => void;
@@ -195,8 +214,13 @@ export function extractMainSessionKey(hello: Record<string, unknown>): string | 
   if (!sessionDefaults || typeof sessionDefaults !== "object" || Array.isArray(sessionDefaults)) {
     return null;
   }
+
   const key = (sessionDefaults as Record<string, unknown>).mainSessionKey;
   return typeof key === "string" && key.length > 0 ? key : null;
+}
+
+export function shouldHandleGatewayDisconnect(clientStopped: boolean): boolean {
+  return !clientStopped;
 }
 
 // ── Client ──────────────────────────────────────────────────────────────
@@ -207,6 +231,9 @@ export class GatewayClient {
   private closed = false;
   private backoffMs = WS_RECONNECT_INITIAL_MS;
   private _connected = false;
+  private _serverVersion: string | null = null;
+  private _methods: string[] = [];
+  private _connectionGeneration = 0;
   private connectNonce: string | null = null;
   private connectSent = false;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -217,6 +244,9 @@ export class GatewayClient {
   private agentWarmupAbortPromise: Promise<void> | null = null;
   private sessionTitleWaiters = new Map<string, SessionTitleWaiter>();
   private sessionTitlePromises = new Map<string, Promise<string | null>>();
+  private sessionObserver = new GatewaySessionObserver((method, params) =>
+    this.request(method, params),
+  );
 
   constructor(private opts: GatewayClientOptions) {
     this.deviceIdentity = loadOrCreateDeviceIdentity();
@@ -230,6 +260,18 @@ export class GatewayClient {
     return this._mainSessionKey;
   }
 
+  get serverVersion() {
+    return this._serverVersion;
+  }
+
+  get methods(): readonly string[] {
+    return this._methods;
+  }
+
+  get connectionGeneration(): number {
+    return this._connectionGeneration;
+  }
+
   start() {
     this.closed = false;
     this.connect();
@@ -238,6 +280,7 @@ export class GatewayClient {
   stop() {
     this.closed = true;
     this._connected = false;
+    this.sessionObserver.disconnect();
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = null;
@@ -251,7 +294,15 @@ export class GatewayClient {
 
   // ── Public API ──
 
-  async request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  observeChatSession(sessionKey: string | null): Promise<void> {
+    return this.sessionObserver.select(sessionKey);
+  }
+
+  async request<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs: number | null = WS_REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("gateway not connected");
     }
@@ -259,11 +310,14 @@ export class GatewayClient {
     const frame = { type: "req", id, method, params };
     return new Promise<T>((resolve, reject) => {
       // Auto-reject after timeout to prevent hung promises
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`request '${method}' timed out after ${WS_REQUEST_TIMEOUT_MS}ms`));
-        }
-      }, WS_REQUEST_TIMEOUT_MS);
+      const timer =
+        timeoutMs === null
+          ? undefined
+          : setTimeout(() => {
+              if (this.pending.delete(id)) {
+                reject(new Error(`request '${method}' timed out after ${timeoutMs}ms`));
+              }
+            }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => {
           clearTimeout(timer);
@@ -279,8 +333,13 @@ export class GatewayClient {
   }
 
   /** Send a chat message (server maintains history). */
-  sendChat(sessionKey: string, message: string, attachments?: ChatAttachment[]): Promise<unknown> {
-    return this.request("chat.send", {
+  async sendChat(
+    sessionKey: string,
+    message: string,
+    attachments?: ChatAttachment[],
+  ): Promise<unknown> {
+    await this.opts?.beforeChatSend?.();
+    return await this.request("chat.send", {
       sessionKey,
       message,
       deliver: false,
@@ -316,8 +375,21 @@ export class GatewayClient {
   }
 
   /** Load chat history for a session. */
-  loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }> {
-    return this.request("chat.history", { sessionKey, limit: 200 });
+  async loadHistory(sessionKey: string): Promise<ChatHistoryResult> {
+    const generation = this.connectionGeneration;
+    const history = await this.request<ChatHistoryResult>("chat.history", {
+      sessionKey,
+      limit: 200,
+    });
+    const canonicalKey = resolveChatHistorySessionKey(sessionKey, history);
+    if (
+      generation === this.connectionGeneration &&
+      sessionKey === "main" &&
+      history.sessionInfo?.isMain === true
+    ) {
+      this._mainSessionKey = canonicalKey;
+    }
+    return { ...history, sessionKey: canonicalKey };
   }
 
   /** Abort the current chat run. */
@@ -400,16 +472,52 @@ export class GatewayClient {
   /**
    * Delete one persisted session and its transcript.
    *
-   * OpenClaw does not allow deleting the configured main session, so reset
-   * that exact canonical key instead. Other sessions, including a non-default
-   * agent's `main`-named session, are deleted normally.
+   * OpenClaw does not allow deleting agent main sessions, so reset those.
+   * Resolve aliases and protection from Gateway metadata, not a key suffix.
    */
-  async deleteSession(sessionKey: string): Promise<void> {
-    if (sessionKey === this._mainSessionKey) {
-      await this.request("sessions.reset", { key: sessionKey, reason: "reset" });
+  async deleteSession(
+    sessionKey: string,
+    beforeDelete?: (canonicalKey: string) => Promise<void>,
+  ): Promise<void> {
+    const generation = this.connectionGeneration;
+    const result = await this.request<{
+      session: { key: string; isMain?: boolean } | null;
+    }>("sessions.describe", {
+      key: sessionKey,
+      includeDerivedTitles: false,
+      includeLastMessage: false,
+    });
+    if (generation !== this.connectionGeneration) {
+      throw new Error("Gateway connection changed before deleting the session");
+    }
+    if (
+      !result ||
+      (result.session !== null &&
+        (!result.session ||
+          typeof result.session.key !== "string" ||
+          !result.session.key.trim() ||
+          result.session.key.trim() !== result.session.key ||
+          (result.session.isMain !== undefined && typeof result.session.isMain !== "boolean")))
+    ) {
+      throw new Error("Invalid Gateway session description");
+    }
+    const key = result.session?.key ?? sessionKey;
+    if ((sessionKey.startsWith("agent:") || sessionKey === "global") && key !== sessionKey) {
+      throw new Error("Gateway returned a different session before deletion");
+    }
+    await beforeDelete?.(key);
+    if (generation !== this.connectionGeneration) {
+      throw new Error("Gateway connection changed before deleting the session");
+    }
+    if (result.session?.isMain === true || key === this._mainSessionKey) {
+      await this.resetSession(key);
       return;
     }
-    await this.request("sessions.delete", { key: sessionKey, deleteTranscript: true });
+    await this.request("sessions.delete", { key, deleteTranscript: true });
+  }
+
+  async resetSession(sessionKey: string): Promise<void> {
+    await this.request("sessions.reset", { key: sessionKey, reason: "reset" });
   }
 
   private async runAgentWarmup(timeoutMs: number): Promise<AgentWarmupResult> {
@@ -505,15 +613,17 @@ export class GatewayClient {
   }
 
   /** List available agents. */
-  listAgents(): Promise<{ agents?: unknown[] }> {
-    return this.request("agents.list");
+  listAgents(timeoutMs = WS_REQUEST_TIMEOUT_MS): Promise<{ agents?: unknown[] }> {
+    return this.request("agents.list", undefined, timeoutMs);
+  }
+
+  getChannelsStatus(timeoutMs = WS_REQUEST_TIMEOUT_MS): Promise<GatewayChannelsStatusPayload> {
+    return this.request("channels.status", { probe: false }, timeoutMs);
   }
 
   /** List IM channels from the OpenClaw 7.1 status snapshot. */
   async listChannels(): Promise<{ channels: ListedGatewayChannel[] }> {
-    const status = await this.request<GatewayChannelsStatusPayload>("channels.status", {
-      probe: false,
-    });
+    const status = await this.getChannelsStatus();
     return { channels: normalizeGatewayChannelsStatus(status) };
   }
 
@@ -523,7 +633,7 @@ export class GatewayClient {
     force?: boolean;
     timeoutMs?: number;
   }): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
-    return this.request("web.login.start", params);
+    return this.request("web.login.start", { ...params, channel: "openclaw-weixin" });
   }
 
   /** Wait for WeChat QR scan result (long-poll). */
@@ -531,8 +641,29 @@ export class GatewayClient {
     sessionKey?: string;
     accountId?: string;
     timeoutMs?: number;
-  }): Promise<{ connected: boolean; message: string; accountId?: string }> {
-    return this.request("web.login.wait", params);
+  }): Promise<{
+    connected: boolean;
+    message: string;
+    accountId?: string;
+    activationReloadRequested?: boolean;
+    pending?: boolean;
+    expired?: boolean;
+    cancelled?: boolean;
+    qrDataUrl?: string;
+  }> {
+    return this.request(
+      "web.login.wait",
+      { ...params, channel: "openclaw-weixin" },
+      (params.timeoutMs ?? WS_REQUEST_TIMEOUT_MS) + WS_REQUEST_TIMEOUT_MS,
+    );
+  }
+
+  weixinLoginQrCancel(sessionKey: string): Promise<{ cancelled: boolean }> {
+    return this.request("weixin.login.cancel", { sessionKey });
+  }
+
+  weixinResumeAfterLogin(): Promise<{ resumed: boolean }> {
+    return this.request("weixin.login.resume", {});
   }
 
   // ── Internal ──
@@ -556,7 +687,9 @@ export class GatewayClient {
 
     this.ws.on("close", (_code, reason) => {
       this._connected = false;
+      this.sessionObserver.disconnect();
       this.ws = null;
+      if (!shouldHandleGatewayDisconnect(this.closed)) return;
       this.agentWarmupWaiter?.("disconnected");
       this.rejectSessionTitleWaiters("disconnected");
       this.flushPending("disconnected");
@@ -590,7 +723,7 @@ export class GatewayClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const role = "operator";
-    const scopes = ["operator.admin", "operator.read", "operator.write"];
+    const scopes = [...GATEWAY_OPERATOR_SCOPES];
     const clientId = "gateway-client";
     const clientMode = "backend";
     const nonce = this.connectNonce ?? "";
@@ -616,13 +749,24 @@ export class GatewayClient {
       signature,
       signedAt: signedAtMs,
       nonce,
+      supportsExecApprovals: this.opts.supportsExecApprovals,
     });
 
     this.request<Record<string, unknown>>("connect", params)
       .then((hello) => {
         this._connected = true;
+        this._connectionGeneration = (this._connectionGeneration ?? 0) + 1;
+        const server = hello.server as { version?: unknown } | undefined;
+        const features = hello.features as { methods?: unknown } | undefined;
+        this._serverVersion = typeof server?.version === "string" ? server.version : null;
+        this._methods = Array.isArray(features?.methods)
+          ? features.methods.filter((method): method is string => typeof method === "string")
+          : [];
         this.backoffMs = WS_RECONNECT_INITIAL_MS;
         this._mainSessionKey = extractMainSessionKey(hello);
+        void this.sessionObserver
+          .connect()
+          .catch((error) => console.error("[gateway-client] Session subscription failed:", error));
         this.opts.onConnected?.(hello ?? {});
       })
       .catch((err) => {
@@ -715,6 +859,11 @@ export class GatewayClient {
           return;
         }
       }
+      if (
+        (evt.event === "session.message" || evt.event === "sessions.changed") &&
+        !this.sessionObserver.accepts(evt.payload)
+      )
+        return;
       this.opts.onEvent?.(evt);
       return;
     }
@@ -727,7 +876,13 @@ export class GatewayClient {
       if (res.ok) {
         p.resolve(res.payload);
       } else {
-        p.reject(new Error(res.error?.message ?? "request failed"));
+        p.reject(
+          new GatewayRequestError(
+            res.error?.message ?? "request failed",
+            res.error?.code,
+            res.error?.details,
+          ),
+        );
       }
     }
   }

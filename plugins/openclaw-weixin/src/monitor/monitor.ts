@@ -4,11 +4,22 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { getUpdates, classifyFetchError } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
 import { STALE_TOKEN_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
-import { processOneMessage } from "../messaging/process-message.js";
+import { isActiveWeixinAccount } from "../auth/accounts.js";
+import {
+  interceptWeixinRemoteApprovalMessage,
+  processOneMessage,
+} from "../messaging/process-message.js";
 import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "../storage/sync-buf.js";
 import { logger } from "../util/logger.js";
 import type { Logger } from "../util/logger.js";
 import { redactBody } from "../util/redact.js";
+import {
+  isMxcWeixinIngressReleased,
+  waitForMxcWeixinIngressRelease,
+} from "../security/mxc-policy.js";
+import {
+  WeixinRemoteApprovalTransport,
+} from "../security/remote-approval.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -54,6 +65,23 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   const log = opts.runtime?.log ?? (() => {});
   const errLog = opts.runtime?.error ?? ((m: string) => log(m));
   const aLog: Logger = logger.withAccount(accountId);
+  const remoteApprovalTransport = new WeixinRemoteApprovalTransport({
+    accountId,
+    baseUrl,
+    token,
+    error: errLog,
+    diagnostic: (record) => aLog.info(`weixin-remote-approval ${JSON.stringify(record)}`),
+    deliveryDiagnostic: (record) =>
+      aLog.info(`weixin-remote-approval-delivery ${JSON.stringify(record)}`),
+  });
+  if (remoteApprovalTransport.enabled) {
+    try {
+      await remoteApprovalTransport.start();
+    } catch (error) {
+      errLog(`weixin remote approval transport unavailable: ${String(error)}`);
+    }
+  }
+  abortSignal?.addEventListener("abort", () => remoteApprovalTransport.close(), { once: true });
 
   if (!channelRuntime) {
     const msg =
@@ -72,6 +100,10 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
   const previousGetUpdatesBuf = loadGetUpdatesBuf(syncFilePath);
   let getUpdatesBuf = previousGetUpdatesBuf ?? "";
+  let lastPersistedUpdatesBuf = getUpdatesBuf;
+  let dispatchTail = Promise.resolve();
+  let cursorPersistenceBlocked = false;
+  let replayRequired = false;
 
   if (previousGetUpdatesBuf) {
     log(`[weixin] resuming from previous sync buf (${getUpdatesBuf.length} bytes)`);
@@ -88,9 +120,23 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
   while (!abortSignal?.aborted) {
     try {
+      while (cursorPersistenceBlocked && !abortSignal?.aborted) {
+        await sleep(RETRY_DELAY_MS, abortSignal);
+      }
+      if (replayRequired) {
+        await dispatchTail;
+        getUpdatesBuf = lastPersistedUpdatesBuf;
+        replayRequired = false;
+      }
+      if (!isMxcWeixinIngressReleased()) {
+        setStatus?.({ accountId, running: true, connected: false, lastError: "Paused until MXC ingress release" });
+        await waitForMxcWeixinIngressRelease(abortSignal);
+        setStatus?.({ accountId, running: true, lastError: null });
+      }
       aLog.debug(
         `getUpdates: get_updates_buf=${getUpdatesBuf.substring(0, 50)}..., timeoutMs=${nextTimeoutMs}`,
       );
+      let pollTimedOut = false;
       const resp = await getUpdates({
         baseUrl,
         token,
@@ -99,7 +145,13 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // Stop/hot-reload should cancel the in-flight long-poll immediately
         // instead of waiting for the server-side long-poll timeout.
         abortSignal,
+        onPollTimeout: () => { pollTimedOut = true; },
       });
+      if (abortSignal?.aborted) break;
+      if (!isMxcWeixinIngressReleased()) {
+        aLog.info("getUpdates response ignored because MXC ingress was relocked");
+        continue;
+      }
       aLog.debug(
         `getUpdates response: ret=${resp.ret}, msgs=${resp.msgs?.length ?? 0}, get_updates_buf_length=${resp.get_updates_buf?.length ?? 0}`,
       );
@@ -112,6 +164,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         (resp.ret !== undefined && resp.ret !== 0) ||
         (resp.errcode !== undefined && resp.errcode !== 0);
       if (isApiError) {
+        setStatus?.({ accountId, connected: false, lastError: resp.errmsg || "WeChat API error" });
         const isStaleToken =
           resp.errcode === STALE_TOKEN_ERRCODE || resp.ret === STALE_TOKEN_ERRCODE;
 
@@ -148,12 +201,15 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         continue;
       }
       consecutiveFailures = 0;
-      setStatus?.({ accountId, lastEventAt: Date.now() });
-      if (resp.get_updates_buf != null && resp.get_updates_buf !== "") {
-        saveGetUpdatesBuf(syncFilePath, resp.get_updates_buf);
-        getUpdatesBuf = resp.get_updates_buf;
-        aLog.debug(`Saved new get_updates_buf (${getUpdatesBuf.length} bytes)`);
-      }
+      setStatus?.({
+        accountId,
+        connected: !pollTimedOut,
+        lastError: pollTimedOut ? "WeChat updates request timed out" : null,
+        ...(!pollTimedOut ? { lastEventAt: Date.now() } : {}),
+      });
+      const responseUpdatesBuf =
+        resp.get_updates_buf != null && resp.get_updates_buf !== "" ? resp.get_updates_buf : null;
+      if (responseUpdatesBuf) getUpdatesBuf = responseUpdatesBuf;
       const list = resp.msgs ?? [];
       for (const full of list) {
         aLog.info(
@@ -166,23 +222,84 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // allowFrom filtering is delegated to processOneMessage via the framework
         // authorization pipeline (resolveSenderCommandAuthorizationWithRuntime).
 
-        const fromUserId = full.from_user_id ?? "";
-        const cachedConfig = await configManager.getForUser(fromUserId, full.context_token);
-
-        await processOneMessage(full, {
+        const baseMessageDeps = {
           accountId,
           config,
           channelRuntime,
           baseUrl,
           cdnBaseUrl,
           token,
-          typingTicket: cachedConfig.typingTicket,
+          remoteApprovalTransport,
           log: opts.runtime?.log ?? (() => {}),
           errLog,
-        });
+        };
+        if (!token?.trim() || !isActiveWeixinAccount(accountId, token)) {
+          aLog.warn("account is no longer the active authenticated WeChat identity; stopping");
+          return;
+        }
+        let consumedByRemoteApproval = false;
+        try {
+          consumedByRemoteApproval = await interceptWeixinRemoteApprovalMessage(
+            full,
+            baseMessageDeps,
+          );
+        } catch (error) {
+          errLog(`weixin remote approval interception failed: ${String(error)}`);
+          consumedByRemoteApproval = remoteApprovalTransport.shouldReserveInbound(full);
+        }
+        if (consumedByRemoteApproval) {
+          aLog.info("remote approval: consumed system reply before agent dispatch");
+          continue;
+        }
+        dispatchTail = dispatchTail
+          .then(async () => {
+            if (replayRequired) return;
+            const fromUserId = full.from_user_id ?? "";
+            const cachedConfig = await configManager.getForUser(fromUserId, full.context_token);
+            await processOneMessage(full, {
+              ...baseMessageDeps,
+              typingTicket: cachedConfig.typingTicket,
+            });
+          })
+          .finally(() =>
+            interceptWeixinRemoteApprovalMessage(full, baseMessageDeps, "complete").catch(
+              () => false,
+            ),
+          )
+          .catch((error) => {
+            replayRequired = true;
+            getUpdatesBuf = lastPersistedUpdatesBuf;
+            errLog(`weixin message dispatch failed: ${String(error)}`);
+          });
+      }
+      if (responseUpdatesBuf) {
+        dispatchTail = dispatchTail
+          .then(async () => {
+            if (replayRequired) return;
+            for (;;) {
+              try {
+                saveGetUpdatesBuf(syncFilePath, responseUpdatesBuf);
+                lastPersistedUpdatesBuf = responseUpdatesBuf;
+                cursorPersistenceBlocked = false;
+                aLog.debug(`Saved new get_updates_buf (${responseUpdatesBuf.length} bytes)`);
+                return;
+              } catch (error) {
+                cursorPersistenceBlocked = true;
+                errLog(`weixin sync cursor persistence failed; retrying: ${String(error)}`);
+                await sleep(RETRY_DELAY_MS, abortSignal);
+              }
+            }
+          })
+          .catch((error) => {
+            if (!abortSignal?.aborted) {
+              errLog(`weixin sync cursor persistence stopped: ${String(error)}`);
+            }
+          });
       }
     } catch (err) {
+      setStatus?.({ accountId, connected: false });
       if (abortSignal?.aborted) {
+        await dispatchTail;
         aLog.info(`Monitor stopped (aborted)`);
         return;
       }
@@ -191,14 +308,14 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       errLog(
         `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)} type=${classified.type} description=${classified.description}${classified.code ? ` code=${classified.code}` : ""}`,
       );
-      aLog.error(`getUpdates error: ${String(err)}, type=${classified.type} code=${classified.code ?? "none"}, stack=${(err as Error).stack}`);
+      aLog.error(
+        `getUpdates error: ${String(err)}, type=${classified.type} code=${classified.code ?? "none"}, stack=${(err as Error).stack}`,
+      );
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         errLog(
           `weixin getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
         );
-        aLog.error(
-          `getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
-        );
+        aLog.error(`getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`);
         consecutiveFailures = 0;
         await sleep(30_000, abortSignal);
       } else {
@@ -206,6 +323,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       }
     }
   }
+  setStatus?.({ accountId, connected: false, running: false });
+  await dispatchTail;
   aLog.info(`Monitor ended`);
 }
 

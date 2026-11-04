@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { t } from "../i18n";
 import { AGENT_WARMUP_SESSION_KEY } from "../../../src/constants";
+import { canonicalAgentId } from "../../../src/agent-catalog";
+import { isMainSessionKey } from "../../../src/main-session-key";
 
 export interface Session {
   key: string;
@@ -19,7 +21,12 @@ function loadFromStorage(): Session[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const stored = raw ? (JSON.parse(raw) as Session[]) : [];
-    return stored.filter((session) => session.key !== AGENT_WARMUP_SESSION_KEY);
+    return stored
+      .filter((session) => session.key !== AGENT_WARMUP_SESSION_KEY)
+      .map((session) => ({
+        ...session,
+        ...(session.agentId ? { agentId: canonicalAgentId(session.agentId) } : {}),
+      }));
   } catch {
     return [];
   }
@@ -41,6 +48,7 @@ export const useSessionStore = defineStore("sessions", () => {
   /** Ensure a session entry exists for the given key. */
   function ensureSession(key: string, agentId?: string) {
     if (key === AGENT_WARMUP_SESSION_KEY) return;
+    const canonicalId = agentId ? canonicalAgentId(agentId) : undefined;
     const existing = sessions.value.find((s) => s.key === key);
     if (!existing) {
       sessions.value.push({
@@ -49,11 +57,11 @@ export const useSessionStore = defineStore("sessions", () => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         preview: "",
-        agentId,
+        agentId: canonicalId,
       });
       saveToStorage(sessions.value);
-    } else if (agentId && !existing.agentId) {
-      existing.agentId = agentId;
+    } else if (canonicalId && !existing.agentId) {
+      existing.agentId = canonicalId;
       saveToStorage(sessions.value);
     }
     currentKey.value = key;
@@ -66,7 +74,11 @@ export const useSessionStore = defineStore("sessions", () => {
    */
   function reconcileEmptySessions(key: string, agentId?: string) {
     if (key === AGENT_WARMUP_SESSION_KEY) return;
-    const emptySessions = sessions.value.filter((session) => !session.preview.trim());
+    const emptySessions = sessions.value.filter(
+      (session) =>
+        !session.preview.trim() &&
+        (session.key === key || session.key === "main" || !isMainSessionKey(session.key, key)),
+    );
     if (emptySessions.length === 0) return;
 
     const target = sessions.value.find((session) => session.key === key);
@@ -77,7 +89,7 @@ export const useSessionStore = defineStore("sessions", () => {
       );
 
     reusable.key = key;
-    if (agentId) reusable.agentId = agentId;
+    if (agentId) reusable.agentId = canonicalAgentId(agentId);
     sessions.value = sessions.value.filter(
       (session) => session === reusable || !emptySessions.includes(session),
     );

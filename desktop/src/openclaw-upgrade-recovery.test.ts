@@ -55,7 +55,7 @@ function fixture(phase = "installing") {
     transaction_id: transactionId,
     owner_pid: 999999,
     source_version: "2026.3.12",
-    target_version: "2026.7.1-1",
+    target_version: "2026.8.2",
     prefix,
     package_dir: packageDir,
     state_dir: stateDir,
@@ -217,7 +217,7 @@ describe("validateInstallerOwnedUpgrade", () => {
     const manifest = JSON.parse(fs.readFileSync(item.manifestPath, "utf-8"));
     manifest.schema_version = 2;
     manifest.backup_mode = "managed-state";
-    manifest.managed_paths = ["openclaw.json", "skills"];
+    manifest.managed_paths = ["openclaw.json", "skills", "extensions/llama-cpp"];
     fs.writeFileSync(item.manifestPath, JSON.stringify(manifest));
 
     expect(
