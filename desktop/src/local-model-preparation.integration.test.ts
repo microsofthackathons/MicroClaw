@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, it, vi } from "vitest";
-import { GatewayClient } from "./gateway-client";
+import { GatewayClient, GatewayRequestError } from "./gateway-client";
 import { LocalModelService } from "./local-model-service";
 import { LOCAL_MODEL_PRESETS } from "./local-model-catalog";
 import type { LocalModelOperation, LocalModelReceipt } from "./local-model-types";
@@ -27,7 +27,7 @@ const plugin = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
 it.skipIf(!entry || !plugin)(
   cache
     ? "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults"
-    : "installs a copied provider after Gateway startup and reaches download consent without restarting or downloading weights",
+    : "installs a local provider fixture after Gateway startup and reaches download consent without restarting or downloading weights",
   async () => {
     const root = mkdtempSync(path.join(tmpdir(), "microclaw-complete-local-"));
     const configPath = path.join(root, "openclaw.json");
@@ -114,9 +114,45 @@ it.skipIf(!entry || !plugin)(
         timeout: 180_000,
         interval: 500,
       });
+      const connectionGeneration = client.connectionGeneration;
+      const rawGatewayRequest = client.request.bind(client);
+      async function gatewayRequest<Response>(
+        method: string,
+        params?: unknown,
+        timeout?: number | null,
+      ): Promise<Response> {
+        const deadline = Date.now() + 30_000;
+        for (;;) {
+          try {
+            return await rawGatewayRequest<Response>(method, params, timeout);
+          } catch (error) {
+            // This exact refusal occurs before the Gateway enters any mutation.
+            // A background config observer can hold the same lifecycle lease.
+            if (
+              !["plugins.install", "plugins.setEnabled", "plugins.reload"].includes(method) ||
+              !(error instanceof GatewayRequestError) ||
+              error.code !== "UNAVAILABLE" ||
+              error.message !==
+                "Another plugin or config operation is already running; retry when it completes." ||
+              Date.now() + 1_000 > deadline
+            ) {
+              throw error;
+            }
+            await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+          }
+        }
+      }
       if (!cache) {
         expect(existsSync(isolatedPlugin)).toBe(false);
-        cpSync(plugin!, isolatedPlugin, { recursive: true, verbatimSymlinks: true });
+        const installed = await gatewayRequest<{ ok: boolean }>(
+          "plugins.install",
+          { source: "local", path: plugin! },
+          300_000,
+        );
+        expect(installed.ok).toBe(true);
+        expect(existsSync(isolatedPlugin)).toBe(true);
+        // Keep the existing enable/reload fallback coverage after the real fixture install.
+        await gatewayRequest("plugins.setEnabled", { pluginId: "llama-cpp", enabled: false });
       }
       const events: LocalModelOperation[] = [];
       let receipt: LocalModelReceipt | undefined;
@@ -132,8 +168,6 @@ it.skipIf(!entry || !plugin)(
         },
         onChange: (value) => events.push(value),
       });
-      const connectionGeneration = client.connectionGeneration;
-      const gatewayRequest = client.request.bind(client);
       const request = vi.spyOn(client, "request");
       if (!cache) {
         request.mockImplementation(
