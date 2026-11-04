@@ -84,12 +84,10 @@ jobs:
         with:
           node-version: "26"
 
-      - name: Setup .NET 9 and 10 SDKs
+      - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: |
-            9.0.x
-            10.0.x
+          dotnet-version: "10.0.x"
 
       - name: Setup Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -106,7 +104,6 @@ jobs:
           }
           Write-Host "node $node"
           $sdks = & dotnet --list-sdks
-          if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }
           if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
           Write-Host $sdks
           Write-Host "python $(& python --version)"

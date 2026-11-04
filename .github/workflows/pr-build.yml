@@ -136,7 +136,7 @@ jobs:
         with:
           submodules: recursive
 
-      # Toolchain (Node 26.1+, .NET 9/10 SDKs, Python 3.12+) is pre-installed on
+      # Toolchain (Node 26.1+, .NET 10 SDK, Python 3.12+) is pre-installed on
       # the self-hosted runner. We only verify versions here; installing
       # via actions/setup-* is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues).
@@ -150,7 +150,6 @@ jobs:
           }
           Write-Host "node $node"
           $sdks = & dotnet --list-sdks
-          if (-not ($sdks -match '^9\.')) { throw ".NET 9 SDK is required" }
           if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
           Write-Host $sdks
 

@@ -116,7 +116,7 @@ jobs:
         working-directory: desktop/renderer
         run: npm run test
 
-  # ── C# / .NET 9 and 10 ─────────────────────────────────────────
+  # ── C# / .NET 10 ──────────────────────────────────────────────
   security-and-build-csharp:
     name: C# - Audit & Build
     needs: changes
@@ -129,12 +129,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup .NET 9 and 10 SDKs
+      - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: |
-            9.0.x
-            10.0.x
+          dotnet-version: "10.0.x"
 
       - name: Restore NuGet packages
         run: |
