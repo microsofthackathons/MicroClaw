@@ -1087,6 +1087,9 @@ def run_web_installer(mode="install"):
             resizable=False,
             text_select=False,
             frameless=True,
+            # WebView2 easy_drag handles every mousedown, including native select
+            # popups. Restrict dragging to the templates' explicit title region.
+            easy_drag=False,
             transparent=True,
             focus=os.environ.get("MICROCLAW_BACKGROUND") != "1",
         )
