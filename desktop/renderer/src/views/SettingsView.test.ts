@@ -272,13 +272,26 @@ describe("SettingsView", () => {
     });
 
     await flushPromises();
-
     expect(wrapper.find(".settings-content--skills").exists()).toBe(false);
     expect(wrapper.findAll(".settings-menu-item").some((item) => item.text() === "Skills")).toBe(
       false,
     );
     expect(wrapper.find(".settings-menu-item.active").text()).toBe("General");
   });
+
+  it.each(["en-US", "zh-CN"] as const)(
+    "does not show a separate WeChat disclosure section in %s",
+    async (locale) => {
+      routeState.section = "security";
+      setLocale(locale);
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="weixin-disclosure-settings"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="weixin-disclosure-review"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="weixin-disclosure-revoke"]').exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
 
   it("shows Gateway status and log export at the end of General", async () => {
     const pinia = createPinia();

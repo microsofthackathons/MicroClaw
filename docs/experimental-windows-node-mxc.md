@@ -89,8 +89,9 @@ probe aborts; it never substitutes a weaker tier under the same request. Saved f
 remembered commands survive Off. In-progress status and actual failures remain visible.
 During Off, startup shows "Turning off MXC", then "Starting normal mode (MXC Off)";
 it never labels the previous Full/Limited selection as starting containment.
-An eligible signed-in WeChat account is automatically used for experimental command approvals,
-without granting any command approval, new durable consent, or full-command disclosure authority.
+An eligible signed-in WeChat account is automatically enrolled for experimental remote approvals,
+but commands stay Desktop-only until the owner separately consents to sharing full details.
+Enrollment grants no command approval or durable consent.
 Internal refresh, relock, startup recovery, and fail-closed repair preserve the saved tier.
 
 Internal locked-to-active policy promotion and rollback omit the `config.patch` note and
@@ -347,9 +348,17 @@ sole identity is atomically added to the account's sender allowlist when necessa
 explicit ordinary-message senders without granting them remote approval authority. If WeChat is
 disabled, unavailable, unauthenticated, or in a legacy multiple-account state, sandboxing still
 proceeds directly with remote approval disabled. Turning MXC Off
-or replacing the exact identity clears the owner binding. Default enrollment never issues native
+or replacing the exact identity clears the owner binding. Default enrollment does not issue native
 durable-consent scope; existing command eligibility, exact leases, and privacy gates remain
-independent. Active consent is not upgraded.
+independent. Historical durable consent is not upgraded.
+
+Eligible command details are automatically shared with the bound, authenticated WeChat account
+for phone approval; there is no separate disclosure setting or confirmation. Commands, arguments,
+inline content, paths, and executable identity can pass through WeChat and its provider.
+Filters cannot prove arbitrary text is public, and previously sent details cannot be retracted.
+An account change, rebinding, or disabled enrollment invalidates outstanding phone challenges
+without extending Desktop deadlines or automatically resending them. Sharing details does not
+grant durable command approval.
 
 The selected configuration is persisted while the Gateway is locked and before the attested active
 generation, lease, or ingress release is issued. Retries of active Full/Limited selections cannot rebind
@@ -450,9 +459,10 @@ proofs, or expose the path through the ordinary `message` tool. Exact candidate 
 intercepted before session recording and agent dispatch. Mixed, malformed, or otherwise ambiguous
 challenge-shaped replies are also consumed and fail closed, including when the broker transport is
 uncertain. Once an exact-owner prompt is successfully sent, other input in that owner's direct
-conversation is consumed before the agent queue. Exact bare `1`/`2`/`3` select the current delivered
-prompt as described below; other input makes no decision and receives at most three reminders with
-a five-second minimum interval. It never extends the deadline. While this remote-approval transport
+conversation is consumed before the agent queue. Exact bare `1` or `3` selects the current delivered
+prompt as described below; reserved `2` is refused and does not create a durable approval. Other
+input makes no decision and receives at most three reminders with a five-second minimum interval.
+It never extends the deadline. While this remote-approval transport
 is enabled, reserved numeric replies without an active prompt are rejected rather than dispatched
 to the agent.
 The long-poll loop advances its in-memory server cursor before placing ordinary messages on its
@@ -460,67 +470,43 @@ serialized dispatch queue, allowing an exact approval reply to be consumed while
 agent run is waiting. It persists the cursor only after the covered ordinary dispatches complete,
 so a crash replays rather than drops them.
 
-The reserved plain-text prompt begins `[MicroClaw Security Approval]`, with available numeric
-choices first. An internal eight-character code from an unambiguous 32-symbol alphabet (40 bits)
+The reserved plain-text prompt is headed `MicroClaw Security Approval` and presents the exact
+prepared command before its available choices. An internal eight-character code from an unambiguous 32-symbol alphabet (40 bits)
 is still generated with `randomBytes`; coded replies remain supported, but no visible code is required
 by the default phone UX. Each challenge is valid for at most two minutes, one-use, and limited to
 three wrong attempts plus a global attempt window. Multi-request batches stay local-only.
 The actual permission deadline is the earlier of the original 60-second Desktop window and the
-Gateway expiry. The phone prompt and Desktop countdown use that same deadline. The short phone
-summary includes a validated literal operation and unchanged target, actual executable path
-(not just a trusted-looking basename), every declared RO/RW grant, force/recurse/content/encoding/
-no-newline effects, scoped initialization when present, expiry, and current-conversation scope.
-Empty public content is shown explicitly. Generic already-safe commands retain their exact command
-representation. Ordinary initialized create/delete fixtures are kept within approximately 600
-characters. The Desktop retains the unchanged full executed command, executable/hash, argv, physical
-canonical CWD, initialization metadata, access, agent/session and mode. These full technical details
-are deliberately not duplicated or split into JSON fragments on the phone.
-If required fields exceed deterministic request/argument/declaration/line/total limits, contain
-control, C0/C1, surrogate, bidi/format/default-ignorable, line/paragraph separator, zero-width,
-variation-selector, or similar concealment characters, or appear secret-bearing or ambiguously
-redacted, MicroClaw creates no remote challenge and leaves the normal local approval pending.
-OpenClaw does not carry reliable sensitive-value provenance for every command display
-field, so Phase 1 additionally uses a fail-closed structured presentation allowlist. The full
-command must exactly reconstruct from the signed argv; executable/CWD/declaration values must be
-canonical local paths or fixed structural bindings; and arguments are limited to bounded
-parameterless switches, explicitly classified path/enum switch values, boolean literals, and short
-relative filenames. Arbitrary positional text or numbers, inline option values, URLs, long opaque
-values, credential-semantic names, and every other unknown form remain local-only. A closed
-literal PowerShell grammar also covers `New-Item` (File/Directory), `Remove-Item` (including
-explicit recursive deletion), `Clear-Content`, `Set-Content`, and `Add-Content` when directly
-prepared as PowerShell, including one literal nested interpreter. Paths must be literal local paths
-covered by an explicit RW declaration for these mutating operations. Separately typed read-only
-`Test-Path` supports one absolute literal positional target, `-Path`, or `-LiteralPath`, in the
-direct or single nested form; an explicit covering RO **or** RW declaration is required. Its
-phone action is “Check whether path exists,” with the unchanged target, executable and every
-grant. It needs its own approval: an earlier delete approval does not authorize verification.
-It does not add write rights or receive the create/delete-only scoped initializer.
-Script expansions, pipelines, extra invocations, unknown
-flags, wildcard/device/UNC/ADS paths and arbitrary inline contents are not eligible. Inline
-content is limited to the reviewed public primitives `""`, `"0"`, `"1"`, `"true"`, `"false"`,
-and `"null"`; other content writes stay local, even when the text happens to be non-secret.
-This is intentionally conservative: a non-secret command may still require local approval when its
-display sensitivity cannot be proven from the current execution contract.
+Gateway expiry. The phone prompt and Desktop countdown use that same deadline. One generic
+presentation covers the normalized `exec` plan rather than an allowlist of commands: ordinary
+inline text, unknown command families, flags, pipelines and the standard `cmd.exe /d /s /c`
+wrapper can be displayed. The exact executable path, reconstructed command and argv, canonical
+working directory or isolated scratch, all declared access, any new folder grants, containment
+tier, expiry and scope remain bound to the original approval. New folder grants are shown as
+persistent until removed in Settings; the command decision itself is once-only. Full technical
+identity, executable hash, agent, session, origin, generation, node and security proof remain
+bound internally and available on Desktop.
+
+Text is framed and escaped without silently truncating or rewriting the command. Lines are limited
+to 160 characters, the complete phone message to 6,000 characters, and the bound presentation
+frame to 64 KiB. A validated PowerShell folder initializer can be represented by its independently
+verified original argv, while execution still uses the bound final argv; a preview alone is never
+authority. Invalid canonical plans, unrepresentable or oversized messages, unsafe Unicode,
+recognizable sensitive or encoded data and ambiguous redaction remain Desktop-only. These checks
+cannot identify every secret in arbitrary text, even when a command passes them.
 
 The bounded approval-surface inventory is:
 
 | Desktop family / producer | WeChat eligibility |
 | --- | --- |
 | Gateway `exec.approval.requested` for the selected bundled node, normalized from the pinned SDK's prepared `systemRunPlan` and admitted caller origin | Eligible only with the exact current authenticated owner/account/canonical run route, source registration, active generation/security and a representable command. OpenClaw's normal Windows shell producer uses `cmd.exe /d /s /c`. |
-| Canonical CMD transport | A closed set of literal `dir`, `type`, `mkdir`/`md`, `hostname`, `whoami`, and `git status` forms can be shown exactly. Absolute filesystem targets need a covering declaration, with RW for directory creation. CMD expansion, chaining, redirection, scripts and other forms remain Desktop-only. |
-| Generic executable plus already-safe bounded argv (for example `whoami.exe /all`) | Existing exact-command presentation remains supported; it is not general script parsing or an executable trust attestation. |
-| Closed literal mutating PowerShell operations listed above | Explicit RW declarations and exact force/recurse/content/encoding/no-newline disclosures remain required. Missing grants use the combined folder prompt below. |
-| Closed literal `Test-Path` existence verification | The newly covered omission: positional / `-Path` / `-LiteralPath`, direct or one validated nested interpreter, with RO or RW coverage. No `-PathType`, `-IsValid`, wildcards, expressions, extra switches or additional operations. |
+| CMD, PowerShell and other prepared executables | The same generic exact-command presentation applies, subject to authenticated owner, canonical-plan, safety and size checks. The renderer does not infer extra filesystem permissions from command text. |
 | Bundled host `onApproval` / `approvalLayer=node` fallback | Desktop once/deny only. This layer has no authenticated canonical chat/run origin; no phone challenge or selected-chat activity is invented. Native proof, path/reparse and execution checks are unchanged. |
 | Windows Node durable rules | Eligible commands may be remembered from Desktop only. A historical WeChat conversation-scoped opt-in does not authorize creating an agent-wide rule. |
 
-CMD-wrapped PowerShell, arbitrary PowerShell, `Get-Content` / `Get-ChildItem` / other new operation families, encoded/file/
-profile/interactive forms, sensitive or unrepresentable data, and unsupported executable syntax
-remain Desktop-only rather than being accepted as loosely parsed scripts. Missing owner/source/
-route/security authority, undelivered or ambiguous challenges, queued requests, and expired/replayed
-replies are authorization/delivery states, **not** additional permission types to enable. No native
-permission family or general script support was added. The directly coupled safe `Test-Path` forms
-above are covered; this is not a claim that all Desktop approvals are phone-eligible.
+Missing owner/source/route/security authority, undelivered or ambiguous challenges, queued
+requests, and expired/replayed replies remain local-only authorization or delivery states, not
+additional permissions. The generic display does not change the host's execution checks or
+guarantee that every possible Desktop approval can be represented safely on a phone.
 
 In verified Full (`base-container` / `appcontainer-bfs`) and Limited-DACL containment, the Windows host prepares a versioned public PowerShell filesystem scope
 for the closed literal directory-creation and removal forms above (direct Windows PowerShell or
@@ -562,14 +548,17 @@ apply. Broker-process-lifetime hashed message-ID fences reject already seen deci
 pre-acknowledgement and expired replies, across challenge replacement. These replay fences do not
 identify the intended prompt of a previously unseen delayed reply.
 
-The in-memory challenge binds the authenticated sender/account/chat, source message ID and cursor,
+The in-memory challenge binds the enrolled owner and binding epoch and the presentation digest as well as the
+authenticated sender/account/chat, source message ID and cursor,
 agent/session, exact approval ID, executable canonical path and SHA-256, argv, CWD,
 declarations, requested/effective mode, Gateway generation, policy fingerprint, node identity,
 active-lease authority fingerprint, creation/expiry, challenge ID, and code hash. Electron revalidates
 the current pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
 immediately before the existing `exec.approval.resolve` call. Remote decisions can approve once or
 deny, including the combined folder-grant decision; they cannot create a Windows Node allowlist rule.
-Renderer-supplied scope markers are rejected.
+Renderer-supplied scope markers are rejected. Main rechecks the same enrollment authority,
+pending challenge, and exact owner during asynchronous resolution, including before and after
+folder-policy mutations.
 
 Ordinary signed active-lease expiry renewal does not invalidate a pending phone prompt. Its opaque,
 Main-only fingerprint binds the private host instance, exact Main-owned readiness/proof context,

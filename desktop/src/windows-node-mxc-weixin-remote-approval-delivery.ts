@@ -197,7 +197,9 @@ export async function deliverWeixinRemoteApproval(params: {
       return;
     }
     const presentationOnly =
-      reason === "presentation-unsupported" || reason === "presentation-sensitive";
+      reason === "presentation-unsupported" ||
+      reason === "presentation-sensitive" ||
+      reason === "presentation-too-long";
     const detail = presentationOnly
       ? params.locale === "zh-CN"
         ? "此命令无法在微信中安全展示或审批，请在桌面允许或拒绝"

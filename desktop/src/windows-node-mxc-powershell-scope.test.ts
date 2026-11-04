@@ -159,7 +159,10 @@ describe("exact contained PowerShell prepared initialization", () => {
         accountId: "bot",
         userId: peer,
       }));
-      broker.configure({ enabled: true, owner });
+      broker.configure({
+        enabled: true,
+        owner,
+      });
       const result = broker.createChallengeResult({
         source: {
           accountId: "bot",
@@ -191,8 +194,8 @@ describe("exact contained PowerShell prepared initialization", () => {
       expect(result.status).toBe("created");
       if (result.status !== "created")
         throw new Error(`Phone presentation rejected: ${result.reason}`);
-      expect(result.delivery.text).toContain("Scoped CWD initialization");
-      expect(result.delivery.text).toContain("Delete file/folder");
+      expect(result.delivery.text).toContain("Verified folder initialization");
+      expect(result.delivery.text).toContain("Remove-Item");
       expect(result.delivery.text).not.toContain("filesystem initialization failed");
       expect(approval.command).toBe(plan.commandText);
       expect(approval.providerInitialization).toEqual(initialization);

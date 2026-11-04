@@ -250,17 +250,18 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     scopeOverride = undefined,
   ) {
     const sources = new Map();
+    const owner = normalizeWeixinRemoteApprovalOwner(
+      "bot",
+      "owner@im.wechat",
+      "2026-10-20T00:00:00.000Z",
+    );
     const configuration = projectWeixinRemoteApprovalRuntimeConfiguration(
       {
         enabled: true,
         ...(durableConsent
           ? { consentScope: scopeOverride ?? WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
           : {}),
-        owner: normalizeWeixinRemoteApprovalOwner(
-          "bot",
-          "owner@im.wechat",
-          "2026-10-20T00:00:00.000Z",
-        ),
+        owner,
       },
       true,
     );
@@ -797,7 +798,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(JSON.stringify(state.diagnostics)).not.toContain("test-account-token");
   });
 
-  it.each(["private unclassified content", "Bearer example-secret"])(
+  it.each(["******", "Bearer example-secret", "password=synthetic-private-value"])(
     "keeps content local with a data-free phone notice and real terminal receipt: %s",
     async (content) => {
       const state = await pipeline(
@@ -815,6 +816,19 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       expect(state.resolved[0]).toMatchObject({ decision: "deny", origin: "desktop" });
     },
   );
+
+  it("automatically shares ordinary inline content with the authenticated enrolled owner", async () => {
+    const script = `Set-Content -Path '${root}\\sample.txt' -Value 'ordinary inline text'`;
+    const allowed = await pipeline(normalizedApproval(script), false);
+    const delivery = await allowed.start();
+    expect(delivery?.text).toContain("ordinary inline text");
+    expect(delivery?.text).toContain("Reply 1:");
+    expect(delivery?.text).not.toContain("2: remember");
+    expect(await allowed.reply("1")).toBe(true);
+    expect(allowed.resolved).toEqual([
+      expect.objectContaining({ decision: "allow-once", origin: "wechat" }),
+    ]);
+  });
 
   it("does not authorize after unconfirmed delivery or automatically resend", async () => {
     const state = await pipeline();

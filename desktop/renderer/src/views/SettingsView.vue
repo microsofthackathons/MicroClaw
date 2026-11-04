@@ -1351,10 +1351,10 @@ async function loadWindowsNodeMxcStatus() {
       const revision = mxcDisplayRevision;
       const snapshot = await window.openclaw.windowsNodeMxc.getDisplayStatus();
       if (revision === mxcDisplayRevision) applyWindowsNodeMxcDisplayStatus(snapshot);
-      return;
+    } else {
+      const status = await window.openclaw.windowsNodeMxc.getStatus();
+      updateWindowsNodeMxcStatus(status);
     }
-    const status = await window.openclaw.windowsNodeMxc.getStatus();
-    updateWindowsNodeMxcStatus(status);
   } catch (error) {
     windowsNodeMxcStatusError.value = error instanceof Error ? error.message : String(error);
     ElMessage.error(windowsNodeMxcStatusError.value);
