@@ -492,11 +492,12 @@ export function initializeLocalModelCompatibility(pluginDir, register = register
   try {
     directory = lstatSync(pluginDir);
   } catch (error) {
-    if (error.code === "ENOENT") return;
-    throw error;
+    if (error.code !== "ENOENT") throw error;
   }
-  if (!directory.isDirectory())
+  if (directory && !directory.isDirectory())
     throw new Error("The local provider must be an unredirected directory");
+  // The provider may be installed and hot-loaded after Gateway startup. Keep
+  // the targeted hook ready; identity, realpath and source checks run on load.
   return register({ load });
 }
 

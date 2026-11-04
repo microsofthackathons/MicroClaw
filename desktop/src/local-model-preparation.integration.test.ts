@@ -27,11 +27,12 @@ const plugin = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
 it.skipIf(!entry || !plugin)(
   cache
     ? "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults"
-    : "hot-loads a copied provider and reaches download consent without restarting or downloading weights",
+    : "installs a copied provider after Gateway startup and reaches download consent without restarting or downloading weights",
   async () => {
     const root = mkdtempSync(path.join(tmpdir(), "microclaw-complete-local-"));
     const configPath = path.join(root, "openclaw.json");
     const isolatedCache = path.join(root, "models", "llama.cpp");
+    const isolatedPlugin = path.join(root, "extensions", "llama-cpp");
     const token = randomUUID();
     const model = LOCAL_MODEL_PRESETS[0];
     let child: ReturnType<typeof spawn> | undefined;
@@ -46,10 +47,8 @@ it.skipIf(!entry || !plugin)(
       for (const [file, original] of originals) {
         copyFileSync(original, path.join(isolatedCache, file));
       }
-      cpSync(plugin!, path.join(root, "extensions", "llama-cpp"), {
-        recursive: true,
-        verbatimSymlinks: true,
-      });
+      if (cache) cpSync(plugin!, isolatedPlugin, { recursive: true, verbatimSymlinks: true });
+      else expect(existsSync(isolatedPlugin)).toBe(false);
       const listener = createServer();
       await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
       const address = listener.address();
@@ -67,7 +66,9 @@ it.skipIf(!entry || !plugin)(
             heartbeat: { every: "0m" },
           },
         },
-        plugins: { allow: ["llama-cpp"], entries: { "llama-cpp": { enabled: !!cache } } },
+        plugins: cache
+          ? { allow: ["llama-cpp"], entries: { "llama-cpp": { enabled: true } } }
+          : { allow: [], entries: {} },
         skills: { allowBundled: [] },
       };
       await writeFile(configPath, JSON.stringify(before));
@@ -95,7 +96,7 @@ it.skipIf(!entry || !plugin)(
             MICROCLAW_FS_SAFE_COMPAT: "1",
             MICROCLAW_OPENCLAW_PACKAGE_DIR: path.dirname(entry!),
             MICROCLAW_EXACT_LOCAL_MODELS: "1",
-            MICROCLAW_LOCAL_MODEL_PLUGIN_DIR: path.join(root, "extensions", "llama-cpp"),
+            MICROCLAW_LOCAL_MODEL_PLUGIN_DIR: isolatedPlugin,
           },
           windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -113,6 +114,10 @@ it.skipIf(!entry || !plugin)(
         timeout: 180_000,
         interval: 500,
       });
+      if (!cache) {
+        expect(existsSync(isolatedPlugin)).toBe(false);
+        cpSync(plugin!, isolatedPlugin, { recursive: true, verbatimSymlinks: true });
+      }
       const events: LocalModelOperation[] = [];
       let receipt: LocalModelReceipt | undefined;
       const service = new LocalModelService({

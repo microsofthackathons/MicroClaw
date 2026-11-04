@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,13 +64,88 @@ function withProviderFiles(
 }
 
 describe("local provider compatibility initialization", () => {
-  it("does not register synchronous loading hooks when the provider is absent", () => {
+  it("registers before first installation and verifies provider bytes when they are later loaded", () => {
+    withProviderFiles(({ plugin, captured, entry }) => {
+      rmSync(plugin, { recursive: true });
+      const handle = { deregister: vi.fn() };
+      const register = vi.fn().mockReturnValue(handle);
+      expect(initializeLocalModelCompatibility(plugin, register)).toBe(handle);
+      expect(register).toHaveBeenCalledExactlyOnceWith({ load: expect.any(Function) });
+      const load = register.mock.calls[0][0].load;
+      const unrelated = { format: "module", source: "unrelated" };
+      expect(load("node:fs", {}, () => unrelated)).toBe(unrelated);
+
+      cpSync(captured, plugin, { recursive: true });
+      for (const filename of [join(plugin, "dist", "index.js"), entry]) {
+        expect(() =>
+          load(pathToFileURL(filename).href, {}, () => ({
+            format: "module",
+            source: "unverified provider source",
+          })),
+        ).toThrow("source differs from its pinned release");
+      }
+    });
+  });
+
+  it("rejects a redirected provider installed after hook registration", () => {
+    withProviderFiles(({ plugin, captured }) => {
+      rmSync(plugin, { recursive: true });
+      const register = vi.fn();
+      initializeLocalModelCompatibility(plugin, register);
+      const load = register.mock.calls[0][0].load;
+      symlinkSync(captured, plugin, "junction");
+      expect(() =>
+        load(pathToFileURL(join(plugin, "dist", "index.js")).href, {}, () => ({
+          format: "module",
+          source: "unverified provider source",
+        })),
+      ).toThrow("must not be redirected");
+    });
+  });
+
+  it("intercepts first-install imports through the real Node loading hook", () => {
+    withProviderFiles(({ root, plugin, captured }) => {
+      rmSync(plugin, { recursive: true });
+      const compatibilityUrl = pathToFileURL(
+        join(__dirname, "openclaw-local-model-compat.mjs"),
+      ).href;
+      const entryUrl = pathToFileURL(join(plugin, "dist", "index.js")).href;
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `import { cpSync } from "node:fs";
+           import { initializeLocalModelCompatibility } from ${JSON.stringify(compatibilityUrl)};
+           initializeLocalModelCompatibility(${JSON.stringify(plugin)});
+           cpSync(${JSON.stringify(captured)}, ${JSON.stringify(plugin)}, { recursive: true });
+           await import(${JSON.stringify(entryUrl)});`,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            OPENCLAW_STATE_DIR: root,
+            MICROCLAW_EXACT_LOCAL_MODELS: "0",
+          },
+          timeout: 10_000,
+          windowsHide: true,
+        },
+      );
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain("The local provider source differs from its pinned release");
+    });
+  });
+
+  it("keeps unrelated loads unchanged while the provider remains absent", () => {
     withProviderFiles(({ root }) => {
       const register = vi.fn();
-      expect(initializeLocalModelCompatibility(join(root, "missing-provider"), register)).toBe(
-        undefined,
-      );
-      expect(register).not.toHaveBeenCalled();
+      initializeLocalModelCompatibility(join(root, "missing-provider"), register);
+      const load = register.mock.calls[0][0].load;
+      const result = { format: "module", source: "unrelated" };
+      expect(load("node:fs", {}, () => result)).toBe(result);
     });
   });
 
