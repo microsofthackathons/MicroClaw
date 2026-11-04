@@ -8,7 +8,6 @@ import {
   normalizeWeixinRemoteApprovalOwner,
   WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
 } from "./windows-node-mxc-weixin-remote-approval";
-import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "./windows-node-mxc-weixin-disclosure-consent";
 
 const modulePath =
   process.env.MICROCLAW_SIMPLE_REPLY_BASELINE ?? "./windows-node-mxc-weixin-remote-approval";
@@ -90,12 +89,6 @@ function setup(nativeDurable = false, delivered = true) {
   const configuration: WeixinRemoteApprovalConfiguration = {
     enabled: true,
     owner,
-    fullDetailDisclosure: {
-      contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
-      receiptId: "11111111-1111-4111-8111-111111111111",
-      acknowledgedAt: "2026-10-22T00:00:00Z",
-      owner,
-    },
     ...(nativeDurable ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } : {}),
   };
   broker.configure(configuration);

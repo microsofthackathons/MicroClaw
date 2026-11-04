@@ -23,12 +23,11 @@ import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc"
 import {
   normalizeWeixinRemoteApprovalOwner,
   WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
-  weixinFullDetailDisclosureHash,
+  weixinRemoteApprovalAuthorityHash,
   weixinRemoteApprovalConsentHash,
   weixinRemoteApprovalWireSourceRejection,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
 } from "../src/windows-node-mxc-weixin-remote-approval";
-import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "../src/windows-node-mxc-weixin-disclosure-consent";
 import {
   bindWeixinApprovalRun,
   deliverWeixinRemoteApproval,
@@ -177,6 +176,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
   let approval;
   let states;
   let pending;
+  let deliveredChallengeId;
   let inboundDiagnostics;
   let main;
   let mainDiagnostics;
@@ -224,16 +224,11 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     decisions = [];
     sources = new Map();
     pending = true;
+    deliveredChallengeId = null;
     const owner = normalizeWeixinRemoteApprovalOwner("bot", rawPeer, "2026-10-20T00:00:00Z");
     configuration = {
       enabled: true,
       owner,
-      fullDetailDisclosure: {
-        contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
-        receiptId: "11111111-1111-4111-8111-111111111111",
-        acknowledgedAt: "2026-10-20T00:00:00Z",
-        owner,
-      },
     };
     broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () =>
       readAuthenticatedWeixinWireOwner(stateDir),
@@ -352,7 +347,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expiresAtUnixMs,
       locale: "en-US",
       isPending: () => pending,
-      challenge: () => {},
+      challenge: (delivery) => {
+        deliveredChallengeId = delivery.challengeId;
+      },
       state: (state) => states.push(state),
       diagnostic: () => {},
       deliveryDiagnostic: (record) => records.push(record),
@@ -518,12 +515,14 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expiresAtUnixMs,
       remoteSecurity,
       remoteSource: findWeixinApprovalSource(sources, approval),
-      remoteDisclosureHash: weixinFullDetailDisclosureHash(configuration),
+      remoteAuthorityHash: weixinRemoteApprovalAuthorityHash(configuration),
+      remoteChallengeId: deliveredChallengeId,
     };
     const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
       exactWeixinApprovalSource,
       getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
-      weixinFullDetailDisclosureHash,
+      weixinRemoteApprovalAuthorityHash,
+      windowsNodeMxcWeixinRemoteApprovalBroker: broker,
       readAuthenticatedWeixinWireOwner,
       getOpenClawStateDir: () => stateDir,
       withWindowsNodeMxcApprovalResolution: (operation) => operation(),
@@ -555,7 +554,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     const resolver = createMainFunctionFixture("resolvePendingWindowsNodeMxcGatewayApproval", {
       findPendingWindowsNodeMxcGatewayApproval: () => (entry.lifecycle.pending ? entry : null),
       getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
-      weixinFullDetailDisclosureHash,
+      weixinRemoteApprovalAuthorityHash,
+      windowsNodeMxcWeixinRemoteApprovalBroker: broker,
     });
     main.replace("pendingWindowsNodeMxcGatewayApproval", entry);
     main.replace("resolvePendingWindowsNodeMxcGatewayApproval", async (...args) => {
@@ -1146,7 +1146,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     },
   );
 
-  it.each(["authenticated-owner-replaced", "consent-revoked", "durable-capability-removed"])(
+  it.each(["authenticated-owner-replaced", "enrollment-disabled", "durable-capability-removed"])(
     "keeps the delivered read-only existence approval fail-closed after %s",
     async (change) => {
       approval = approvalFor(`Test-Path '${target}'`, "ro");
@@ -1157,7 +1157,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       if (change === "authenticated-owner-replaced") credential(rawPeer.toLowerCase());
       else {
         configuration =
-          change === "consent-revoked"
+          change === "enrollment-disabled"
             ? { ...configuration, enabled: false }
             : { ...configuration, consentScope: undefined };
         broker.configure(configuration);
@@ -1354,7 +1354,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     "generation change",
     "pending replacement",
     "feature disabled",
-    "consent epoch",
+    "owner binding epoch",
     "consent scope",
     "raw owner replacement",
     "security transition",
@@ -1384,7 +1384,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     if (change === "pending replacement")
       main.replace("pendingWindowsNodeMxcGatewayApproval", { request: approval });
     if (change === "feature disabled") configuration = { ...configuration, enabled: false };
-    if (change === "consent epoch")
+    if (change === "owner binding epoch")
       configuration = {
         ...configuration,
         owner: { ...configuration.owner, boundAt: "2026-10-22T00:00:00Z" },
@@ -1425,7 +1425,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       "source-identity-mismatch",
     ],
     [
-      "consent owner replaced",
+      "bound owner replaced",
       () => {
         configuration = {
           ...configuration,
@@ -1435,7 +1435,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       "security-binding-invalid",
     ],
     [
-      "consent revoked",
+      "enrollment disabled",
       () => {
         configuration = { ...configuration, enabled: false };
       },

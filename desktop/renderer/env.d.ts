@@ -424,10 +424,6 @@ interface OpenClawAPI {
     exportGateway(lines: string[]): Promise<{ canceled: boolean; filePath?: string }>;
   };
   windowsNodeMxc: {
-    getDisclosureStatus(): Promise<{ consented: boolean; available: boolean }>;
-    requestDisclosure(
-      intent: "enable-full-details" | "revoke",
-    ): Promise<{ consented: boolean; available: boolean }>;
     getFolders(): Promise<{ rw: string[]; ro: string[] }>;
     setFolderPolicy(draft: { rw: string[]; ro: string[] }): Promise<{
       rw: string[];

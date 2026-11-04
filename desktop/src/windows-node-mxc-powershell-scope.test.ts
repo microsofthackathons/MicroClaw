@@ -11,7 +11,6 @@ import {
   normalizeWeixinRemoteApprovalOwner,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
 } from "./windows-node-mxc-weixin-remote-approval";
-import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "./windows-node-mxc-weixin-disclosure-consent";
 // @ts-expect-error External ESM SDK fixture.
 import { runPinnedApprovalRequests } from "../integration/pinned-approval-fixture.mjs";
 // @ts-expect-error External ESM Windows quoting fixture.
@@ -163,12 +162,6 @@ describe("exact contained PowerShell prepared initialization", () => {
       broker.configure({
         enabled: true,
         owner,
-        fullDetailDisclosure: {
-          contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
-          receiptId: "11111111-1111-4111-8111-111111111111",
-          acknowledgedAt: "2026-10-20T00:00:00Z",
-          owner,
-        },
       });
       const result = broker.createChallengeResult({
         source: {

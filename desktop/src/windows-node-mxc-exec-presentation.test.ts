@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   canonicalExecLiteralFields,
   canonicalWindowsCommand,
@@ -15,14 +15,13 @@ import {
 import { createPowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
 import {
   normalizeWeixinRemoteApprovalOwner,
-  weixinFullDetailDisclosureHash,
+  weixinRemoteApprovalAuthorityHash,
   weixinRemoteApprovalConsentHash,
   WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
   type WeixinRemoteApprovalConfiguration,
   type WeixinRemoteApprovalCreateInput,
 } from "./windows-node-mxc-weixin-remote-approval";
-import { planNativeWeixinDisclosure } from "./windows-node-mxc-weixin-disclosure-consent";
 // @ts-expect-error External ESM Windows quoting fixture.
 import { windowsCommand } from "../integration/windows-command-fixture.mjs";
 
@@ -151,29 +150,12 @@ function commandIn(text: string): string {
     .join("");
 }
 
-async function nativeConfiguration(durable = false) {
-  const current: WeixinRemoteApprovalConfiguration = {
+function enrolledConfiguration(durable = false): WeixinRemoteApprovalConfiguration {
+  return {
     enabled: true,
     owner,
     ...(durable ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE } : {}),
   };
-  const result = await planNativeWeixinDisclosure({
-    request: { intent: "enable-full-details" },
-    readConfiguration: () => current,
-    readOptions: () => ({
-      weixinEnabled: true,
-      linkedAccountCount: 1,
-      authenticatedAccountCount: 1,
-      invariantState: "single",
-      account: { accountId: owner.accountId, userId: owner.userId },
-      enableAvailable: true,
-      unavailableReason: null,
-    }),
-    showDialog: vi.fn().mockResolvedValue({ response: 1 }),
-    locale: "en-US",
-  });
-  if (!result) throw new Error("Synthetic native consent did not produce a receipt");
-  return result;
 }
 
 function input(approval: WindowsNodeMxcGatewayApproval): WeixinRemoteApprovalCreateInput {
@@ -481,13 +463,13 @@ describe("canonical v2 exec presentation independent of command names", () => {
   });
 });
 
-describe("native opt-in through actual normalizer and v2 broker", () => {
+describe("enrolled owner through actual normalizer and v2 broker", () => {
   it("does not advertise or accept durable choice 2 when canonical/native flags exclude allow-always", async () => {
     const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () => ({
       accountId: owner.accountId,
       userId: owner.userId,
     }));
-    broker.configure(await nativeConfiguration(true));
+    broker.configure(enrolledConfiguration(true));
     const request = input({
       ...fixture(scripts[5][1]).approval,
       allowedDecisions: ["allow-once", "deny"],
@@ -536,7 +518,7 @@ describe("native opt-in through actual normalizer and v2 broker", () => {
         accountId: owner.accountId,
         userId: owner.userId,
       }));
-      broker.configure(await nativeConfiguration());
+      broker.configure(enrolledConfiguration());
       const request = input(fixture(scripts[5][1]).approval);
       const delivery = broker.createChallenge(request);
       if (!delivery) throw new Error("Canonical public challenge missing");
@@ -577,7 +559,7 @@ describe("native opt-in through actual normalizer and v2 broker", () => {
       accountId: owner.accountId,
       userId: owner.userId,
     }));
-    broker.configure(await nativeConfiguration());
+    broker.configure(enrolledConfiguration());
     const { approval } = fixture(scripts[5][1]);
     expect(canonicalExecLiteralFields(createCanonicalExecPresentation(approval)!)).toContainEqual({
       id: "request.deadline.absent",
@@ -625,7 +607,7 @@ describe("native opt-in through actual normalizer and v2 broker", () => {
         accountId: owner.accountId,
         userId: owner.userId,
       }));
-      broker.configure(await nativeConfiguration(true));
+      broker.configure(enrolledConfiguration(true));
       const request = input({ ...fixture(scripts[5][1]).approval, hasMutableFileOperand: mutable });
       const delivery = broker.createChallenge(request);
       if (!delivery) throw new Error("Public request missing");
@@ -645,24 +627,19 @@ describe("native opt-in through actual normalizer and v2 broker", () => {
     },
   );
 
-  it("defaults Desktop-only, then admits an unknown family and ordinary content only with native-produced receipt", async () => {
+  it("automatically admits ordinary content and unknown command families for the enrolled owner", () => {
     const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () => ({
       accountId: owner.accountId,
       userId: owner.userId,
     }));
-    broker.configure({ enabled: true, owner });
+    const configuration = enrolledConfiguration();
+    broker.configure(configuration);
     const request = input(fixture(scripts[5][1]).approval);
-    expect(broker.createChallengeResult(request)).toMatchObject({
-      status: "rejected",
-      reason: "disclosure-consent-required",
-    });
-    const configuration = await nativeConfiguration();
     expect(configuration.consentScope).toBeUndefined();
     expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
-    broker.configure(configuration);
     const result = broker.createChallengeResult(request);
     expect(result.status).toBe("created");
-    if (result.status !== "created") throw new Error("Native opted-in canonical request rejected");
+    if (result.status !== "created") throw new Error("Enrolled owner's canonical request rejected");
     expect(result.delivery.text).toContain("Command (exact;");
     expect(result.delivery.text).not.toMatch(/legacy|Full details v2/);
     expect(result.delivery.text).not.toContain("2: remember");
@@ -697,45 +674,58 @@ describe("native opt-in through actual normalizer and v2 broker", () => {
     expect(broker.createChallengeResult(unknown).status).toBe("created");
   });
 
-  it("invalidates disclosure changes independently of existing durable consent", async () => {
-    const configuration = await nativeConfiguration(true);
-    const legacy: WeixinRemoteApprovalConfiguration = {
-      enabled: true,
-      owner,
-      consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
-    };
-    expect(weixinRemoteApprovalConsentHash(configuration)).toBe(
-      weixinRemoteApprovalConsentHash(legacy),
-    );
-    const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () => ({
-      accountId: owner.accountId,
-      userId: owner.userId,
-    }));
-    broker.configure(configuration);
-    const request = input(fixture(scripts[5][1]).approval);
-    const delivery = broker.createChallenge(request);
-    expect(delivery).not.toBeNull();
-    if (!delivery) throw new Error("Canonical challenge missing");
-    expect(delivery.text).not.toContain("2: remember");
-    broker.markDelivered(delivery.challengeId, 1001);
-    broker.configure(legacy);
-    expect(weixinFullDetailDisclosureHash(broker.getConfiguration())).toBeNull();
-    expect(
-      broker.resolveCandidate({
-        ...request.source,
-        text: "1",
-        messageId: "101",
-        cursor: 101,
-        requests: request.requests,
-        security,
-        now: 1002,
-      }).status,
-    ).not.toBe("approved");
-    const newReceipt = await nativeConfiguration(true);
-    expect(weixinFullDetailDisclosureHash(newReceipt)).not.toBe(
-      weixinFullDetailDisclosureHash(configuration),
-    );
-  });
+  it.each(["disabled", "owner", "binding", "scope"] as const)(
+    "invalidates a delivered challenge when enrolled authority changes: %s",
+    (change) => {
+      const configuration = enrolledConfiguration();
+      const broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () => ({
+        accountId: owner.accountId,
+        userId: owner.userId,
+      }));
+      broker.configure(configuration);
+      const request = input(fixture(scripts[5][1]).approval);
+      const delivery = broker.createChallenge(request);
+      expect(delivery).not.toBeNull();
+      if (!delivery) throw new Error("Canonical challenge missing");
+      expect(delivery.text).not.toContain("2: remember");
+      broker.markDelivered(delivery.challengeId, 1001);
+      const changed: WeixinRemoteApprovalConfiguration =
+        change === "disabled"
+          ? { ...configuration, enabled: false }
+          : change === "owner"
+            ? { ...configuration, owner: { ...owner, userId: "other@im.wechat" } }
+            : change === "binding"
+              ? { ...configuration, owner: { ...owner, boundAt: "2026-10-24T00:00:00.000Z" } }
+              : { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+      expect(weixinRemoteApprovalAuthorityHash(changed)).not.toBe(
+        weixinRemoteApprovalAuthorityHash(configuration),
+      );
+      broker.configure(changed);
+      expect(
+        broker.resolveCandidate({
+          ...request.source,
+          text: "1",
+          messageId: "101",
+          cursor: 101,
+          requests: request.requests,
+          security,
+          now: 1002,
+        }).status,
+      ).not.toBe("approved");
+      broker.configure(configuration);
+      expect(
+        broker.resolveCandidate({
+          ...request.source,
+          text: "1",
+          messageId: "102",
+          cursor: 102,
+          requests: request.requests,
+          security,
+          now: 1003,
+        }).status,
+      ).not.toBe("approved");
+    },
+  );
 
   it.each(["origin", "run", "generation", "request"] as const)(
     "retains %s authority fencing for v2",
@@ -744,7 +734,7 @@ describe("native opt-in through actual normalizer and v2 broker", () => {
         accountId: owner.accountId,
         userId: owner.userId,
       }));
-      broker.configure(await nativeConfiguration());
+      broker.configure(enrolledConfiguration());
       const request = input(fixture(scripts[5][1]).approval);
       if (mutation === "origin")
         request.requests[0].approval = { ...request.requests[0].approval, origin: undefined };

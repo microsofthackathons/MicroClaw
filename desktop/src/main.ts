@@ -384,7 +384,7 @@ import {
   projectWeixinRemoteApprovalRuntimeConfiguration,
   WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
   WindowsNodeMxcWeixinRemoteApprovalBroker,
-  weixinFullDetailDisclosureHash,
+  weixinRemoteApprovalAuthorityHash,
   weixinRemoteApprovalWireSourceRejection,
   type WeixinRemoteApprovalOwnerBinding,
   type WeixinRemoteApprovalConfiguration,
@@ -392,11 +392,6 @@ import {
   type WeixinRemoteApprovalSecurityBinding,
   type WeixinRemoteApprovalSource,
 } from "./windows-node-mxc-weixin-remote-approval";
-import {
-  planNativeWeixinDisclosure,
-  validateWeixinFullDetailDisclosure,
-  type WeixinDisclosureStatus,
-} from "./windows-node-mxc-weixin-disclosure-consent";
 import {
   planWeixinRemoteApprovalTransition,
   readWeixinRemoteApprovalActivationOptions,
@@ -890,7 +885,6 @@ const windowsNodeMxcWeixinRemoteApprovalSources = new Map<string, WeixinRemoteAp
 let windowsNodeMxcActivationInProgress = false;
 let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
 let windowsNodeMxcSecurityTransitionInProgress = false;
-let windowsNodeMxcNativeDisclosurePending = false;
 let windowsNodeMxcReadinessTransitionId: string | null = null;
 const windowsNodeMxcLifecycleOperations = new WindowsNodeMxcLifecycleOperationCoordinator();
 let windowsNodeMxcFolderPolicyMutationInProgress = false;
@@ -921,7 +915,7 @@ interface PendingWindowsNodeMxcGatewayApproval {
   remoteSecurity: WeixinRemoteApprovalSecurityBinding | null;
   folderGrantsSaved?: boolean;
   remoteChallengeId: string | null;
-  remoteDisclosureHash: string | null;
+  remoteAuthorityHash: string | null;
   remoteAttempt: Promise<unknown> | null;
   remoteCoordinator: WeixinRemoteDeliveryCoordinator;
   beginRemoteDelivery: (trigger: WeixinRemoteDeliveryTrigger) => void;
@@ -948,7 +942,6 @@ let windowsNodeMxcStartupTiming: {
 let windowsNodeMxcDurableApprovalStore: WindowsNodeMxcDurableApprovalStore | null = null;
 let windowsNodeMxcDurableApprovalOperation: Promise<void> = Promise.resolve();
 let windowsNodeMxcApprovalResolutionInProgress = false;
-const windowsNodeMxcApprovalResolutionActivity = { pending: 0 };
 let windowsNodeMxcApprovalResolutionCompletion: Promise<void> | null = null;
 let windowsNodeMxcGatewayApprovalResolutionTarget: {
   id: string;
@@ -1431,33 +1424,28 @@ function runTrackedWindowsNodeMxcLifecycleOperation<T>(
 }
 
 async function withWindowsNodeMxcApprovalResolution<T>(operation: () => Promise<T>): Promise<T> {
-  windowsNodeMxcApprovalResolutionActivity.pending++;
+  if (windowsNodeMxcFailClosedPromise || windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Approval responses are blocked during an MXC lifecycle transition");
+  }
+  while (windowsNodeMxcApprovalResolutionCompletion)
+    await windowsNodeMxcApprovalResolutionCompletion;
+  if (windowsNodeMxcFailClosedPromise || windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Approval responses are blocked during an MXC lifecycle transition");
+  }
+  windowsNodeMxcApprovalResolutionInProgress = true;
+  let completeApprovalResolution!: () => void;
+  const approvalResolution = new Promise<void>((resolve) => {
+    completeApprovalResolution = resolve;
+  });
+  windowsNodeMxcApprovalResolutionCompletion = approvalResolution;
   try {
-    if (windowsNodeMxcFailClosedPromise || windowsNodeMxcSecurityTransitionInProgress) {
-      throw new Error("Approval responses are blocked during an MXC lifecycle transition");
-    }
-    while (windowsNodeMxcApprovalResolutionCompletion)
-      await windowsNodeMxcApprovalResolutionCompletion;
-    if (windowsNodeMxcFailClosedPromise || windowsNodeMxcSecurityTransitionInProgress) {
-      throw new Error("Approval responses are blocked during an MXC lifecycle transition");
-    }
-    windowsNodeMxcApprovalResolutionInProgress = true;
-    let completeApprovalResolution!: () => void;
-    const approvalResolution = new Promise<void>((resolve) => {
-      completeApprovalResolution = resolve;
-    });
-    windowsNodeMxcApprovalResolutionCompletion = approvalResolution;
-    try {
-      return await operation();
-    } finally {
-      windowsNodeMxcApprovalResolutionInProgress = false;
-      completeApprovalResolution();
-      if (windowsNodeMxcApprovalResolutionCompletion === approvalResolution) {
-        windowsNodeMxcApprovalResolutionCompletion = null;
-      }
-    }
+    return await operation();
   } finally {
-    windowsNodeMxcApprovalResolutionActivity.pending--;
+    windowsNodeMxcApprovalResolutionInProgress = false;
+    completeApprovalResolution();
+    if (windowsNodeMxcApprovalResolutionCompletion === approvalResolution) {
+      windowsNodeMxcApprovalResolutionCompletion = null;
+    }
   }
 }
 
@@ -1908,85 +1896,6 @@ function getWindowsNodeMxcWeixinRemoteApprovalConfiguration(): WeixinRemoteAppro
     return { enabled: false, owner: null };
   }
   return configuration;
-}
-
-function getWindowsNodeMxcWeixinDisclosureStatus(): WeixinDisclosureStatus {
-  const stored = getStoredWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-  const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-  return {
-    consented: Boolean(
-      validateWeixinFullDetailDisclosure(stored.fullDetailDisclosure, stored.owner),
-    ),
-    available:
-      configuration.enabled &&
-      isWindowsNodeMxcDesired() &&
-      isAuthenticatedWeixinRemoteApprovalOwner(configuration.owner),
-  };
-}
-
-async function requestWindowsNodeMxcWeixinDisclosure(
-  event: IpcMainInvokeEvent,
-  request: unknown,
-): Promise<WeixinDisclosureStatus> {
-  assertTrustedRendererIpc(event);
-  if (
-    windowsNodeMxcNativeDisclosurePending ||
-    windowsNodeMxcSecurityTransitionInProgress ||
-    windowsNodeMxcApprovalResolutionActivity.pending > 0
-  ) {
-    throw new Error("Native WeChat disclosure consent is busy");
-  }
-  windowsNodeMxcNativeDisclosurePending = true;
-  try {
-    const generation = gatewayGenerationId;
-    const expected = JSON.stringify(getStoredWindowsNodeMxcWeixinRemoteApprovalConfiguration());
-    const configuration = await planNativeWeixinDisclosure({
-      request,
-      readConfiguration: getStoredWindowsNodeMxcWeixinRemoteApprovalConfiguration,
-      readOptions: () => {
-        const options = getWeixinRemoteApprovalActivationOptions();
-        return {
-          ...options,
-          enableAvailable: options.enableAvailable && isWindowsNodeMxcDesired(),
-        };
-      },
-      locale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
-      showDialog: async (options) => {
-        const window = mainWindow;
-        if (!window || window.isDestroyed()) {
-          throw new Error("The MicroClaw window is unavailable for native disclosure consent");
-        }
-        return dialog.showMessageBox(window, options);
-      },
-    });
-    if (!configuration) return getWindowsNodeMxcWeixinDisclosureStatus();
-    if (
-      generation !== gatewayGenerationId ||
-      windowsNodeMxcSecurityTransitionInProgress ||
-      windowsNodeMxcApprovalResolutionActivity.pending > 0 ||
-      JSON.stringify(getStoredWindowsNodeMxcWeixinRemoteApprovalConfiguration()) !== expected
-    ) {
-      throw new Error("WeChat disclosure authority changed during native consent");
-    }
-    if (JSON.stringify(configuration) !== expected) {
-      settingsStore.set("windowsNodeMxcWeixinRemoteApproval", configuration);
-      getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-      for (const pending of allPendingWindowsNodeMxcGatewayApprovals()) {
-        if (!pending.lifecycle.pending) continue;
-        pending.remoteChallengeId = null;
-        pending.remoteDisclosureHash = null;
-        publishPendingWeixinRemoteDelivery(pending, {
-          state: "local-only",
-          reason: "security-binding-invalid",
-          replyMode: null,
-          revision: 0,
-        });
-      }
-    }
-    return getWindowsNodeMxcWeixinDisclosureStatus();
-  } finally {
-    windowsNodeMxcNativeDisclosurePending = false;
-  }
 }
 
 function readAuthenticatedWeixinOwners(): WeixinRemoteApprovalOwnerBinding[] {
@@ -3431,7 +3340,7 @@ async function handleWindowsNodeMxcGatewayApproval(
     remoteSource: remoteSource ?? null,
     remoteSecurity,
     remoteChallengeId: null,
-    remoteDisclosureHash: null,
+    remoteAuthorityHash: null,
     remoteAttempt: null,
     remoteCoordinator: new WeixinRemoteDeliveryCoordinator(),
     beginRemoteDelivery: (trigger) =>
@@ -3484,11 +3393,11 @@ function beginPendingWindowsNodeMxcRemoteDelivery(
   const approval = pending.request;
   const expiresAtUnixMs = pending.expiresAtUnixMs;
   const configuration = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
-  const disclosureHash = weixinFullDetailDisclosureHash(configuration);
+  const authorityHash = weixinRemoteApprovalAuthorityHash(configuration);
   const isPending = () =>
     pending.lifecycle.pending &&
-    weixinFullDetailDisclosureHash(getWindowsNodeMxcWeixinRemoteApprovalConfiguration()) ===
-      disclosureHash &&
+    weixinRemoteApprovalAuthorityHash(getWindowsNodeMxcWeixinRemoteApprovalConfiguration()) ===
+      authorityHash &&
     (queued
       ? findPendingWindowsNodeMxcGatewayApproval(approval.id) === pending
       : pendingWindowsNodeMxcGatewayApproval === pending);
@@ -3527,7 +3436,7 @@ function beginPendingWindowsNodeMxcRemoteDelivery(
         isPending,
         challenge: (delivery) => {
           pending.remoteChallengeId = delivery.challengeId;
-          pending.remoteDisclosureHash = disclosureHash;
+          pending.remoteAuthorityHash = authorityHash;
         },
         state: (state) => {
           if (!isPending()) return;
@@ -3705,11 +3614,15 @@ async function resolvePendingWindowsNodeMxcGatewayApproval(
   }
   if (
     origin === "wechat" &&
-    (!gatewayApproval.remoteDisclosureHash ||
-      weixinFullDetailDisclosureHash(getWindowsNodeMxcWeixinRemoteApprovalConfiguration()) !==
-        gatewayApproval.remoteDisclosureHash)
+    (!gatewayApproval.remoteAuthorityHash ||
+      weixinRemoteApprovalAuthorityHash(getWindowsNodeMxcWeixinRemoteApprovalConfiguration()) !==
+        gatewayApproval.remoteAuthorityHash ||
+      !gatewayApproval.remoteChallengeId ||
+      !windowsNodeMxcWeixinRemoteApprovalBroker.isResolutionPending(
+        gatewayApproval.remoteChallengeId,
+      ))
   ) {
-    throw new Error("The WeChat disclosure policy changed before resolution");
+    throw new Error("The WeChat approval authority changed before resolution");
   }
   await gatewayApproval.lifecycle.decide(decision, origin);
 }
@@ -3721,14 +3634,17 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
   expectedRemoteSecurity: WeixinRemoteApprovalSecurityBinding | null,
 ): Promise<Extract<MxcApprovalTerminal, { status: "accepted" }>> {
   const requestId = gatewayApproval.request.id;
-  const expectedDisclosureHash = gatewayApproval.remoteDisclosureHash;
+  const expectedAuthorityHash = gatewayApproval.remoteAuthorityHash;
+  const expectedChallengeId = gatewayApproval.remoteChallengeId;
   if (
     origin === "wechat" &&
-    (!expectedDisclosureHash ||
-      weixinFullDetailDisclosureHash(getWindowsNodeMxcWeixinRemoteApprovalConfiguration()) !==
-        expectedDisclosureHash)
+    (!expectedAuthorityHash ||
+      weixinRemoteApprovalAuthorityHash(getWindowsNodeMxcWeixinRemoteApprovalConfiguration()) !==
+        expectedAuthorityHash ||
+      !expectedChallengeId ||
+      !windowsNodeMxcWeixinRemoteApprovalBroker.isResolutionPending(expectedChallengeId))
   ) {
-    throw new Error("The WeChat disclosure policy changed before resolution");
+    throw new Error("The WeChat approval authority changed before resolution");
   }
   if (
     origin === "wechat" &&
@@ -3759,8 +3675,11 @@ async function commitPendingWindowsNodeMxcGatewayApproval(
       if (!remoteConfiguration) return;
       const current = getWindowsNodeMxcWeixinRemoteApprovalConfiguration();
       if (
-        !expectedDisclosureHash ||
-        weixinFullDetailDisclosureHash(current) !== expectedDisclosureHash ||
+        !expectedAuthorityHash ||
+        weixinRemoteApprovalAuthorityHash(current) !== expectedAuthorityHash ||
+        !expectedChallengeId ||
+        gatewayApproval.remoteChallengeId !== expectedChallengeId ||
+        !windowsNodeMxcWeixinRemoteApprovalBroker.isResolutionPending(expectedChallengeId) ||
         JSON.stringify(current) !== JSON.stringify(remoteConfiguration) ||
         approvalGeneration !== gatewayGenerationId ||
         client !== gwClient ||
@@ -9208,14 +9127,6 @@ function registerIpcHandlers(): void {
 
   // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
   ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
-  ipcMain.handle("windows-node-mxc:weixin-disclosure-status", (event) => {
-    assertTrustedRendererIpc(event);
-    return getWindowsNodeMxcWeixinDisclosureStatus();
-  });
-  ipcMain.handle(
-    "windows-node-mxc:weixin-disclosure-request",
-    requestWindowsNodeMxcWeixinDisclosure,
-  );
   ipcMain.handle("windows-node-mxc:display-status", () =>
     presentWindowsNodeMxcDisplayStatus(windowsNodeMxcStatusCache.display()),
   );

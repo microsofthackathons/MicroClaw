@@ -7,10 +7,6 @@ import {
   type GenericPhonePresentationCategory,
 } from "./windows-node-mxc-weixin-exec-presentation";
 import {
-  validateWeixinFullDetailDisclosure,
-  type WeixinFullDetailDisclosure,
-} from "./windows-node-mxc-weixin-disclosure-consent";
-import {
   normalizeWeixinProviderInteger,
   isLaterWeixinProviderCursor,
 } from "./weixin-provider-integer";
@@ -39,7 +35,6 @@ export interface WeixinRemoteApprovalConfiguration {
   enabled: boolean;
   owner: WeixinRemoteApprovalOwnerBinding | null;
   consentScope?: typeof WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE;
-  fullDetailDisclosure?: WeixinFullDetailDisclosure;
 }
 
 export function migrateWeixinRemoteApprovalConfiguration(
@@ -60,19 +55,12 @@ export function migrateWeixinRemoteApprovalConfiguration(
       typeof owner.userId === "string" ? owner.userId : "",
       typeof owner.boundAt === "string" ? owner.boundAt : new Date(0).toISOString(),
     );
-    const disclosure = validateWeixinFullDetailDisclosure(record.fullDetailDisclosure, normalized);
-    if (Object.hasOwn(record, "fullDetailDisclosure") && !disclosure) {
-      console.warn(
-        "[weixin-remote-approval] Invalid or rebound command disclosure receipt; Desktop approval required",
-      );
-    }
     return {
       enabled: record.enabled === true,
       owner: normalized,
       ...(record.consentScope === WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
         ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
         : {}),
-      ...(disclosure ? { fullDetailDisclosure: disclosure } : {}),
     };
   } catch {
     return { enabled: false, owner: null };
@@ -260,7 +248,7 @@ interface ActiveChallenge {
   bindingHash: string;
   presentationBinding: {
     presentationDigest: string;
-    disclosureHash: string;
+    authorityHash: string;
   };
   source: WeixinRemoteApprovalSource;
   security: WeixinRemoteApprovalSecurityBinding;
@@ -329,14 +317,18 @@ export function weixinRemoteApprovalConsentHash(
     : null;
 }
 
-export function weixinFullDetailDisclosureHash(
+export function weixinRemoteApprovalAuthorityHash(
   configuration: WeixinRemoteApprovalConfiguration,
 ): string | null {
-  const consent = validateWeixinFullDetailDisclosure(
-    configuration.fullDetailDisclosure,
-    configuration.owner,
-  );
-  return configuration.enabled && consent ? hash(canonicalize(consent)) : null;
+  return configuration.enabled && configuration.owner
+    ? hash(
+        canonicalize({
+          domain: "microclaw.wechat-approval-owner.v1",
+          owner: configuration.owner,
+          consentScope: configuration.consentScope ?? null,
+        }),
+      )
+    : null;
 }
 
 function canonicalize(value: unknown): string {
@@ -455,7 +447,6 @@ export type WeixinRemoteApprovalRejectionReason =
   | "source-run-mismatch"
   | "source-provider-mismatch"
   | "ambiguous-request-set"
-  | "disclosure-consent-required"
   | "presentation-sensitive"
   | "presentation-unsupported"
   | "presentation-too-long"
@@ -524,19 +515,13 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
           configuration.owner.boundAt,
         )
       : null;
-    const disclosure = validateWeixinFullDetailDisclosure(
-      configuration.fullDetailDisclosure,
-      owner,
-    );
     const changed =
       this.configuration.enabled !== configuration.enabled ||
       this.configuration.consentScope !== configuration.consentScope ||
-      canonicalize(this.configuration.owner) !== canonicalize(owner) ||
-      canonicalize(this.configuration.fullDetailDisclosure ?? null) !== canonicalize(disclosure);
+      canonicalize(this.configuration.owner) !== canonicalize(owner);
     this.configuration = {
       enabled: configuration.enabled,
       ...(configuration.consentScope ? { consentScope: configuration.consentScope } : {}),
-      ...(disclosure ? { fullDetailDisclosure: disclosure } : {}),
       owner,
     };
     if (changed) this.invalidateAll("configuration-changed");
@@ -546,14 +531,6 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     return {
       enabled: this.configuration.enabled,
       ...(this.configuration.consentScope ? { consentScope: this.configuration.consentScope } : {}),
-      ...(this.configuration.fullDetailDisclosure
-        ? {
-            fullDetailDisclosure: {
-              ...this.configuration.fullDetailDisclosure,
-              owner: { ...this.configuration.fullDetailDisclosure.owner },
-            },
-          }
-        : {}),
       owner: this.configuration.owner ? { ...this.configuration.owner } : null,
     };
   }
@@ -595,8 +572,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     }
     if (!SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode))
       return reject("security-binding-invalid");
-    const disclosureHash = weixinFullDetailDisclosureHash(this.configuration);
-    if (!disclosureHash) return reject("disclosure-consent-required");
+    const authorityHash = weixinRemoteApprovalAuthorityHash(this.configuration);
+    if (!authorityHash) return reject("disabled");
     if (
       input.requests.some(({ approval }) => approval.providerInitialization) &&
       !(
@@ -667,7 +644,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     this.invalidateChat(chatKey, "superseded");
     const presentationBinding = {
       presentationDigest: presentation.presentationDigest,
-      disclosureHash,
+      authorityHash,
     };
     const challenge: ActiveChallenge = {
       id,
@@ -943,8 +920,8 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
         },
         challenge.presentationBinding,
       ) !== challenge.bindingHash ||
-      weixinFullDetailDisclosureHash(this.configuration) !==
-        challenge.presentationBinding.disclosureHash
+      weixinRemoteApprovalAuthorityHash(this.configuration) !==
+        challenge.presentationBinding.authorityHash
     ) {
       return reject("stale", true);
     }
@@ -998,6 +975,11 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       this.recordAudit(challenge, "invalidated", `local-${result}`);
       this.pendingResolutions.delete(challengeId);
     }
+  }
+
+  isResolutionPending(challengeId: string): boolean {
+    // Invalidated decisions stay invalid even if the same enrollment is later restored.
+    return this.pendingResolutions.has(challengeId);
   }
 
   completeResolution(challengeId: string, result: "approved" | "denied"): void {

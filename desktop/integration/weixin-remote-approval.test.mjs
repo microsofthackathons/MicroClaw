@@ -96,7 +96,6 @@ vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
 }));
 
 import { interceptWeixinRemoteApprovalMessage } from "../../plugins/openclaw-weixin/src/messaging/process-message.js";
-import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "../src/windows-node-mxc-weixin-disclosure-consent";
 import { monitorWeixinProvider } from "../../plugins/openclaw-weixin/src/monitor/monitor.js";
 import { parseWeixinUpdatesJson } from "../../plugins/openclaw-weixin/src/api/provider-metadata.js";
 import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
@@ -249,7 +248,6 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     approval = normalizedApproval(),
     durableConsent = true,
     scopeOverride = undefined,
-    disclosureConsent = true,
   ) {
     const sources = new Map();
     const owner = normalizeWeixinRemoteApprovalOwner(
@@ -264,16 +262,6 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
           ? { consentScope: scopeOverride ?? WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
           : {}),
         owner,
-        ...(disclosureConsent
-          ? {
-              fullDetailDisclosure: {
-                contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
-                receiptId: "11111111-1111-4111-8111-111111111111",
-                acknowledgedAt: "2026-10-20T00:00:00.000Z",
-                owner,
-              },
-            }
-          : {}),
       },
       true,
     );
@@ -829,20 +817,17 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     },
   );
 
-  it("shares ordinary inline content only after the owner has consented to full details", async () => {
+  it("automatically shares ordinary inline content with the authenticated enrolled owner", async () => {
     const script = `Set-Content -Path '${root}\\sample.txt' -Value 'ordinary inline text'`;
-    const allowed = await pipeline(normalizedApproval(script));
+    const allowed = await pipeline(normalizedApproval(script), false);
     const delivery = await allowed.start();
     expect(delivery?.text).toContain("ordinary inline text");
-    const withheld = await pipeline(normalizedApproval(script), true, undefined, false);
-    expect(await withheld.start()).toBeNull();
-    expect(withheld.states.at(-1)).toMatchObject({
-      state: "local-only",
-      reason: "disclosure-consent-required",
-    });
-    const fallback = mocks.send.mock.calls.at(-1)[0].text;
-    expect(fallback).not.toContain("ordinary inline text");
-    expect(fallback).not.toContain("sample.txt");
+    expect(delivery?.text).toContain("Reply 1:");
+    expect(delivery?.text).not.toContain("2: remember");
+    expect(await allowed.reply("1")).toBe(true);
+    expect(allowed.resolved).toEqual([
+      expect.objectContaining({ decision: "allow-once", origin: "wechat" }),
+    ]);
   });
 
   it("does not authorize after unconfirmed delivery or automatically resend", async () => {

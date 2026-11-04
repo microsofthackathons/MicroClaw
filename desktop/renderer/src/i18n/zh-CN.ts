@@ -447,13 +447,6 @@ export default {
   "settings.windowsNodeMxcDisabled": "未启用",
   "settings.windowsNodeMxcCommands": "节点声明的命令",
   "settings.windowsNodeMxcConnection": "连接 / 配对",
-  "settings.weixinDisclosure": "微信命令详情披露",
-  "settings.weixinDisclosureGranted": "允许向绑定的微信账户共享命令详情，以便在手机审批。",
-  "settings.weixinDisclosureDesktop": "未共享命令详情。原生确认同意前，审批仅在桌面进行。",
-  "settings.weixinDisclosureRisk":
-    "命令详情包括通过微信发送的所有参数、内联内容及声明路径。过滤规则无法证明任意文本均为公开内容。此披露需单独在原生对话框中确认并绑定已认证账户，不会启用永久命令审批。更改同意后，已有的待处理手机请求将仅可在桌面审批，不会重发。",
-  "settings.weixinDisclosureReview": "查看命令共享同意说明",
-  "settings.weixinDisclosureRevoke": "撤销命令共享",
   "settings.windowsNodeMxcFolders": "MXC 全局批准文件夹",
   "settings.windowsNodeMxcFullFolders": "完整强边界批准文件夹",
   "settings.windowsNodeMxcLimitedFolders": "有限模式额外文件系统授权",

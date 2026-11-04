@@ -348,19 +348,17 @@ sole identity is atomically added to the account's sender allowlist when necessa
 explicit ordinary-message senders without granting them remote approval authority. If WeChat is
 disabled, unavailable, unauthenticated, or in a legacy multiple-account state, sandboxing still
 proceeds directly with remote approval disabled. Turning MXC Off
-or replacing the exact identity clears the owner binding. Default enrollment never issues native durable-consent scope or full-detail disclosure consent;
-existing command eligibility, exact leases, and privacy gates remain independent. Active consent
-is not upgraded.
+or replacing the exact identity clears the owner binding. Default enrollment does not issue native
+durable-consent scope; existing command eligibility, exact leases, and privacy gates remain
+independent. Historical durable consent is not upgraded.
 
-In Security settings, the owner can separately review a native warning and opt in to sharing full
-command details with the exact authenticated WeChat account. The warning explains that commands,
-arguments, inline content, paths, and executable identity pass through WeChat and its provider;
-filters cannot prove arbitrary text is public. Consent is a native-generated receipt bound to the
-specific owner and binding epoch, not a renderer-provided flag. Missing, invalid, revoked, or
-rebound consent keeps requests Desktop-only. Changing or revoking consent invalidates outstanding
-phone challenges without changing their Desktop deadlines or automatically resending them; it
-cannot retract details already sent. A saved receipt can also be revoked while MXC is Off, without
-changing WeChat enrollment. Disclosure consent never grants a durable command approval.
+Eligible command details are automatically shared with the bound, authenticated WeChat account
+for phone approval; there is no separate disclosure setting or confirmation. Commands, arguments,
+inline content, paths, and executable identity can pass through WeChat and its provider.
+Filters cannot prove arbitrary text is public, and previously sent details cannot be retracted.
+An account change, rebinding, or disabled enrollment invalidates outstanding phone challenges
+without extending Desktop deadlines or automatically resending them. Sharing details does not
+grant durable command approval.
 
 The selected configuration is persisted while the Gateway is locked and before the attested active
 generation, lease, or ingress release is issued. Retries of active Full/Limited selections cannot rebind
@@ -494,15 +492,14 @@ frame to 64 KiB. A validated PowerShell folder initializer can be represented by
 verified original argv, while execution still uses the bound final argv; a preview alone is never
 authority. Invalid canonical plans, unrepresentable or oversized messages, unsafe Unicode,
 recognizable sensitive or encoded data and ambiguous redaction remain Desktop-only. These checks
-cannot identify every secret in arbitrary text; the explicit account-bound disclosure decision is
-therefore required even when a command passes them.
+cannot identify every secret in arbitrary text, even when a command passes them.
 
 The bounded approval-surface inventory is:
 
 | Desktop family / producer | WeChat eligibility |
 | --- | --- |
 | Gateway `exec.approval.requested` for the selected bundled node, normalized from the pinned SDK's prepared `systemRunPlan` and admitted caller origin | Eligible only with the exact current authenticated owner/account/canonical run route, source registration, active generation/security and a representable command. OpenClaw's normal Windows shell producer uses `cmd.exe /d /s /c`. |
-| CMD, PowerShell and other prepared executables | The same generic exact-command presentation applies, subject to disclosure consent, canonical-plan, safety and size checks. The renderer does not infer extra filesystem permissions from command text. |
+| CMD, PowerShell and other prepared executables | The same generic exact-command presentation applies, subject to authenticated owner, canonical-plan, safety and size checks. The renderer does not infer extra filesystem permissions from command text. |
 | Bundled host `onApproval` / `approvalLayer=node` fallback | Desktop once/deny only. This layer has no authenticated canonical chat/run origin; no phone challenge or selected-chat activity is invented. Native proof, path/reparse and execution checks are unchanged. |
 | Windows Node durable rules | Eligible commands may be remembered from Desktop only. A historical WeChat conversation-scoped opt-in does not authorize creating an agent-wide rule. |
 
@@ -551,7 +548,7 @@ apply. Broker-process-lifetime hashed message-ID fences reject already seen deci
 pre-acknowledgement and expired replies, across challenge replacement. These replay fences do not
 identify the intended prompt of a previously unseen delayed reply.
 
-The in-memory challenge binds the disclosure receipt and presentation digest as well as the
+The in-memory challenge binds the enrolled owner and binding epoch and the presentation digest as well as the
 authenticated sender/account/chat, source message ID and cursor,
 agent/session, exact approval ID, executable canonical path and SHA-256, argv, CWD,
 declarations, requested/effective mode, Gateway generation, policy fingerprint, node identity,
@@ -559,8 +556,9 @@ active-lease authority fingerprint, creation/expiry, challenge ID, and code hash
 the current pending approval, ingress release, Gateway client/generation, policy proof context, and active lease
 immediately before the existing `exec.approval.resolve` call. Remote decisions can approve once or
 deny, including the combined folder-grant decision; they cannot create a Windows Node allowlist rule.
-Renderer-supplied scope markers are rejected. Main rechecks the same disclosure receipt and exact
-owner during asynchronous resolution, including before and after folder-policy mutations.
+Renderer-supplied scope markers are rejected. Main rechecks the same enrollment authority,
+pending challenge, and exact owner during asynchronous resolution, including before and after
+folder-policy mutations.
 
 Ordinary signed active-lease expiry renewal does not invalidate a pending phone prompt. Its opaque,
 Main-only fingerprint binds the private host instance, exact Main-owned readiness/proof context,

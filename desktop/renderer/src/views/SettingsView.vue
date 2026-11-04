@@ -583,46 +583,6 @@
               {{ t("settings.windowsNodeMxcAvailabilityOnEnable") }}
             </span>
           </div>
-          <div
-            v-if="
-              weixinDisclosureStatus &&
-              (weixinDisclosureStatus.consented || !windowsNodeMxcFullyOff)
-            "
-            class="card-row no-border"
-            data-testid="weixin-disclosure-settings"
-          >
-            <div>
-              <span class="row-label">{{ t("settings.weixinDisclosure") }}</span>
-              <p class="mxc-folder-policy-hint">
-                {{
-                  t(
-                    weixinDisclosureStatus.consented
-                      ? "settings.weixinDisclosureGranted"
-                      : "settings.weixinDisclosureDesktop",
-                  )
-                }}
-              </p>
-              <p class="mxc-mode-warning">{{ t("settings.weixinDisclosureRisk") }}</p>
-            </div>
-            <el-button
-              data-testid="weixin-disclosure-review"
-              :loading="weixinDisclosurePending"
-              :disabled="
-                weixinDisclosurePending ||
-                !weixinDisclosureStatus.available ||
-                weixinDisclosureStatus.consented
-              "
-              @click="requestWeixinDisclosure('enable-full-details')"
-              >{{ t("settings.weixinDisclosureReview") }}</el-button
-            >
-            <el-button
-              v-if="weixinDisclosureStatus.consented"
-              data-testid="weixin-disclosure-revoke"
-              :disabled="weixinDisclosurePending"
-              @click="requestWeixinDisclosure('revoke')"
-              >{{ t("settings.weixinDisclosureRevoke") }}</el-button
-            >
-          </div>
           <template v-if="windowsNodeMxcStatus && !windowsNodeMxcFullyOff">
             <div
               v-if="!windowsNodeMxcProtectionActive"
@@ -1145,11 +1105,6 @@ type WindowsNodeMxcAmbientEntry = NonNullable<
   WindowsNodeMxcStatus["ambientAccess"]
 >["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
-const weixinDisclosureStatus = ref<Awaited<
-  ReturnType<typeof window.openclaw.windowsNodeMxc.getDisclosureStatus>
-> | null>(null);
-const weixinDisclosurePending = ref(false);
-let weixinDisclosureRevision = 0;
 const windowsNodeMxcStatusLoading = ref(false);
 const windowsNodeMxcVerifiedAt = ref<number | null>(null);
 let unsubscribeMxcDisplay: (() => void) | undefined;
@@ -1400,7 +1355,6 @@ async function loadWindowsNodeMxcStatus() {
       const status = await window.openclaw.windowsNodeMxc.getStatus();
       updateWindowsNodeMxcStatus(status);
     }
-    await loadWeixinDisclosureStatus();
   } catch (error) {
     windowsNodeMxcStatusError.value = error instanceof Error ? error.message : String(error);
     ElMessage.error(windowsNodeMxcStatusError.value);
@@ -1410,34 +1364,6 @@ async function loadWindowsNodeMxcStatus() {
       windowsNodeMxcStatusError.value
     )
       windowsNodeMxcStatusLoading.value = false;
-  }
-}
-
-async function loadWeixinDisclosureStatus() {
-  if (weixinDisclosurePending.value) return;
-  const revision = ++weixinDisclosureRevision;
-  try {
-    const status = await window.openclaw.windowsNodeMxc.getDisclosureStatus();
-    if (revision === weixinDisclosureRevision && !weixinDisclosurePending.value)
-      weixinDisclosureStatus.value = status;
-  } catch (error) {
-    if (revision === weixinDisclosureRevision && !weixinDisclosurePending.value) {
-      weixinDisclosureStatus.value = null;
-      ElMessage.error(error instanceof Error ? error.message : String(error));
-    }
-  }
-}
-
-async function requestWeixinDisclosure(intent: "enable-full-details" | "revoke") {
-  if (weixinDisclosurePending.value) return;
-  weixinDisclosureRevision++;
-  weixinDisclosurePending.value = true;
-  try {
-    weixinDisclosureStatus.value = await window.openclaw.windowsNodeMxc.requestDisclosure(intent);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : String(error));
-  } finally {
-    weixinDisclosurePending.value = false;
   }
 }
 
@@ -1459,7 +1385,6 @@ async function toggleWindowsNodeMxc(): Promise<boolean> {
     const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
     if (status) {
       updateWindowsNodeMxcStatus(status);
-      await loadWeixinDisclosureStatus();
     } else {
       windowsNodeMxcStatus.value = null;
       windowsNodeMxcVerifiedAt.value = null;
@@ -2195,15 +2120,8 @@ watch(showLocalSetup, (visible, wasVisible) => {
 
 onMounted(async () => {
   unsubscribeMxcDisplay = window.openclaw.windowsNodeMxc.onDisplayStatus?.((snapshot) => {
-    const previousDesiredEnabled = windowsNodeMxcStatus.value?.desiredEnabled;
     mxcDisplayRevision++;
     applyWindowsNodeMxcDisplayStatus(snapshot);
-    if (
-      activeSection.value === "security" &&
-      snapshot.status &&
-      snapshot.status.desiredEnabled !== previousDesiredEnabled
-    )
-      void loadWeixinDisclosureStatus();
   });
   window.addEventListener("focus", handleSettingsWindowFocus);
   if (activeSection.value === "security") {

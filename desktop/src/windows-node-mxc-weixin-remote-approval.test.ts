@@ -16,7 +16,6 @@ import {
   type WeixinRemoteApprovalCreateInput,
   type WeixinRemoteApprovalConfiguration,
 } from "./windows-node-mxc-weixin-remote-approval";
-import { WEIXIN_FULL_DETAIL_DISCLOSURE } from "./windows-node-mxc-weixin-disclosure-consent";
 import { canonicalWindowsCommand } from "./windows-node-mxc-exec-presentation";
 
 const approval: WindowsNodeMxcGatewayApproval = {
@@ -127,12 +126,6 @@ function configuredBroker(
     enabled: true,
     consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
     owner,
-    fullDetailDisclosure: {
-      contract: WEIXIN_FULL_DETAIL_DISCLOSURE,
-      receiptId: "12345678-1234-4123-8123-123456789abc",
-      acknowledgedAt: "2026-10-14T00:00:01.000Z",
-      owner: { ...owner },
-    },
   });
   const create = broker.createChallenge.bind(broker);
   vi.spyOn(broker, "createChallenge").mockImplementation((value) => {
@@ -539,12 +532,12 @@ describe("WeChat Windows Node command consent", () => {
 });
 
 describe("WeChat remote approval broker", () => {
-  it("does not expose mutable disclosure authority through configuration snapshots", () => {
+  it("does not expose mutable owner authority through configuration snapshots", () => {
     const broker = configuredBroker();
     const snapshot = broker.getConfiguration();
-    const originalUserId = snapshot.fullDetailDisclosure!.owner.userId;
-    snapshot.fullDetailDisclosure!.owner.userId = "other@im.wechat";
-    expect(broker.getConfiguration().fullDetailDisclosure!.owner.userId).toBe(originalUserId);
+    const originalUserId = snapshot.owner!.userId;
+    snapshot.owner!.userId = "other@im.wechat";
+    expect(broker.getConfiguration().owner!.userId).toBe(originalUserId);
     expect(broker.createChallengeResult(input()).status).toBe("created");
   });
 
