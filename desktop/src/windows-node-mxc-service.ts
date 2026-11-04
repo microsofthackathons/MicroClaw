@@ -129,9 +129,9 @@ export interface WindowsNodeMxcRuntimeStatus {
   effectiveToolsReady: boolean;
   effectiveToolsState: "unverified" | "verified" | "drift";
   durableApprovalsPresent: boolean | null;
-  probe: MxcProbeResult;
-  fullAvailability: WindowsNodeMxcModeAvailability;
-  limitedAvailability: WindowsNodeMxcModeAvailability;
+  probe: MxcProbeResult | null;
+  fullAvailability: WindowsNodeMxcModeAvailability | null;
+  limitedAvailability: WindowsNodeMxcModeAvailability | null;
   ambientAccess: WindowsNodeMxcAmbientAccessAssessment | null;
   smoke: StoredWindowsNodeMxcSmoke | null;
   blockers: string[];
@@ -253,31 +253,37 @@ export async function inspectWindowsNodeMxc(
     );
   }
 
-  const probe = options.runtimeIntegrityError
-    ? classifyMxcProbe(null, "", "", options.runtimeIntegrityError)
-    : await runMxcProbe(wxcExecPath);
-  const backendEligibility = describeMxcExactBackendEligibility(probe);
-  const fullAvailability: WindowsNodeMxcModeAvailability = {
-    available: backendEligibility.eligible,
-    summary: backendEligibility.summary,
-    blockers: backendEligibility.blockers,
-    remediation: backendEligibility.remediation,
-  };
-  const limitedAvailability = describeWindowsNodeMxcLimitedAvailability(probe);
+  const probe = !desiredEnabled
+    ? null
+    : options.runtimeIntegrityError
+      ? classifyMxcProbe(null, "", "", options.runtimeIntegrityError)
+      : await runMxcProbe(wxcExecPath);
+  const backendEligibility = probe ? describeMxcExactBackendEligibility(probe) : null;
+  const fullAvailability: WindowsNodeMxcModeAvailability | null = backendEligibility
+    ? {
+        available: backendEligibility.eligible,
+        summary: backendEligibility.summary,
+        blockers: backendEligibility.blockers,
+        remediation: backendEligibility.remediation,
+      }
+    : null;
+  const limitedAvailability = probe ? describeWindowsNodeMxcLimitedAvailability(probe) : null;
   const selectedAvailability =
     options.requestedMode === "limited-dacl" ? limitedAvailability : fullAvailability;
-  if (desiredEnabled && !selectedAvailability.available) {
+  if (desiredEnabled && !selectedAvailability) {
+    blockers.push("MXC backend availability has not been verified");
+  } else if (desiredEnabled && selectedAvailability && !selectedAvailability.available) {
     blockers.push(...selectedAvailability.blockers);
     remediation.push(...selectedAvailability.remediation);
   }
-  const tierWarning = options.requestedMode === "full" ? getMxcTierWarning(probe) : null;
+  const tierWarning = options.requestedMode === "full" && probe ? getMxcTierWarning(probe) : null;
   if (tierWarning) warnings.push(tierWarning);
   if (options.requestedMode === "limited-dacl") {
     warnings.push(
       "Limited filesystem containment is active: selected folders are additive grants and ambient Windows ACLs may permit access elsewhere.",
     );
   }
-  warnings.push(...probe.warnings);
+  if (probe) warnings.push(...probe.warnings);
   if (bundled && desiredEnabled) {
     const expectedStrength = options.requestedMode === "limited-dacl" ? "limited-dacl" : "full";
     if (bundled.requestedStrength !== null && bundled.requestedStrength !== expectedStrength) {
@@ -287,7 +293,7 @@ export async function inspectWindowsNodeMxc(
     }
     if (
       bundled.effectiveTier !== null &&
-      probe.tier !== null &&
+      probe?.tier != null &&
       bundled.effectiveTier.toLowerCase() !== probe.tier.toLowerCase()
     ) {
       blockers.push(`Bundled node MXC tier drifted from ${bundled.effectiveTier} to ${probe.tier}`);
@@ -321,7 +327,7 @@ export async function inspectWindowsNodeMxc(
       );
     }
   }
-  if (bundled && !bundled.processRunning && selectedAvailability.available && desiredEnabled) {
+  if (bundled && !bundled.processRunning && selectedAvailability?.available && desiredEnabled) {
     blockers.push(bundled.lastError ?? "Bundled MicroClaw Windows node host is not running");
     remediation.push("Restart MicroClaw so it can start its app-owned Windows node host.");
   }
@@ -453,7 +459,7 @@ export async function inspectWindowsNodeMxc(
     options.gatewayGeneration,
     selectedNodeId,
     settingsFingerprint,
-    probe.tier,
+    probe?.tier ?? null,
     options.requestedMode === "limited-dacl" ? "limited-dacl" : "full",
     options.ambientAccess?.hash ?? null,
   );
@@ -502,8 +508,8 @@ export async function inspectWindowsNodeMxc(
     desiredEnabled &&
     ambientSafe &&
     (options.requestedMode === "limited-dacl"
-      ? limitedAvailability.available
-      : fullAvailability.available);
+      ? limitedAvailability?.available === true
+      : fullAvailability?.available === true);
 
   return {
     requestedMode: options.requestedMode,
@@ -512,7 +518,7 @@ export async function inspectWindowsNodeMxc(
         ? "limited-dacl"
         : "full"
       : "off",
-    effectiveTier: containmentAttested ? probe.tier : null,
+    effectiveTier: containmentAttested ? (probe?.tier ?? null) : null,
     desiredEnabled,
     effectiveEnabled,
     selectedNodeId,

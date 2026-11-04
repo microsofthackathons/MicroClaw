@@ -721,6 +721,7 @@ export function getAgentPersona(agentId: string): AgentPersona | undefined {
 }
 
 export function getAgentWorkspacePath(stateDir: string, persona: AgentPersona): string | undefined {
+  // Keep legacy paths until agent-workspaces can copy their contents before publishing the roster.
   return persona.workspaceDirName ? path.join(stateDir, persona.workspaceDirName) : undefined;
 }
 
@@ -810,6 +811,7 @@ export function ensureAgentPersonasConfig(
   config: AgentRosterConfig,
   stateDir: string,
   personas: readonly AgentPersona[] = DEFAULT_AGENT_PERSONAS,
+  newAgentWorkspaceParent?: string,
 ): AgentPersonasConfigResult {
   if (config.agents !== undefined && !isRecord(config.agents)) {
     throw new Error("Invalid agents configuration");
@@ -945,7 +947,13 @@ export function ensureAgentPersonasConfig(
 
   for (const persona of personas) {
     if (normalizedIds.has(persona.id)) continue;
-    const entry = { id: persona.id, ...createAgentEntry(persona, stateDir) };
+    const entry: { id: string } & Record<string, unknown> = {
+      id: persona.id,
+      ...createAgentEntry(persona, stateDir),
+    };
+    if (newAgentWorkspaceParent) {
+      entry.workspace = path.join(newAgentWorkspaceParent, persona.id);
+    }
     entries.push(entry);
     normalizedIds.set(persona.id, { rawId: persona.id, source: "list", entry });
   }
@@ -1063,7 +1071,7 @@ function resolveEffectiveHome(env: NodeJS.ProcessEnv, homeDir: string, cwd: stri
   return path.resolve(cwd, rawHome ?? ".");
 }
 
-function resolveUserPath(
+export function resolveUserPath(
   value: string,
   env: NodeJS.ProcessEnv,
   homeDir: string,

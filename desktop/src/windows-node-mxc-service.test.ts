@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,6 +19,17 @@ import {
   runWindowsNodeMxcSmoke,
   type WindowsNodeMxcGateway,
 } from "./windows-node-mxc-service";
+
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn(
+    (
+      _file: string,
+      _args: string[],
+      _options: object,
+      callback: (error: Error, stdout: string, stderr: string) => void,
+    ) => callback(new Error("Test backend probe failed"), "", ""),
+  ),
+}));
 
 const transitionId = "12345678-1234-4234-8234-123456789abc";
 const generation = "generation-test-001";
@@ -99,6 +111,7 @@ describe("Windows Node MXC status inspection", () => {
   let dataRoot: string;
   beforeEach(() => {
     dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-mxc-status-"));
+    vi.mocked(execFile).mockClear();
   });
   afterEach(() => {
     fs.rmSync(dataRoot, { recursive: true, force: true });
@@ -114,14 +127,14 @@ describe("Windows Node MXC status inspection", () => {
       gateway: { connected: true, request },
       managedGateway: true,
       gatewayGeneration: generation,
-      environment: {},
+      environment: { OPENCLAW_WXC_EXEC: process.execPath },
       appData: dataRoot,
       localAppData: dataRoot,
       userProfile: dataRoot,
-      runtimeIntegrityError: "Test runtime is unavailable",
     });
 
     expect(request).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       requestedMode: "off",
       effectiveStrength: "off",
@@ -129,7 +142,33 @@ describe("Windows Node MXC status inspection", () => {
       effectiveEnabled: false,
       effectiveToolsState: "unverified",
       selectedNode: null,
+      probe: null,
+      fullAvailability: null,
+      limitedAvailability: null,
     });
+  });
+
+  it("probes enabled status and fails closed if the probe fails", async () => {
+    const result = await inspectWindowsNodeMxc({
+      requestedMode: "full",
+      desiredEnabled: true,
+      selectedNodeId: nodeId,
+      config: {},
+      gateway: null,
+      managedGateway: false,
+      gatewayGeneration: generation,
+      environment: { OPENCLAW_WXC_EXEC: process.execPath },
+      appData: dataRoot,
+      localAppData: dataRoot,
+      userProfile: dataRoot,
+    });
+    expect(execFile).toHaveBeenCalledOnce();
+    expect(result.probe).toMatchObject({
+      outcome: "error",
+      reason: expect.stringContaining("Test backend probe failed"),
+    });
+    expect(result.fullAvailability?.available).toBe(false);
+    expect(result.effectiveEnabled).toBe(false);
   });
 
   it.each(["full", "limited-dacl"] as const)(

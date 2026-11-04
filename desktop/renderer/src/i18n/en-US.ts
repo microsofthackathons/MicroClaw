@@ -353,7 +353,7 @@ export default {
   "settings.windowsNodeMxcLearnMore": "Learn more about MXC",
   "settings.windowsNodeMxcToggleUnavailable":
     "Sandboxing is unavailable or could not be verified. Repair the bundled runtime and retry.",
-  "settings.windowsNodeMxcStatusLoading": "Checking MXC availability...",
+  "settings.windowsNodeMxcStatusLoading": "Checking MXC status...",
   "settings.windowsNodeMxcStatusRefreshing": "Refreshing MXC status in the background...",
   "settings.windowsNodeMxcStatusVerified": "Last verified: {time}",
   "perm.applyingFolders": "Applying folder access...",
@@ -402,7 +402,7 @@ export default {
   "settings.windowsNodeMxcConsent.item.tts": "Text-to-speech (TTS) is disabled.",
   "settings.windowsNodeMxcConsent.item.stt": "Speech-to-text (STT) is disabled.",
   "settings.windowsNodeMxcConsent.item.gateway-memory":
-    "The default Gateway memory plugin and memory slot are disabled.",
+    "Memory Search and Memory Get read the agent's scoped memory through the Gateway, independently of MXC folder grants. General filesystem tools remain disabled.",
   "settings.windowsNodeMxcConsent.item.cron":
     "Cron and scheduled jobs are preserved but paused, with no catch-up for work missed during containment.",
   "settings.windowsNodeMxcConsent.item.hooks-webhooks":
@@ -430,6 +430,8 @@ export default {
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "Containment — Off",
   "settings.windowsNodeMxcOffDisclosure": "MXC is off. Tools run without MXC isolation.",
+  "settings.windowsNodeMxcAvailabilityOnEnable":
+    "Sandbox availability is checked when you turn it on.",
   "settings.windowsNodeMxcHooksPausedBoth":
     "Webhooks and internal hooks stay paused in MXC Locked and Active states. Requests are rejected, internal events are dropped, and neither is replayed.",
   "settings.windowsNodeMxcHooksPausedExternal":
@@ -481,11 +483,11 @@ export default {
   "settings.windowsNodeMxcGrantReadWrite": "Read/write",
   "settings.windowsNodeMxcGrantReadOnly": "Read-only",
   "settings.windowsNodeMxcFoldersHint":
-    "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access.",
+    "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access. OpenClawWorkspaces is granted read/write by default for all agents. Separate agent subfolders are not security boundaries; you can remove or change this grant.",
   "settings.windowsNodeMxcLimitedFoldersHint":
-    "These grants add access in Limited mode; they are not an exclusive allowlist. Read-only cannot reduce access already provided by ambient Windows ACLs.",
+    "These grants add access in Limited mode; they are not an exclusive allowlist. Read-only cannot reduce access already provided by ambient Windows ACLs. OpenClawWorkspaces is granted read/write by default for all agents, including other agents' subfolders. You can remove or change this grant.",
   "settings.windowsNodeMxcConfiguredFoldersHint":
-    "These folders will be used when Full or Limited containment is selected.",
+    "These folders will be used when Full or Limited containment is selected. OpenClawWorkspaces is granted read/write by default for all agents, including other agents' subfolders. You can remove or change this grant.",
   "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
   "settings.windowsNodeMxcAmbientBeforeGrants": "Ambient access before selected-folder grants",
   "settings.windowsNodeMxcAmbientExceptions":

@@ -334,7 +334,7 @@ export default {
   "settings.windowsNodeMxcStatusVerified": "上次验证时间：{time}",
   "perm.applyingFolders": "正在应用文件夹权限...",
   "perm.applyingDecision": "正在应用权限决定...",
-  "settings.windowsNodeMxcStatusLoading": "正在检查 MXC 可用性…",
+  "settings.windowsNodeMxcStatusLoading": "正在检查 MXC 状态…",
   "settings.windowsNodeMxcExperimental":
     "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
   "settings.experimental": "实验性",
@@ -376,7 +376,8 @@ export default {
   "settings.windowsNodeMxcConsent.item.location": "禁用位置访问。",
   "settings.windowsNodeMxcConsent.item.tts": "禁用文本转语音（TTS）。",
   "settings.windowsNodeMxcConsent.item.stt": "禁用语音转文本（STT）。",
-  "settings.windowsNodeMxcConsent.item.gateway-memory": "禁用默认网关内存插件和内存槽位。",
+  "settings.windowsNodeMxcConsent.item.gateway-memory":
+    "记忆搜索和记忆读取通过网关访问当前智能体范围内的记忆，不受 MXC 文件夹授权限制。通用文件系统工具仍被禁用。",
   "settings.windowsNodeMxcConsent.item.cron":
     "保留但暂停 Cron 和计划任务；隔离期间错过的任务不会补跑。",
   "settings.windowsNodeMxcConsent.item.hooks-webhooks":
@@ -402,6 +403,7 @@ export default {
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "隔离 — 已关闭",
   "settings.windowsNodeMxcOffDisclosure": "MXC 已关闭。工具运行时不受 MXC 隔离保护。",
+  "settings.windowsNodeMxcAvailabilityOnEnable": "开启沙箱时会检查其可用性。",
   "settings.windowsNodeMxcHooksPausedBoth":
     "MXC 处于已锁定或已激活状态时，Webhook 和内部钩子始终暂停。请求会被拒绝，内部事件会被丢弃，且均不会重放。",
   "settings.windowsNodeMxcHooksPausedExternal":
@@ -452,10 +454,11 @@ export default {
   "settings.windowsNodeMxcGrantReadWrite": "读写",
   "settings.windowsNodeMxcGrantReadOnly": "只读",
   "settings.windowsNodeMxcFoldersHint":
-    "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。",
+    "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。默认向所有代理授予 OpenClawWorkspaces 的读写权限。独立的代理子文件夹不构成安全边界；你可以移除或修改此授权。",
   "settings.windowsNodeMxcLimitedFoldersHint":
-    "这些授权会在有限模式中增加访问权限，并非排他允许列表。只读无法降低环境 Windows ACL 已提供的访问。",
-  "settings.windowsNodeMxcConfiguredFoldersHint": "选择完整或有限隔离时将使用这些文件夹。",
+    "这些授权会在有限模式中增加访问权限，并非排他允许列表。只读无法降低环境 Windows ACL 已提供的访问。默认向所有代理授予 OpenClawWorkspaces 的读写权限，包括其他代理的子文件夹。你可以移除或修改此授权。",
+  "settings.windowsNodeMxcConfiguredFoldersHint":
+    "选择完整或有限隔离时将使用这些文件夹。默认向所有代理授予 OpenClawWorkspaces 的读写权限，包括其他代理的子文件夹。你可以移除或修改此授权。",
   "settings.windowsNodeMxcAmbientAccess": "环境文件系统访问",
   "settings.windowsNodeMxcAmbientBeforeGrants": "所选文件夹授权前的环境访问",
   "settings.windowsNodeMxcAmbientExceptions":

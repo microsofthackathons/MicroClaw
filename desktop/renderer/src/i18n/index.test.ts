@@ -28,6 +28,24 @@ describe("i18n", () => {
     expect(t("nonexistent.key")).toBe("nonexistent.key");
   });
 
+  it("discloses scoped Gateway memory access independently of MXC folder grants in both locales", () => {
+    setLocale("en-US");
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-memory")).toContain(
+      "independently of MXC folder grants",
+    );
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-memory")).toContain(
+      "General filesystem tools remain disabled",
+    );
+    setLocale("zh-CN");
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-memory")).toContain(
+      "不受 MXC 文件夹授权限制",
+    );
+    expect(t("settings.windowsNodeMxcConsent.item.gateway-memory")).toContain(
+      "通用文件系统工具仍被禁用",
+    );
+    setLocale("en-US");
+  });
+
   it("attributes the chat disclaimer to MicroClaw in both locales", () => {
     for (const locale of ["en-US", "zh-CN"] as const) {
       setLocale(locale);
@@ -144,10 +162,22 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcOffDisclosure")).toBe(
       "MXC is off. Tools run without MXC isolation.",
     );
+    expect(t("settings.windowsNodeMxcAvailabilityOnEnable")).toBe(
+      "Sandbox availability is checked when you turn it on.",
+    );
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("Action required");
     expect(t("settings.windowsNodeMxcFolders")).toBe("Global MXC approved folders");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("global capability ceiling");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("never grant access");
+    expect(t("settings.windowsNodeMxcFoldersHint")).toContain("not security boundaries");
+    for (const key of [
+      "settings.windowsNodeMxcFoldersHint",
+      "settings.windowsNodeMxcLimitedFoldersHint",
+      "settings.windowsNodeMxcConfiguredFoldersHint",
+    ]) {
+      expect(t(key)).toContain("OpenClawWorkspaces");
+      expect(t(key)).toContain("for all agents");
+    }
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("Disable Windows Node + MXC");
     expect(t("settings.windowsNodeMxcModeFull")).toBe("Full containment");
     expect(t("settings.windowsNodeMxcModeLimited")).toBe("Limited containment (DACL)");
@@ -173,10 +203,20 @@ describe("i18n", () => {
     expect(t("settings.windowsNodeMxcOffDisclosure")).toBe(
       "MXC 已关闭。工具运行时不受 MXC 隔离保护。",
     );
+    expect(t("settings.windowsNodeMxcAvailabilityOnEnable")).toBe("开启沙箱时会检查其可用性。");
     expect(t("settings.windowsNodeMxcActionRequired")).toBe("需要操作");
     expect(t("settings.windowsNodeMxcFolders")).toBe("MXC 全局批准文件夹");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("全局能力上限");
     expect(t("settings.windowsNodeMxcFoldersHint")).toContain("绝不会授予访问权限");
+    expect(t("settings.windowsNodeMxcFoldersHint")).toContain("不构成安全边界");
+    for (const key of [
+      "settings.windowsNodeMxcFoldersHint",
+      "settings.windowsNodeMxcLimitedFoldersHint",
+      "settings.windowsNodeMxcConfiguredFoldersHint",
+    ]) {
+      expect(t(key)).toContain("OpenClawWorkspaces");
+      expect(t(key)).toContain("所有代理");
+    }
     expect(t("settings.windowsNodeMxcFoldersLocked")).toContain("请先禁用 Windows Node + MXC");
     expect(t("settings.windowsNodeMxcModeFull")).toBe("完整隔离");
     expect(t("settings.windowsNodeMxcModeLimited")).toBe("有限隔离（DACL）");

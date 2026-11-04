@@ -78,6 +78,14 @@ import {
   type IntegrityResult,
 } from "./skill-integrity";
 import { migrateMxcOnlySecuritySettings } from "./mxc-only-settings";
+import { readAgentRoster } from "./agent-roster";
+import {
+  ensureWorkspaceParent,
+  getWorkspaceParent,
+  materializeAgentWorkspaces,
+  planAgentWorkspaces,
+  planDefaultWorkspaceFolderGrant,
+} from "./agent-workspaces";
 import {
   pruneMissingWindowsNodeMxcFolders,
   reconcileWindowsNodeMxcFolders,
@@ -441,6 +449,8 @@ const settingsStore = new Store<{
   modelFormSelections?: Record<string, string>;
   /** Selected filesystem roots, enforced by the native MXC runtime only. */
   windowsNodeMxcFolders?: WindowsNodeMxcFolderPolicy;
+  /** One-time default grant; later user revocations must survive restarts. */
+  windowsNodeMxcWorkspaceGrantVersion?: 1;
   /** Stable paired node ID selected for the experimental Windows Node route. */
   windowsNodeMxcNodeId: string;
   /** Original per-agent tool policies restored when the experimental mode is disabled. */
@@ -1444,7 +1454,22 @@ function setWindowsNodeMxcLifecycleState(
   windowsNodeMxcLifecycleState = state;
   windowsNodeMxcLifecycleDetail = detail;
   windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
-  publishWindowsNodeMxcDisplayStatus(windowsNodeMxcStatusCache.snapshot());
+  try {
+    publishWindowsNodeMxcDisplayStatus(windowsNodeMxcStatusCache.snapshot());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[windows-node-mxc] Could not publish lifecycle status:", message);
+    try {
+      publishWindowsNodeMxcDisplayStatus({
+        status: null,
+        verifiedAt: null,
+        refreshing: false,
+        error: message,
+      });
+    } catch (publishError) {
+      console.error("[windows-node-mxc] Could not publish status error:", publishError);
+    }
+  }
   electronLifecycleDiagnostics.log("mxc-lifecycle-phase", {
     phase: state,
     detail: detail ? summarizeLifecycleError(detail) : null,
@@ -1744,8 +1769,20 @@ You can also use \`[declare-access]...[/declare-access]\` as a standalone comman
  * Called before the gateway starts so that OpenClaw finds our customised
  * SOUL.md instead of generating a generic one on first conversation.
  */
-function seedWorkspaceFiles(stateDir: string): void {
-  const workspaceDir = path.join(stateDir, "workspace");
+function seedWorkspaceFiles(
+  stateDir: string,
+  config: AgentRosterConfig,
+  gatewayEnvironment: NodeJS.ProcessEnv,
+  cwd: string,
+): void {
+  const workspaceDir = resolveAgentPersonaWorkspace(
+    config,
+    stateDir,
+    getAgentPersona("main")!,
+    gatewayEnvironment,
+    os.homedir(),
+    cwd,
+  );
   const soulPath = path.join(workspaceDir, "SOUL.md");
 
   if (fs.existsSync(soulPath)) {
@@ -2585,13 +2622,15 @@ function presentWindowsNodeMxcDisplayStatus(snapshot: MxcStatusSnapshot<MxcInspe
       ? {
           ...status,
           lifecycleState: {
-            phase: windowsNodeMxcSecurityTransitionInProgress
-              ? windowsNodeMxcLifecycleState
-              : status.effectiveEnabled
-                ? ("active" as const)
-                : status.desiredEnabled
-                  ? ("locked" as const)
-                  : ("idle" as const),
+            phase:
+              windowsNodeMxcSecurityTransitionInProgress ||
+              windowsNodeMxcLifecycleState === "failed"
+                ? windowsNodeMxcLifecycleState
+                : status.effectiveEnabled
+                  ? ("active" as const)
+                  : status.desiredEnabled
+                    ? ("locked" as const)
+                    : ("idle" as const),
             detail: windowsNodeMxcLifecycleDetail,
             updatedAt: windowsNodeMxcLifecycleUpdatedAt,
           },
@@ -2637,11 +2676,12 @@ async function inspectWindowsNodeMxcStatus(): Promise<
     requestedMode === "off" ? config.hooks : getWindowsNodeMxcIngressBackup(backups, "hooks");
   const bundledFolders = getBundledWindowsNodeFolders();
   let runtimeIntegrityError: string | undefined;
-  try {
-    // Off only probes availability; enabled health/ingress checks still validate the full tree.
-    await bundledWindowsNodeHost.validateRuntimeIntegrity(requestedMode !== "off");
-  } catch (error) {
-    runtimeIntegrityError = error instanceof Error ? error.message : String(error);
+  if (requestedMode !== "off") {
+    try {
+      await bundledWindowsNodeHost.validateRuntimeIntegrity(true);
+    } catch (error) {
+      runtimeIntegrityError = error instanceof Error ? error.message : String(error);
+    }
   }
   const bundledHost = bundledWindowsNodeHost.status();
   const status = await inspectWindowsNodeMxc({
@@ -2660,13 +2700,14 @@ async function inspectWindowsNodeMxcStatus(): Promise<
       bundledHost.ambientAccess ?? settingsStore.get("windowsNodeMxcAmbientAccess") ?? null,
   });
   const durable = getWindowsNodeMxcDurableApprovalStore().inspect();
-  const lifecyclePhase = windowsNodeMxcSecurityTransitionInProgress
-    ? windowsNodeMxcLifecycleState
-    : status.effectiveEnabled
-      ? "active"
-      : status.desiredEnabled
-        ? "locked"
-        : "idle";
+  const lifecyclePhase =
+    windowsNodeMxcSecurityTransitionInProgress || windowsNodeMxcLifecycleState === "failed"
+      ? windowsNodeMxcLifecycleState
+      : status.effectiveEnabled
+        ? "active"
+        : status.desiredEnabled
+          ? "locked"
+          : "idle";
   return {
     ...status,
     lifecycleState: {
@@ -2704,6 +2745,30 @@ function getWindowsNodeMxcFolderPolicy(): WindowsNodeMxcFolderPolicy {
   const folders = settingsStore.get("windowsNodeMxcFolders");
   if (!folders) throw new Error("The saved MXC folder policy is unavailable");
   return { rw: [...folders.rw], ro: [...folders.ro] };
+}
+
+async function ensureDefaultWorkspaceFolderGrant(): Promise<void> {
+  if (settingsStore.get("windowsNodeMxcWorkspaceGrantVersion") === 1) return;
+  const recovery = settingsStore.get("windowsNodeMxcFolderPolicyRecovery");
+  if (recovery?.lastError || recovery?.failurePhase) {
+    throw new Error(
+      "Resolve the pending MXC folder policy recovery before adding the default workspace grant",
+    );
+  }
+  const parent = getWorkspaceParent();
+  ensureWorkspaceParent(parent);
+  const validation = await validateWindowsNodeMxcUserDir(parent);
+  if (!validation.ok) {
+    throw new Error(`Default workspace folder rejected: ${validation.reason}`);
+  }
+  const folders = await normalizeCompleteWindowsNodeMxcFolderPolicy(
+    planDefaultWorkspaceFolderGrant(getWindowsNodeMxcFolderPolicy(), parent),
+  );
+  settingsStore.store = {
+    ...settingsStore.store,
+    windowsNodeMxcFolders: folders,
+    windowsNodeMxcWorkspaceGrantVersion: 1,
+  };
 }
 
 async function getReparsePathComponents(dir: string): Promise<Set<string>> {
@@ -3780,15 +3845,16 @@ function assertWindowsNodeMxcBaseReady(
   if (!status.allowWindowsUiEffective)
     failures.push("PowerShell compatibility policy is not effective");
   const expectedStrength = getWindowsNodeMxcRequestedMode();
-  const probeTier = status.probe.tier?.toLowerCase();
+  const probe = status.probe;
+  const probeTier = probe?.tier?.toLowerCase();
   const probeAccepted =
     expectedStrength === "limited-dacl"
-      ? status.probe.outcome !== "error" && probeTier === "appcontainer-dacl"
-      : status.probe.outcome === "supported" &&
-        !status.probe.degraded &&
+      ? probe?.outcome !== "error" && probeTier === "appcontainer-dacl"
+      : probe?.outcome === "supported" &&
+        !probe.degraded &&
         (probeTier === "base-container" || probeTier === "appcontainer-bfs");
   if (!probeAccepted) {
-    failures.push(status.probe.reason ?? "MXC did not report the explicitly requested tier");
+    failures.push(probe?.reason ?? "MXC did not report the explicitly requested tier");
   }
   if (
     expectedStrength === "limited-dacl" &&
@@ -3894,10 +3960,10 @@ async function runCurrentWindowsNodeMxcSmoke(
   status: WindowsNodeMxcRuntimeStatus,
 ): Promise<StoredWindowsNodeMxcSmoke> {
   if (!gwClient?.connected) throw new Error("MicroClaw managed Gateway is not connected");
-  if (!status.settingsFingerprint || !status.probe.tier) {
+  const probe = status.probe;
+  if (!status.settingsFingerprint || !probe?.tier) {
     throw new Error(
-      status.probe.reason ??
-        "Current MXC settings and an exact filesystem isolation tier are required",
+      probe?.reason ?? "Current MXC settings and an exact filesystem isolation tier are required",
     );
   }
   const expectedGeneration = gatewayGenerationId;
@@ -3919,7 +3985,7 @@ async function runCurrentWindowsNodeMxcSmoke(
       expectedGeneration,
       status.selectedNodeId,
       status.settingsFingerprint,
-      status.probe,
+      probe,
       { transitionId, proofContext },
       getWindowsNodeMxcRequestedMode() === "limited-dacl" ? "limited-dacl" : "full",
       status.ambientAccess?.hash ?? null,
@@ -4382,7 +4448,7 @@ function captureAgentWorkspace(
   return {
     directory,
     directoryExisted: fs.existsSync(directory),
-    files: Object.keys(persona.workspaceFiles).map((filename) => {
+    files: [...Object.keys(persona.workspaceFiles), "BOOTSTRAP.md"].map((filename) => {
       const filePath = path.join(directory, filename);
       return {
         path: filePath,
@@ -4479,10 +4545,15 @@ async function addCatalogAgent(
   const stateDir = getOpenClawStateDir();
   const configPath = getConfigPath();
   const originalConfigText = fs.readFileSync(configPath, "utf-8");
-  const config = readConfig();
+  let config = readConfig();
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
-  const result = ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+  const result = ensureAgentPersonasConfig(
+    config,
+    stateDir,
+    [...DEFAULT_AGENT_PERSONAS, persona],
+    getWorkspaceParent(),
+  );
   const skillConfigChanged = setAgentOwnedSkillsEnabled(config, agentId, true);
   const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
   if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
@@ -4491,6 +4562,34 @@ async function addCatalogAgent(
 
   const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
+  const workspacePlan = planAgentWorkspaces(
+    config,
+    stateDir,
+    os.homedir(),
+    gatewayEnvironment,
+    path.dirname(entryPath),
+  );
+  const previousConfig: AgentRosterConfig = JSON.parse(originalConfigText);
+  for (const { id } of readAgentRoster(previousConfig.agents)) {
+    const identity = { id, name: id, skills: [] };
+    const resolveWorkspace = (value: AgentRosterConfig) =>
+      resolveAgentPersonaWorkspace(
+        value,
+        stateDir,
+        identity,
+        gatewayEnvironment,
+        os.homedir(),
+        path.dirname(entryPath),
+      ).toLowerCase();
+    if (resolveWorkspace(previousConfig) !== resolveWorkspace(workspacePlan.config)) {
+      throw new Error(
+        "Restart the managed Gateway to migrate existing workspaces before adding an agent",
+      );
+    }
+  }
+  config = workspacePlan.config;
+  result.changed ||= workspacePlan.changed;
+  materializeAgentWorkspaces(workspacePlan);
   const workspaceSnapshot = captureAgentWorkspace(
     config,
     stateDir,
@@ -5771,6 +5870,7 @@ async function startGatewayInner(
     }
     failForExternalGateway(configuredPort);
   }
+  if (!alreadyRunning && !isManagedGatewayProcessAlive()) await ensureDefaultWorkspaceFolderGrant();
   if (isWindowsNodeMxcDesired()) {
     const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
     const policyState = getWindowsNodeMxcGatewayPolicyState(config, nodeId);
@@ -5820,10 +5920,6 @@ async function startGatewayInner(
   const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
-  // Apply MicroClaw's default workspace identity before persona migration.
-  // This also updates existing installations when connecting to a running Gateway.
-  seedWorkspaceFiles(stateDir);
-
   // Ensure plugins.allow includes enabled plugins so they load synchronously
   // (avoids the race where auto-discovered plugins miss the channel-start sweep)
   ensurePluginsAllow();
@@ -5831,6 +5927,22 @@ async function startGatewayInner(
     !isWindowsNodeMxcDesired() && requiresPostSpawnChannelCheck(readConfig());
 
   const preparedPersonas = prepareAgentPersonas(stateDir);
+  const workspacePlan = preparedPersonas
+    ? planAgentWorkspaces(
+        preparedPersonas.config,
+        stateDir,
+        os.homedir(),
+        gatewayEnvironment,
+        path.dirname(entryPath),
+      )
+    : null;
+  if (preparedPersonas && workspacePlan) {
+    if ((alreadyRunning || isManagedGatewayProcessAlive()) && workspacePlan.changed) {
+      throw new Error("Restart the managed Gateway before migrating agent workspaces");
+    }
+    preparedPersonas.config = workspacePlan.config;
+    preparedPersonas.changed ||= workspacePlan.changed;
+  }
   if (!isWindowsNodeMxcDesired()) {
     if (!preparedPersonas) {
       throw new Error("A valid agent configuration is required to start command consent");
@@ -5938,6 +6050,7 @@ async function startGatewayInner(
     failForExternalGateway(configuredPort);
   }
 
+  if (workspacePlan && !alreadyRunning) materializeAgentWorkspaces(workspacePlan);
   const agentSkillReconciliation =
     preparedPersonas && !externallyManagedGateway
       ? reconcileConfiguredAgentOwnedSkills(
@@ -6031,6 +6144,12 @@ async function startGatewayInner(
     }
     if (preparedPersonas && !externallyManagedGateway) {
       agentSkillTransactionPending = true;
+      seedWorkspaceFiles(
+        stateDir,
+        preparedPersonas.config,
+        gatewayEnvironment,
+        path.dirname(entryPath),
+      );
       seedSpecialistAgentWorkspaces(
         preparedPersonas.config,
         stateDir,
@@ -8997,7 +9116,7 @@ function registerIpcHandlers(): void {
       }
       let requestedMode: WindowsNodeMxcRequestedMode = params.enabled ? "full" : "off";
       const lifecycleOperation =
-        windowsNodeMxcLifecycleOperations.acquire<WindowsNodeMxcRuntimeStatus>(
+        windowsNodeMxcLifecycleOperations.acquire<WindowsNodeMxcRuntimeStatus | null>(
           {
             kind: "set-enabled",
             requestedMode: params.enabled ? "auto" : "off",
@@ -9218,9 +9337,8 @@ function registerIpcHandlers(): void {
           await waitForWindowsNodeMxcCronResumeAcknowledgement();
           setWindowsNodeMxcLifecycleState("idle");
           transitionSucceeded = true;
-          const status = await getWindowsNodeMxcStatus();
-          lifecycleOperation.succeed(status);
-          return status;
+          lifecycleOperation.succeed(null);
+          return null;
         }
       } catch (error) {
         lifecycleError = error;
@@ -9298,6 +9416,17 @@ function registerIpcHandlers(): void {
       } finally {
         if (!lifecycleOperation.settled) lifecycleOperation.fail(lifecycleError);
         if (transitionSucceeded || standardRuntimeRecovered) notifyRendererApplicationReady();
+        if (transitionSucceeded && requestedMode === "off") {
+          try {
+            windowsNodeMxcStatusCache.display();
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            electronLifecycleDiagnostics.log("mxc-display-status-refresh-failed", {
+              error: summarizeLifecycleError(detail),
+            });
+            sendToWindow(mainWindow, "gateway:log", `[error] MXC status refresh failed: ${detail}`);
+          }
+        }
       }
     },
   );

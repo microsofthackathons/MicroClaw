@@ -9,9 +9,9 @@
     :connected="chatStore.wsConnected"
     :warming="gateway.warming"
     :error-message="gateway.lastError"
-    :mxc-desired="windowsNodeMxcStatus?.desiredEnabled === true"
-    :mxc-phase="windowsNodeMxcStatus?.lifecycleState.phase"
-    :mxc-detail="windowsNodeMxcStatus?.lifecycleState.detail"
+    :mxc-desired="windowsNodeMxcStatus?.desiredEnabled ?? lastKnownWindowsNodeMxcDesired ?? false"
+    :mxc-phase="windowsNodeMxcLifecycleState?.phase"
+    :mxc-detail="windowsNodeMxcLifecycleState?.detail"
     :mxc-requested-mode="windowsNodeMxcStatus?.requestedMode"
     :mxc-effective-strength="windowsNodeMxcStatus?.effectiveStrength"
     :mxc-effective-tier="windowsNodeMxcStatus?.effectiveTier"
@@ -186,7 +186,13 @@ const route = useRoute();
 const agentStore = useAgentStore();
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
+const lastKnownWindowsNodeMxcDesired = ref<boolean | null>(null);
+const windowsNodeMxcGatewayGeneration = ref<string | undefined>();
 const windowsNodeMxcLifecycleState = ref<WindowsNodeMxcLifecycleState | null>(null);
+let windowsNodeMxcDisplayRevision = 0;
+let lastWindowsNodeMxcDisplayError = "";
+// Readiness changes already invalidate approvals; don't invalidate newer ones twice.
+let windowsNodeMxcGenerationEpoch = gateway.readinessEpoch;
 provide(
   windowsNodeMxcLifecycleStateKey,
   computed(() => windowsNodeMxcLifecycleState.value),
@@ -202,7 +208,51 @@ function applyWindowsNodeMxcLifecycleState(state: WindowsNodeMxcLifecycleState):
 function applyWindowsNodeMxcStatus(status: WindowsNodeMxcStatus): boolean {
   if (!applyWindowsNodeMxcLifecycleState(status.lifecycleState)) return false;
   windowsNodeMxcStatus.value = status;
+  lastKnownWindowsNodeMxcDesired.value = status.desiredEnabled;
+  const previousGeneration = windowsNodeMxcGatewayGeneration.value;
+  windowsNodeMxcGatewayGeneration.value = status.gatewayGeneration;
+  if (status.gatewayGeneration !== previousGeneration)
+    windowsNodeMxcGenerationEpoch = gateway.readinessEpoch;
   return true;
+}
+
+function applyWindowsNodeMxcDisplayStatus(
+  snapshot: Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getDisplayStatus>>,
+) {
+  if (snapshot.status) {
+    if (!applyWindowsNodeMxcStatus(snapshot.status)) return;
+    if (
+      snapshot.status.desiredEnabled &&
+      ![
+        "active",
+        "updating-folders",
+        "updating-consent",
+        "updating-model",
+        "connecting-weixin",
+        "disconnecting-weixin",
+      ].includes(snapshot.status.lifecycleState.phase) &&
+      (gateway.ready || chatStore.wsConnected)
+    ) {
+      gateway.resetReady();
+      chatStore.wsConnected = false;
+    }
+  } else {
+    windowsNodeMxcStatus.value = null;
+  }
+  if (snapshot.error && snapshot.error !== lastWindowsNodeMxcDisplayError) {
+    gateway.addLog(`[error] MXC status: ${snapshot.error}`);
+  }
+  lastWindowsNodeMxcDisplayError = snapshot.error ?? "";
+}
+
+async function refreshWindowsNodeMxcDisplayStatus() {
+  const revision = windowsNodeMxcDisplayRevision;
+  try {
+    const snapshot = await window.openclaw.windowsNodeMxc.getDisplayStatus();
+    if (revision === windowsNodeMxcDisplayRevision) applyWindowsNodeMxcDisplayStatus(snapshot);
+  } catch (error) {
+    gateway.addLog(`[error] MXC status: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // ── Setup wizard gate ──
@@ -256,9 +306,11 @@ async function warmThenMarkConnected() {
 }
 
 async function handleRetry() {
-  if (windowsNodeMxcStatus.value?.desiredEnabled) {
+  if (windowsNodeMxcStatus.value?.desiredEnabled ?? lastKnownWindowsNodeMxcDesired.value) {
     try {
-      applyWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.setEnabled({ enabled: true }));
+      const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled: true });
+      if (status) applyWindowsNodeMxcStatus(status);
+      else void refreshWindowsNodeMxcDisplayStatus();
     } catch (error) {
       gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -271,7 +323,14 @@ async function handleRetry() {
 
 async function disableWindowsNodeMxc() {
   try {
-    applyWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.setEnabled({ enabled: false }));
+    const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled: false });
+    if (status) {
+      applyWindowsNodeMxcStatus(status);
+    } else {
+      lastKnownWindowsNodeMxcDesired.value = false;
+      windowsNodeMxcStatus.value = null;
+      void refreshWindowsNodeMxcDisplayStatus();
+    }
   } catch (error) {
     gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -334,7 +393,7 @@ const currentPermissionResponding = computed(() => {
         "updating-model",
         "connecting-weixin",
         "disconnecting-weixin",
-      ].includes(windowsNodeMxcStatus.value?.lifecycleState.phase ?? "")),
+      ].includes(windowsNodeMxcLifecycleState.value?.phase ?? "")),
   );
 });
 function closeApproval(id: string, layer: "gateway" | "node" = "gateway") {
@@ -362,10 +421,16 @@ function invalidateApprovals() {
 }
 watch(() => gateway.readinessEpoch, invalidateApprovals, { flush: "sync" });
 watch(
-  () => windowsNodeMxcStatus.value?.gatewayGeneration,
+  () => windowsNodeMxcGatewayGeneration.value,
   (generation, previous) => {
     chatStore.setGatewayGeneration(generation ?? null);
-    if (previous !== undefined && generation !== previous) invalidateApprovals();
+    if (
+      previous !== undefined &&
+      generation !== previous &&
+      windowsNodeMxcGenerationEpoch === gateway.readinessEpoch
+    ) {
+      invalidateApprovals();
+    }
   },
   { flush: "sync" },
 );
@@ -442,6 +507,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     expiresAtUnixMs: request.expiresAtUnixMs,
     remoteDelivery: request.remoteDelivery,
   });
+  windowsNodeMxcGenerationEpoch = gateway.readinessEpoch;
   if (request.approvalLayer === "gateway" && request.activity) {
     chatStore.trackApprovalActivity(
       request.id,
@@ -592,6 +658,7 @@ let unsubWindowsNodeMxcApproval: (() => void) | null = null;
 let unsubWindowsNodeMxcApprovalResolved: (() => void) | null = null;
 let unsubWindowsNodeMxcApprovalProcessing: (() => void) | undefined;
 let unsubWindowsNodeMxcLifecycle: (() => void) | null = null;
+let unsubWindowsNodeMxcDisplay: (() => void) | null = null;
 let unsubMaximizeChange: (() => void) | null = null;
 let historyPollTimer: number | null = null;
 
@@ -759,8 +826,15 @@ onMounted(async () => {
   unsubWsDisconnected = window.openclaw.gateway.onWsDisconnected(() => {
     chatStore.wsConnected = false;
   });
+  unsubWindowsNodeMxcDisplay = window.openclaw.windowsNodeMxc.onDisplayStatus((snapshot) => {
+    windowsNodeMxcDisplayRevision++;
+    applyWindowsNodeMxcDisplayStatus(snapshot);
+  });
   unsubWindowsNodeMxcLifecycle = window.openclaw.windowsNodeMxc.onLifecycleState((state) => {
     if (!applyWindowsNodeMxcLifecycleState(state)) return;
+    if (state.phase === "idle") lastKnownWindowsNodeMxcDesired.value = false;
+    if (state.phase === "active" || state.phase === "locked")
+      lastKnownWindowsNodeMxcDesired.value = true;
     if (windowsNodeMxcStatus.value) {
       windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
     }
@@ -774,7 +848,10 @@ onMounted(async () => {
         "connecting-weixin",
         "disconnecting-weixin",
       ].includes(state.phase) &&
-      (!["failed", "locked"].includes(state.phase) || windowsNodeMxcStatus.value?.desiredEnabled)
+      (!["failed", "locked"].includes(state.phase) ||
+        (windowsNodeMxcStatus.value?.desiredEnabled ??
+          lastKnownWindowsNodeMxcDesired.value ??
+          true))
     ) {
       gateway.resetReady();
       chatStore.wsConnected = false;
@@ -782,12 +859,8 @@ onMounted(async () => {
     if (["failed", "locked"].includes(state.phase) && state.detail) {
       gateway.addLog(`[error] ${state.detail}`);
     }
-    void window.openclaw.windowsNodeMxc
-      .getStatus()
-      .then(applyWindowsNodeMxcStatus)
-      .catch((error) =>
-        gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`),
-      );
+    if (["active", "idle", "failed", "locked"].includes(state.phase))
+      void refreshWindowsNodeMxcDisplayStatus();
   });
   unsubServiceReady = watchStartupServiceReadiness({
     readinessEpoch: () => gateway.readinessEpoch,
@@ -837,28 +910,7 @@ onMounted(async () => {
       agentStore.fetchAgents();
     }
   });
-  window.openclaw.windowsNodeMxc
-    .getStatus()
-    .then((status) => {
-      if (!applyWindowsNodeMxcStatus(status)) return;
-      if (
-        status.desiredEnabled &&
-        ![
-          "active",
-          "updating-folders",
-          "updating-consent",
-          "updating-model",
-          "connecting-weixin",
-          "disconnecting-weixin",
-        ].includes(status.lifecycleState.phase)
-      ) {
-        gateway.resetReady();
-        chatStore.wsConnected = false;
-      }
-    })
-    .catch((error) =>
-      gateway.addLog(`[error] ${error instanceof Error ? error.message : String(error)}`),
-    );
+  void refreshWindowsNodeMxcDisplayStatus();
 
   // (Theme, accent, locale already applied above before setup check)
 
@@ -899,6 +951,7 @@ onUnmounted(() => {
   unsubWindowsNodeMxcApprovalResolved?.();
   unsubWindowsNodeMxcApprovalProcessing?.();
   unsubWindowsNodeMxcLifecycle?.();
+  unsubWindowsNodeMxcDisplay?.();
   unsubMaximizeChange?.();
   if (historyPollTimer) window.clearInterval(historyPollTimer);
 });

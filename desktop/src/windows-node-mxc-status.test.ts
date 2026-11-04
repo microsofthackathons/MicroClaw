@@ -9,6 +9,8 @@ import { WindowsNodeMxcStatusCache } from "./windows-node-mxc-status-cache";
 const source = readFileSync(resolve(process.cwd(), "src", "main.ts"), "utf8");
 const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
 const declarations = [
+  "presentWindowsNodeMxcDisplayStatus",
+  "setWindowsNodeMxcLifecycleState",
   "getWindowsNodeMxcStatus",
   "inspectWindowsNodeMxcStatus",
   "requireEffectiveWindowsNodeMxc",
@@ -41,8 +43,12 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
   const synchronousValidation = vi.fn(() => {
     throw new Error("Status must not invoke synchronous validation or identity");
   });
+  const publishDisplay = vi.fn();
+  const sendToWindow = vi.fn();
+  const logError = vi.fn();
   const context = {
     Error,
+    console: { error: logError },
     readConfig: () => ({}),
     getWindowsNodeMxcRequestedMode: () => mode,
     isWindowsNodeMxcDesired: () => mode !== "off",
@@ -63,8 +69,9 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     gatewayGenerationId: "generation",
     getWindowsNodeMxcDurableApprovalStore: () => ({ inspect: () => ({}) }),
     windowsNodeMxcSecurityTransitionInProgress: false,
+    commandConsentUpdating: false,
     windowsNodeMxcLifecycleState: "idle",
-    windowsNodeMxcLifecycleDetail: null,
+    windowsNodeMxcLifecycleDetail: null as string | null,
     windowsNodeMxcLifecycleUpdatedAt: "",
     inspectWindowsNodeMxcHooksStatus: () => ({}),
     isWindowsNodeMxcIngressReleased: () => true,
@@ -73,14 +80,32 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     failClosedWindowsNodeMxc: failClosed,
     captureGatewayReadinessCheckpoint: () => () => true,
     windowsNodeMxcStatusCache: cache,
+    publishWindowsNodeMxcDisplayStatus: publishDisplay,
+    electronLifecycleDiagnostics: { log: vi.fn() },
+    summarizeLifecycleError: (message: string) => message,
+    sendToWindow,
+    mainWindow: {},
   };
   const functions = runInNewContext(
-    `${js}\n({ getWindowsNodeMxcStatus, inspectWindowsNodeMxcStatus, requireEffectiveWindowsNodeMxc })`,
+    `${js}\n({ presentWindowsNodeMxcDisplayStatus, setWindowsNodeMxcLifecycleState, getWindowsNodeMxcStatus, inspectWindowsNodeMxcStatus, requireEffectiveWindowsNodeMxc })`,
     context,
   ) as {
-    getWindowsNodeMxcStatus: () => Promise<{ effectiveEnabled: boolean }>;
+    getWindowsNodeMxcStatus: () => Promise<{
+      effectiveEnabled: boolean;
+      lifecycleState: { phase: string; detail: string | null };
+    }>;
     inspectWindowsNodeMxcStatus: () => Promise<{ effectiveEnabled: boolean }>;
     requireEffectiveWindowsNodeMxc: () => Promise<void>;
+    setWindowsNodeMxcLifecycleState: (phase: string, detail?: string | null) => void;
+    presentWindowsNodeMxcDisplayStatus: (snapshot: {
+      status: {
+        effectiveEnabled: boolean;
+        lifecycleState: { phase: string; detail: string | null };
+      };
+      verifiedAt: number;
+      refreshing: boolean;
+      error: null;
+    }) => { status: { lifecycleState: { phase: string; detail: string | null } } };
   };
   return {
     ...functions,
@@ -90,11 +115,19 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     failClosed,
     renewLease,
     synchronousValidation,
+    cache,
+    publishDisplay,
+    sendToWindow,
+    logError,
+    setLifecycleFailure: (detail: string) => {
+      context.windowsNodeMxcLifecycleState = "failed";
+      context.windowsNodeMxcLifecycleDetail = detail;
+    },
   };
 }
 
 describe("main-process Windows node MXC status", () => {
-  it.each(["off", "full", "limited-dacl"] as const)(
+  it.each(["full", "limited-dacl"] as const)(
     "awaits fresh asynchronous validation before inspecting %s",
     async (mode) => {
       const test = harness(mode);
@@ -107,7 +140,7 @@ describe("main-process Windows node MXC status", () => {
       );
       const status = test.getWindowsNodeMxcStatus();
       await Promise.resolve();
-      expect(test.validate).toHaveBeenCalledWith(mode !== "off");
+      expect(test.validate).toHaveBeenCalledWith(true);
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(test.snapshot).not.toHaveBeenCalled();
       expect(test.inspect).not.toHaveBeenCalled();
@@ -125,7 +158,78 @@ describe("main-process Windows node MXC status", () => {
     },
   );
 
-  it.each(["off", "full", "limited-dacl"] as const)(
+  it("does not validate the backend merely to inspect Off status", async () => {
+    const test = harness("off");
+    await expect(test.getWindowsNodeMxcStatus()).resolves.toMatchObject({
+      effectiveEnabled: false,
+    });
+    expect(test.validate).not.toHaveBeenCalled();
+    expect(test.synchronousValidation).not.toHaveBeenCalled();
+    expect(test.inspect).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedMode: "off", runtimeIntegrityError: undefined }),
+    );
+  });
+
+  it("preserves a failed Off lifecycle in fresh and displayed status", async () => {
+    const test = harness("off");
+    test.setLifecycleFailure("Cron resume acknowledgement timed out");
+    const status = await test.getWindowsNodeMxcStatus();
+    expect(status.lifecycleState).toMatchObject({
+      phase: "failed",
+      detail: "Cron resume acknowledgement timed out",
+    });
+    expect(
+      test.presentWindowsNodeMxcDisplayStatus({
+        status,
+        verifiedAt: 100,
+        refreshing: false,
+        error: null,
+      }).status.lifecycleState,
+    ).toMatchObject({
+      phase: "failed",
+      detail: "Cron resume acknowledgement timed out",
+    });
+  });
+
+  it("reports an unreadable display context without failing a lifecycle update", () => {
+    const test = harness("off");
+    vi.spyOn(test.cache, "snapshot").mockImplementationOnce(() => {
+      throw new Error("Status context unavailable");
+    });
+    expect(() => test.setWindowsNodeMxcLifecycleState("idle")).not.toThrow();
+    expect(test.publishDisplay).toHaveBeenCalledExactlyOnceWith({
+      status: null,
+      verifiedAt: null,
+      refreshing: false,
+      error: "Status context unavailable",
+    });
+    expect(test.logError).toHaveBeenCalledWith(
+      "[windows-node-mxc] Could not publish lifecycle status:",
+      "Status context unavailable",
+    );
+    expect(test.sendToWindow).toHaveBeenCalledWith(
+      expect.anything(),
+      "windows-node-mxc:lifecycle-state",
+      expect.objectContaining({ phase: "idle" }),
+    );
+  });
+
+  it("keeps a lifecycle update independent of failed display-error publication", () => {
+    const test = harness("off");
+    test.publishDisplay.mockImplementation(() => {
+      throw new Error("Display unavailable");
+    });
+    expect(() => test.setWindowsNodeMxcLifecycleState("idle")).not.toThrow();
+    expect(test.publishDisplay).toHaveBeenCalledTimes(2);
+    expect(test.logError).toHaveBeenCalledTimes(2);
+    expect(test.sendToWindow).toHaveBeenCalledWith(
+      expect.anything(),
+      "windows-node-mxc:lifecycle-state",
+      expect.objectContaining({ phase: "idle" }),
+    );
+  });
+
+  it.each(["full", "limited-dacl"] as const)(
     "preserves runtime integrity errors in %s status",
     async (mode) => {
       const test = harness(mode);

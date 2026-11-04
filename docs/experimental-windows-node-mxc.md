@@ -65,9 +65,10 @@ lifecycle or folder-policy recovery state.
 Status refreshes reuse the identity initialized by activation/pairing; reading a host snapshot
 does not launch the native identity helper or hash the Canvas runtime. Fresh runtime checks use
 asynchronous, streamed hashing so opening Security settings or focusing the window does not block
-Electron's main thread. Off validates only the pinned probe runtime before checking availability;
-enabled status, health, and ingress checks still validate the complete bundled artifact set and
-Canvas tree on every inspection. Snapshots are not activation authority: explicit activation,
+Electron's main thread. Off status does not probe MXC availability; Security settings indicate that
+availability is checked when sandboxing is enabled. Enabled status, health, and ingress checks
+still validate the complete bundled artifact set and Canvas tree on every inspection. Snapshots are
+not activation authority: explicit activation,
 host launch, live Gateway attestation, policy-drift checks, and fail-closed handling remain required.
 
 Security settings do not display the internal attestation diagnostics or the verbose compatibility,
@@ -114,15 +115,61 @@ Off-to-On activation with native consent. MicroClaw never changes an existing Fu
 Limited after an OS update, probe change, startup failure, or settings migration.
 
 Gateway-native file/process tools remain removed from the agent surface in both Full and Limited
-mode. The active Gateway surface is exactly `exec`, `web_search`, `web_fetch`, `message`, and the
-reviewed `canvas` tool;
+mode. The active Gateway surface is exactly `exec`, `web_search`, `web_fetch`, `message`,
+`canvas`, `memory_search`, and `memory_get`;
 `exec` is pinned to the app-owned node, and `message` can reach only the requested WeChat channel.
 The pinned OpenClaw `web_fetch` implementation is startup-attested to accept only HTTP(S), so
 `file:` and other local URL schemes remain rejected. The policy keeps `group:fs` denied, including
 at least the native `read`, `write`, `edit`, and `apply_patch` tools. Native Gateway filesystem
-tools execute on the Windows host and would bypass Windows Node/MXC. Local file access must use
-MXC-contained Windows Node `exec` or the MicroClaw WeChat media broker. MXC Off restores the user's
+tools execute on the Windows host and would bypass Windows Node/MXC. General local file access must use
+MXC-contained Windows Node `exec` or the MicroClaw WeChat media broker. Scoped memory recall is the
+explicit Gateway-host exception described below. MXC Off restores the user's
 backed-up native tool policy, while `exec` remains pinned to the bundled Windows Node for consent.
+
+### Agent workspace defaults
+
+Both regular (Off) and MXC modes use `%USERPROFILE%\OpenClawWorkspaces\<agent-id>`
+for default agent workspaces, including `main`. Agent files are separate from protected
+OpenClaw state, credentials, sessions and indexes. Historical agent aliases continue to use
+their canonical agent's workspace.
+
+Before starting the managed Gateway, MicroClaw copies recognized legacy default workspaces
+(`.openclaw\workspace`, `.openclaw\workspace-<agent-id>`, and inherited default subfolders)
+to this layout and explicitly configures each agent's path. Originals remain untouched as
+backups. Copies are verified before configuration publication; a different existing destination,
+links/reparse redirection, hardlinked files, or changing source contents stop migration rather
+than overwriting or silently dropping data. An identical completed copy can be reused after a
+failed startup. Explicit custom paths and custom defaults are preserved and are **not**
+automatically granted sandbox access. Embedded absolute paths in workspace files are not rewritten.
+
+The whole `OpenClawWorkspaces` parent receives a **one-time global RW default grant** through
+the normal folder-policy validator. This applies to every agent, including future agents;
+the subfolders are organizational, **not per-agent security boundaries**. Existing explicit
+RO restrictions are preserved. Removing or downgrading the grant is not undone on restart.
+Limited-mode ambient access caveats still apply. No protected-root exception is added, and
+command consent remains independent of this folder grant.
+
+### Scoped memory recall
+
+The bundled `memory-core` plugin and memory slot remain enabled in Full and Limited mode.
+Only its `memory_search` and `memory_get` tools are exposed to agents; general file tools,
+the `intent` tool, and other plugin tools remain excluded. Recall uses OpenClaw's current-agent
+memory-source and session-visibility checks. It is intentionally independent of MXC folder grants:
+an eligible memory file in the protected `.openclaw` workspace can be recalled without granting
+shell commands access to that directory. This is not arbitrary filesystem access or permission to
+edit memories. Configured memory sources remain operator-owned; folder grants do not restrict them.
+
+The memory plugin may maintain its internal recall index. Cron stays disabled, so scheduled
+memory dreaming does not run; existing memory settings and scheduled-job data are not rewritten
+to enable recall. Locked readiness still exposes no agent tools, including recall. The original
+plugin configuration is restored on Off. Missing recall tools or substituted/disabled memory
+providers fail effective-policy validation rather than silently falling back to native file tools.
+
+Generated workspace guidance in both regular and MXC modes prioritizes `memory_search` for recall
+questions and `memory_get` for known memory files or bounded excerpts. Deferred tools must be
+discovered before choosing native file reads or `exec`. Unavailable, denied, or stale recall must
+be reported; raw transcript reads and filesystem fallbacks must not bypass memory privacy rules.
+Regular mode preserves the user's memory configuration rather than overriding an explicit opt-out.
 
 ## Command consent and stock Windows transport
 
@@ -158,20 +205,28 @@ simple commands when both CMD and PowerShell will parse it correctly. It retains
 escaping around individual values and for scripts that need them. This is guidance, not a guarantee
 of model behavior or rememberability.
 
-In MXC mode native OpenClaw filesystem tools remain disabled, and file operations must use contained
-`exec` or the reviewed media broker. With MXC Off, native file tools remain enabled and bypass
+In MXC mode native OpenClaw filesystem tools remain disabled, and general file operations must use contained
+`exec` or the reviewed media broker; scoped memory recall uses the dedicated Gateway tools above.
+With MXC Off, native file tools remain enabled and bypass
 Windows Node command consent; Off is not a filesystem sandbox or a complete file-access consent
 boundary. Changing command consent briefly pauses execution while the running Windows Node applies
 and acknowledges a new signed policy; it does not restart the Gateway or node. Active work must
 finish first. A failed change restores the previous policy or locks execution if recovery fails.
+
+The agent instructions prefer a suitable native file tool when it is present in the current turn
+and use contained `exec` when MXC removes those tools. Tool choice is based on the current tool
+surface, not the last successful action or a remembered mode. This guidance adds no MXC eligibility
+or status probe to command execution; `exec` remains available for shell workflows and operations
+without a suitable native tool. A denied native operation is not an authorization to retry through
+`exec`.
 
 The bundled `github-copilot` model-provider plugin is a reviewed exception to the plugin
 suppression policy, not an additional tool or ingress capability. A configured Copilot default,
 fallback, or agent model enables this provider in both locked and active policies; an explicitly
 enabled provider remains available for session overrides. This is independent of the internal
 Copilot setup flag and does not start sign-in or change credentials. The policy validator rejects
-a missing or denied required provider and still rejects unreviewed plugins. Memory remains
-disabled, and the locked/active tool lists, node routing, and filesystem restrictions are unchanged.
+a missing or denied required provider and still rejects unreviewed plugins. The scoped memory
+exception does not change node routing, native filesystem denial, or the empty locked tool inventory.
 
 ## Canvas Phase 1
 
@@ -948,8 +1003,9 @@ Activation is an automatic fail-closed transaction:
    by the explicitly requested mode.
 2. Start and attest the locked generation and its smoke record.
 3. Stop the Gateway and reject, rather than queue, MicroClaw chat sends.
-4. Write an active policy that exposes only node-pinned `exec`, reviewed Web/WeChat routing, and
-   the exact Canvas tool; disable other channels, webhooks, internal hooks, cron, and plugins.
+4. Write an active policy that exposes only node-pinned `exec`, reviewed Web/WeChat routing,
+   Canvas, and scoped memory recall; disable other channels, webhooks, internal hooks, cron,
+   and unreviewed plugins.
 5. Start a new managed loopback Gateway generation and pair the exact bundled node.
 6. Verify the node declaration, requested/effective containment strength, exact tier, CWD contract,
    strict helper policy, Limited assessment hash if applicable, and exact effective tool/Canvas

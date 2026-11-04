@@ -10,6 +10,7 @@ import {
   type WindowsNodeMxcRequestedMode,
 } from "./windows-node-mxc-modes";
 import { WindowsNodeMxcLifecycleOperationCoordinator } from "./windows-node-mxc-lifecycle-operation";
+import { WindowsNodeMxcStatusCache } from "./windows-node-mxc-status-cache";
 import {
   preflightWindowsNodeMxcBackend,
   probeWindowsNodeMxcAutomaticMode,
@@ -31,6 +32,14 @@ const handlerSource = source.slice(
   source.search(/ipcMain\.handle\(\s*"windows-node-mxc:approval-respond"/u),
 );
 const handlerJs = ts.transpileModule(handlerSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const sourceAst = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
+const lifecycleDeclaration = sourceAst.statements.find(
+  (node) => ts.isFunctionDeclaration(node) && node.name?.text === "setWindowsNodeMxcLifecycleState",
+);
+if (!lifecycleDeclaration) throw new Error("Missing lifecycle state function");
+const lifecycleJs = ts.transpileModule(lifecycleDeclaration.getText(sourceAst), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 const probe = (tier: string) => classifyMxcProbe(0, JSON.stringify({ tier }), "");
@@ -80,6 +89,13 @@ function harness(initialMode: WindowsNodeMxcRequestedMode = "off") {
     .fn<() => WeixinRemoteApprovalActivationOptions>()
     .mockReturnValue(noAccount());
   const coordinator = new WindowsNodeMxcLifecycleOperationCoordinator();
+  let statusRevision = 0;
+  const statusCache = new WindowsNodeMxcStatusCache({
+    key: () =>
+      `${getSelection().requestedMode}:${coordinator.generation}:${coordinator.active}:${statusRevision}`,
+    inspect: getStatus,
+    publish: vi.fn(),
+  });
   const stop = vi.fn().mockResolvedValue(undefined);
   const start = vi.fn().mockResolvedValue(undefined);
   const revokeLease = vi.fn();
@@ -101,6 +117,7 @@ function harness(initialMode: WindowsNodeMxcRequestedMode = "off") {
     },
     assertTrustedRendererIpc: vi.fn(),
     assertNativeWeixinRemoteApprovalAuthority,
+    commandConsentUpdating: false,
     windowsNodeMxcLifecycleOperations: coordinator,
     windowsNodeMxcLifecycleOperationHooks: () => ({ beforeStart: vi.fn(), afterSettled: vi.fn() }),
     localModelService: { assertIdle: vi.fn() },
@@ -110,6 +127,7 @@ function harness(initialMode: WindowsNodeMxcRequestedMode = "off") {
     getWindowsNodeMxcSelection: getSelection,
     getWindowsNodeMxcRequestedMode: () => getSelection().requestedMode,
     getWindowsNodeMxcStatus: getStatus,
+    windowsNodeMxcStatusCache: statusCache,
     isWindowsNodeMxcDesired: () => getSelection().requestedMode !== "off",
     gwClient: { connected: true },
     gatewaySpawnedByUs: true,
@@ -134,6 +152,11 @@ function harness(initialMode: WindowsNodeMxcRequestedMode = "off") {
     gatewayPort: 18789,
     DEFAULT_PORT: 18789,
     setWindowsNodeMxcLifecycleState: vi.fn(),
+    windowsNodeMxcLifecycleState: "idle",
+    windowsNodeMxcLifecycleDetail: null as string | null,
+    windowsNodeMxcLifecycleUpdatedAt: "",
+    publishWindowsNodeMxcDisplayStatus: vi.fn(),
+    console: { error: vi.fn() },
     setGatewayStatus: vi.fn(),
     closeWindowsNodeMxcIngress: vi.fn(),
     windowsNodeMxcActivationInProgress: false,
@@ -183,6 +206,9 @@ function harness(initialMode: WindowsNodeMxcRequestedMode = "off") {
     ready,
     prepare,
     readOptions,
+    getStatus,
+    statusCache,
+    changeStatusKey: () => statusRevision++,
   };
 }
 
@@ -375,7 +401,7 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
 
   it("turns Off through the existing standard-backend lifecycle without deleting folders or remembered commands", async () => {
     const h = harness("full");
-    await h.invoke(false);
+    await expect(h.invoke(false)).resolves.toBeNull();
     expect(h.context.setWindowsNodeMxcLifecycleState).toHaveBeenCalledWith("disabling");
     expect(h.context.setWindowsNodeMxcLifecycleState).toHaveBeenCalledWith("starting-standard");
     expect(h.nativeDialog).not.toHaveBeenCalled();
@@ -388,6 +414,133 @@ describe("actual main-process sandbox-toggle IPC handler", () => {
     expect(h.revokeApprovals).not.toHaveBeenCalled();
     expect(h.probeRunner).not.toHaveBeenCalled();
     expect(h.context.app.relaunch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the standard Gateway running when the post-Off display inspection becomes obsolete", async () => {
+    const h = harness("limited-dacl");
+    let finish!: (value: Awaited<ReturnType<typeof h.getStatus>>) => void;
+    h.getStatus.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    await expect(h.invoke(false)).resolves.toBeNull();
+    await vi.waitFor(() => expect(h.getStatus).toHaveBeenCalledOnce());
+    expect(h.coordinator.active).toBe(false);
+    h.changeStatusKey();
+    finish({ requestedMode: "limited-dacl", desiredEnabled: true });
+    await vi.waitFor(() =>
+      expect(h.statusCache.snapshot()).toMatchObject({
+        status: { requestedMode: "off", desiredEnabled: false },
+        refreshing: false,
+        error: null,
+      }),
+    );
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(h.start).toHaveBeenCalledOnce();
+    expect(h.context.setGatewayStatus).not.toHaveBeenCalledWith("failed");
+    expect(h.context.setWindowsNodeMxcLifecycleState).not.toHaveBeenCalledWith(
+      "failed",
+      expect.anything(),
+    );
+    expect(h.context.notifyRendererApplicationReady).toHaveBeenCalledOnce();
+  });
+
+  it("reports a display inspection failure without rolling back a completed Off transition", async () => {
+    const h = harness("full");
+    h.getStatus.mockRejectedValueOnce(new Error("Status inspection failed"));
+    await expect(h.invoke(false)).resolves.toBeNull();
+    await vi.waitFor(() =>
+      expect(h.statusCache.snapshot()).toMatchObject({
+        status: null,
+        error: "Status inspection failed",
+      }),
+    );
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(h.start).toHaveBeenCalledOnce();
+    expect(h.context.setGatewayStatus).not.toHaveBeenCalledWith("failed");
+    expect(h.context.notifyRendererApplicationReady).toHaveBeenCalledOnce();
+  });
+
+  it("does not turn a synchronous display-refresh error into an Off transition failure", async () => {
+    const h = harness("full");
+    vi.spyOn(h.statusCache, "display").mockImplementation(() => {
+      throw new Error("Status refresh unavailable");
+    });
+    await expect(h.invoke(false)).resolves.toBeNull();
+    expect(h.context.electronLifecycleDiagnostics.log).toHaveBeenCalledWith(
+      "mxc-display-status-refresh-failed",
+      { error: expect.stringContaining("Status refresh unavailable") },
+    );
+    expect(h.context.sendToWindow).toHaveBeenCalledWith(
+      h.context.mainWindow,
+      "gateway:log",
+      expect.stringContaining("Status refresh unavailable"),
+    );
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(h.context.setGatewayStatus).not.toHaveBeenCalledWith("failed");
+  });
+
+  it("keeps the standard Gateway running if the idle lifecycle display snapshot fails", async () => {
+    const h = harness("full");
+    runInNewContext(lifecycleJs, h.context);
+    const snapshot = h.statusCache.snapshot.bind(h.statusCache);
+    let failed = false;
+    vi.spyOn(h.statusCache, "snapshot").mockImplementation(() => {
+      if (h.context.windowsNodeMxcLifecycleState === "idle" && !failed) {
+        failed = true;
+        throw new Error("Status context unavailable");
+      }
+      return snapshot();
+    });
+
+    await expect(h.invoke(false)).resolves.toBeNull();
+    expect(h.context.publishWindowsNodeMxcDisplayStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: null,
+        verifiedAt: null,
+        refreshing: false,
+        error: expect.stringContaining("Status context unavailable"),
+      }),
+    );
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(h.context.setGatewayStatus).not.toHaveBeenCalledWith("failed");
+    expect(h.context.notifyRendererApplicationReady).toHaveBeenCalledOnce();
+  });
+
+  it("joins duplicate Off requests while the required Cron acknowledgement is pending", async () => {
+    const h = harness("full");
+    let acknowledge!: () => void;
+    h.context.waitForWindowsNodeMxcCronResumeAcknowledgement.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    const first = h.invoke(false);
+    await vi.waitFor(() =>
+      expect(h.context.waitForWindowsNodeMxcCronResumeAcknowledgement).toHaveBeenCalledOnce(),
+    );
+    const duplicate = h.invoke(false);
+    acknowledge();
+    await expect(Promise.all([first, duplicate])).resolves.toEqual([null, null]);
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(h.start).toHaveBeenCalledOnce();
+    expect(h.context.notifyRendererApplicationReady).toHaveBeenCalledOnce();
+  });
+
+  it("still fails Off when the required Cron resume acknowledgement fails", async () => {
+    const h = harness("full");
+    h.context.waitForWindowsNodeMxcCronResumeAcknowledgement.mockRejectedValueOnce(
+      new Error("Cron resume acknowledgement timed out"),
+    );
+    await expect(h.invoke(false)).rejects.toThrow("Cron resume acknowledgement timed out");
+    expect(h.context.setWindowsNodeMxcLifecycleState).toHaveBeenCalledWith(
+      "failed",
+      expect.stringContaining("Cron resume acknowledgement timed out"),
+    );
+    expect(h.stop).toHaveBeenCalledTimes(2);
+    expect(h.context.setGatewayStatus).toHaveBeenCalledWith("failed");
+    expect(h.context.notifyRendererApplicationReady).not.toHaveBeenCalled();
   });
 
   it("reports an Off restart failure without relaunching Electron or claiming a ready backend", async () => {

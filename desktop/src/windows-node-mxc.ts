@@ -43,12 +43,15 @@ export const WINDOWS_NODE_MXC_NODE_COMMANDS = [
   WINDOWS_NODE_MXC_REQUIRED_CWD_COMMAND,
   ...WINDOWS_NODE_MXC_CANVAS_COMMANDS,
 ] as const;
+export const WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID = "memory-core";
+export const WINDOWS_NODE_MXC_MEMORY_TOOLS = ["memory_search", "memory_get"] as const;
 export const WINDOWS_NODE_MXC_TOOL_ALLOWLIST = [
   "exec",
   "web_search",
   "web_fetch",
   "message",
   "canvas",
+  ...WINDOWS_NODE_MXC_MEMORY_TOOLS,
 ] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_ALLOWLIST = [
   "__microclaw_windows_node_mxc_locked__",
@@ -60,7 +63,6 @@ export const WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS = [
   "apply_patch",
 ] as const;
 export const WINDOWS_NODE_MXC_TOOL_DENYLIST = ["process", "group:fs"] as const;
-export const WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS = ["memory-core"] as const;
 export const WINDOWS_NODE_MXC_MODEL_PROVIDER_PLUGIN_IDS = ["github-copilot"] as const;
 export const WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST = [
   "group:runtime",
@@ -826,6 +828,7 @@ export function applyWindowsNodeMxcGatewayPolicy(
   );
   const pluginAllow = [
     "canvas",
+    WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID,
     ...(weixinRequested ? ["openclaw-weixin"] : []),
     ...modelProviderPluginIds,
   ];
@@ -838,7 +841,7 @@ export function applyWindowsNodeMxcGatewayPolicy(
       : [],
     slots: {
       ...asRecord(plugins.slots),
-      memory: "none",
+      memory: WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID,
     },
     entries: {
       ...Object.fromEntries(
@@ -852,6 +855,10 @@ export function applyWindowsNodeMxcGatewayPolicy(
       ),
       canvas: {
         ...asRecord(pluginEntries.canvas),
+        enabled: true,
+      },
+      [WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID]: {
+        ...asRecord(pluginEntries[WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID]),
         enabled: true,
       },
     },
@@ -968,6 +975,14 @@ export function validateWindowsNodeMxcGatewayPolicy(
   if (globalDeny.some((value) => value === "canvas" || value === "group:plugins")) {
     blockers.push("Global Gateway tool policy blocks the reviewed Canvas tool");
   }
+  if (
+    globalDeny.some(
+      (value) =>
+        value === "group:memory" || WINDOWS_NODE_MXC_MEMORY_TOOLS.some((tool) => tool === value),
+    )
+  ) {
+    blockers.push("Global Gateway tool policy blocks scoped memory recall");
+  }
   const gateway =
     root.gateway && typeof root.gateway === "object" && !Array.isArray(root.gateway)
       ? (root.gateway as Record<string, unknown>)
@@ -1024,6 +1039,7 @@ export function validateWindowsNodeMxcGatewayPolicy(
   );
   const expectedPluginAllow = [
     "canvas",
+    WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID,
     ...(weixinPluginEnabled ? ["openclaw-weixin"] : []),
     ...modelProviderPluginIds,
   ];
@@ -1032,7 +1048,7 @@ export function validateWindowsNodeMxcGatewayPolicy(
     expectedPluginAllow.some((pluginId) => pluginDeny.includes(pluginId))
   ) {
     blockers.push(
-      "Gateway plugin policy drifted from the reviewed Canvas/WeChat/model-provider surface",
+      "Gateway plugin policy drifted from the reviewed Canvas/memory/WeChat/model-provider surface",
     );
   }
   for (const pluginId of getSelectedModelProviderPluginIds(root)) {
@@ -1047,21 +1063,16 @@ export function validateWindowsNodeMxcGatewayPolicy(
     blockers.push("Gateway WeChat plugin is not present in the effective plugin allowlist");
   }
   const memorySlot = asRecord(plugins.slots).memory;
-  if (memorySlot !== "none" && memorySlot !== null) {
+  if (
+    memorySlot !== WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID ||
+    asRecord(asRecord(plugins.entries)[WINDOWS_NODE_MXC_MEMORY_PLUGIN_ID]).enabled !== true
+  ) {
     blockers.push(
-      'Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"',
+      'Gateway scoped memory recall requires the enabled memory-core plugin and plugins.slots.memory="memory-core"',
     );
   }
   for (const [pluginId, value] of Object.entries(asRecord(plugins.entries))) {
-    if (
-      pluginId !== "canvas" &&
-      pluginId !== "openclaw-weixin" &&
-      !WINDOWS_NODE_MXC_MODEL_PROVIDER_PLUGIN_IDS.some((reviewedId) => reviewedId === pluginId) &&
-      !WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS.includes(
-        pluginId as (typeof WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS)[number],
-      ) &&
-      asRecord(value).enabled !== false
-    ) {
+    if (!expectedPluginAllow.includes(pluginId) && asRecord(value).enabled !== false) {
       blockers.push(`Gateway plugin "${pluginId}" must remain disabled`);
     }
   }
