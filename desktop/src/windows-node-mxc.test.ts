@@ -31,6 +31,7 @@ import {
   validateWindowsNodeMxcSettings,
   WINDOWS_NODE_MXC_CANVAS_COMMANDS,
   WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
+  WINDOWS_NODE_MXC_MEMORY_TOOLS,
   WINDOWS_NODE_MXC_TOOL_ALLOWLIST,
 } from "./windows-node-mxc";
 import {
@@ -625,7 +626,15 @@ describe("Windows Node MXC Gateway policy", () => {
   it("exposes contained exec, Gateway web, brokered messaging, and reviewed Canvas while pinning exec", () => {
     expect(buildWindowsNodeMxcToolPolicy("node-123")).toEqual({
       profile: "full",
-      allow: ["exec", "web_search", "web_fetch", "message", "canvas"],
+      allow: [
+        "exec",
+        "web_search",
+        "web_fetch",
+        "message",
+        "canvas",
+        "memory_search",
+        "memory_get",
+      ],
       deny: ["process", "group:fs"],
       codeMode: false,
       exec: {
@@ -747,13 +756,14 @@ describe("Windows Node MXC Gateway policy", () => {
       cron: { enabled: false, maxConcurrentRuns: 2 },
       plugins: {
         enabled: true,
-        allow: ["canvas", "openclaw-weixin"],
+        allow: ["canvas", "memory-core", "openclaw-weixin"],
         slots: {
-          memory: "none",
+          memory: "memory-core",
         },
         entries: {
           "openclaw-weixin": { enabled: true },
           canvas: { enabled: true },
+          "memory-core": { enabled: true },
         },
       },
     });
@@ -786,14 +796,14 @@ describe("Windows Node MXC Gateway policy", () => {
 
       expect(applied.config).toMatchObject({
         plugins: {
-          allow: ["canvas", "github-copilot"],
+          allow: ["canvas", "memory-core", "github-copilot"],
           deny: ["unsafe-provider"],
-          slots: { memory: "none" },
+          slots: { memory: "memory-core" },
           entries: {
             canvas: { enabled: true },
             "github-copilot": { enabled: true },
             "unsafe-provider": { enabled: false },
-            "memory-core": { enabled: false },
+            "memory-core": { enabled: true },
           },
         },
       });
@@ -823,7 +833,7 @@ describe("Windows Node MXC Gateway policy", () => {
 
     expect(applied.config).toMatchObject({
       plugins: {
-        allow: ["canvas", "github-copilot"],
+        allow: ["canvas", "memory-core", "github-copilot"],
         entries: { "github-copilot": { enabled: true } },
       },
     });
@@ -888,7 +898,9 @@ describe("Windows Node MXC Gateway policy", () => {
     ).slots = {};
     expect(
       validateWindowsNodeMxcGatewayPolicy(implicitMemoryCore, "node-123", "active").blockers,
-    ).toContain('Gateway memory plugin slot must remain disabled with plugins.slots.memory="none"');
+    ).toContain(
+      'Gateway scoped memory recall requires the enabled memory-core plugin and plugins.slots.memory="memory-core"',
+    );
   });
 
   it("never exposes Cron or automations tools and preserves native filesystem denial", () => {
@@ -909,6 +921,108 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(policy.deny).toContain("group:fs");
     for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {
       expect(policy.allow).not.toContain(filesystemTool);
+    }
+  });
+
+  it("preserves memory sources and plugin settings through active, locked, and Off transitions", () => {
+    const source = {
+      agents: {
+        entries: {
+          main: { workspace: "C:\\Users\\test\\.openclaw\\workspace" },
+          coder: { tools: { allow: ["read", "memory_get"] } },
+        },
+      },
+      memory: { search: { provider: "none", sources: ["memory"] } },
+      plugins: {
+        allow: ["other-memory"],
+        deny: ["memory-core"],
+        slots: { memory: "other-memory" },
+        entries: {
+          "other-memory": { enabled: true },
+          "memory-core": { enabled: false, config: { dreaming: { enabled: false } } },
+        },
+      },
+    };
+    const original = structuredClone(source);
+    const active = applyWindowsNodeMxcGatewayPolicy(source, "node-123");
+    const locked = applyWindowsNodeMxcGatewayPolicy(
+      active.config,
+      "node-123",
+      active.backups,
+      "locked",
+    );
+    const resumed = applyWindowsNodeMxcGatewayPolicy(
+      locked.config,
+      "node-123",
+      locked.backups,
+      "active",
+    );
+    expect(active.config).toMatchObject({
+      memory: source.memory,
+      plugins: {
+        allow: ["canvas", "memory-core"],
+        deny: [],
+        slots: { memory: "memory-core" },
+        entries: {
+          "other-memory": { enabled: false },
+          "memory-core": { enabled: true, config: { dreaming: { enabled: false } } },
+        },
+      },
+      cron: { enabled: false },
+      hooks: { enabled: false, internal: { enabled: false } },
+    });
+    expect(validateWindowsNodeMxcGatewayPolicy(active.config, "node-123").ready).toBe(true);
+    expect(validateWindowsNodeMxcGatewayPolicy(locked.config, "node-123", "locked").ready).toBe(
+      true,
+    );
+    expect(resumed).toEqual(active);
+    expect(restoreWindowsNodeMxcGatewayPolicy(resumed.config, resumed.backups)).toEqual(source);
+    expect(source).toEqual(original);
+    const regular = applyWindowsNodeCommandPolicy(source, "node-123");
+    expect(regular.plugins).toEqual(source.plugins);
+    expect(regular.memory).toEqual(source.memory);
+  });
+
+  it("rejects disabled, denied, or substituted memory providers", () => {
+    const baseline = applyWindowsNodeMxcGatewayPolicy(
+      { agents: { entries: { main: {} } } },
+      "node-123",
+    ).config;
+    const plugins = baseline.plugins as Record<string, unknown>;
+    for (const change of [
+      { slots: { memory: "none" } },
+      { slots: { memory: "other-memory" } },
+      { deny: ["memory-core"] },
+      { allow: ["canvas"] },
+      { entries: { canvas: { enabled: true }, "memory-core": { enabled: false } } },
+    ]) {
+      expect(
+        validateWindowsNodeMxcGatewayPolicy(
+          { ...baseline, plugins: { ...plugins, ...change } },
+          "node-123",
+        ).ready,
+      ).toBe(false);
+    }
+    for (const denied of [...WINDOWS_NODE_MXC_MEMORY_TOOLS, "group:memory"]) {
+      expect(
+        validateWindowsNodeMxcGatewayPolicy({ ...baseline, tools: { deny: [denied] } }, "node-123")
+          .blockers,
+      ).toContain("Global Gateway tool policy blocks scoped memory recall");
+    }
+  });
+
+  it("requires both recall tools when active and exposes neither when locked", () => {
+    for (const tool of WINDOWS_NODE_MXC_MEMORY_TOOLS) {
+      expect(
+        validateEffectiveToolNames(WINDOWS_NODE_MXC_TOOL_ALLOWLIST.filter((name) => name !== tool))
+          .ready,
+      ).toBe(false);
+      expect(validateEffectiveToolNames([tool], "locked").ready).toBe(false);
+    }
+    for (const tool of ["intent", "read", "write", "edit", "apply_patch", "cron", "gateway"]) {
+      expect(validateEffectiveToolNames([...WINDOWS_NODE_MXC_TOOL_ALLOWLIST, tool]).ready).toBe(
+        false,
+      );
     }
   });
 
@@ -969,9 +1083,17 @@ describe("Windows Node MXC Gateway policy", () => {
     expect(result.blockers[0]).toContain("tool policy drifted");
   });
 
-  it("requires the effective inventory to contain only contained exec, Web, messaging, and Canvas", () => {
+  it("requires the exact reviewed inventory including scoped memory recall", () => {
     expect(
-      validateEffectiveToolNames(["exec", "web_search", "web_fetch", "message", "canvas"]).ready,
+      validateEffectiveToolNames([
+        "exec",
+        "web_search",
+        "web_fetch",
+        "message",
+        "canvas",
+        "memory_search",
+        "memory_get",
+      ]).ready,
     ).toBe(true);
     expect(validateEffectiveToolNames(["exec"]).ready).toBe(false);
     expect(validateEffectiveToolNames(["exec", "read"]).ready).toBe(false);
@@ -980,7 +1102,7 @@ describe("Windows Node MXC Gateway policy", () => {
   it.each(["full", "limited-dacl"] as const)(
     "keeps Gateway-native filesystem tools forbidden for %s when safe capabilities are restored",
     () => {
-      const restoredCapabilities = ["exec", "web_search", "web_fetch", "message", "canvas"];
+      const restoredCapabilities = [...WINDOWS_NODE_MXC_TOOL_ALLOWLIST];
       expect(validateNoGatewayNativeFilesystemTools(restoredCapabilities).ready).toBe(true);
 
       for (const filesystemTool of WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS) {

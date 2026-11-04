@@ -561,19 +561,19 @@ interface OpenClawAPI {
           bfsCompiledIn: boolean | null;
         };
         reason: string | null;
-      };
+      } | null;
       fullAvailability: {
         available: boolean;
         summary: string | null;
         blockers: string[];
         remediation: string[];
-      };
+      } | null;
       limitedAvailability: {
         available: boolean;
         summary: string | null;
         blockers: string[];
         remediation: string[];
-      };
+      } | null;
       ambientAccess: {
         contract: "microclaw.windows-node-mxc-ambient-access.v1";
         hash: string;
@@ -601,7 +601,7 @@ interface OpenClawAPI {
     }>;
     setEnabled(params: {
       enabled: boolean;
-    }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>>>;
+    }): Promise<Awaited<ReturnType<OpenClawAPI["windowsNodeMxc"]["getStatus"]>> | null>;
     validateFolderPolicy(draft: {
       rw: string[];
       ro: string[];

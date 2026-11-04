@@ -43,6 +43,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   let serviceReady: () => void;
   let status: MxcStatus;
   let sequence: number;
+  let displayStatus: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
   let wrapper: ReturnType<typeof shallowMount>;
   let nativeOptions: WeixinRemoteApprovalActivationOptions;
   let approvalRequest: Parameters<OpenClawAPI["windowsNodeMxc"]["onApprovalRequest"]>[0];
@@ -86,6 +87,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       blockers: [],
       remediation: [],
     };
+    if (!status.probe) throw new Error("Expected a verified browser fixture probe");
     status.probe = {
       ...status.probe,
       outcome: "supported",
@@ -98,6 +100,14 @@ describe("App MXC loading gate with the real Gateway store", () => {
     vi.spyOn(window.openclaw.windowsNodeMxc, "onLifecycleState").mockImplementation((callback) => {
       lifecycle = callback;
       return vi.fn();
+    });
+    const displayListeners = new Set<typeof displayStatus>();
+    displayStatus = (snapshot) => {
+      for (const listener of displayListeners) listener(snapshot);
+    };
+    vi.spyOn(window.openclaw.windowsNodeMxc, "onDisplayStatus").mockImplementation((callback) => {
+      displayListeners.add(callback);
+      return () => displayListeners.delete(callback);
     });
     vi.spyOn(window.openclaw.gateway, "onServiceReady").mockImplementation((callback) => {
       serviceReady = callback;
@@ -231,6 +241,58 @@ describe("App MXC loading gate with the real Gateway store", () => {
     });
     await flushPromises();
     expect(wrapper.get('[data-testid="lifecycle-consumer"]').text()).toBe("active");
+  });
+
+  it("uses display snapshots instead of fresh inspections for transient lifecycle phases", async () => {
+    await mountReadyApp();
+    const calls = vi.mocked(window.openclaw.windowsNodeMxc.getStatus).mock.calls.length;
+    emitPhase("disabling");
+    emitPhase("starting-standard");
+    await flushPromises();
+    expect(window.openclaw.windowsNodeMxc.getStatus).toHaveBeenCalledTimes(calls);
+  });
+
+  it("keeps the Off transition separate from pending or failed status display", async () => {
+    const { gateway } = await mountReadyApp();
+    status = { ...status, requestedMode: "full", desiredEnabled: true };
+    emitPhase("active");
+    await flushPromises();
+    emitPhase("disabling");
+    await flushPromises();
+    const setEnabled = vi
+      .spyOn(window.openclaw.windowsNodeMxc, "setEnabled")
+      .mockResolvedValue(null);
+    vi.spyOn(window.openclaw.windowsNodeMxc, "getDisplayStatus").mockResolvedValue({
+      status: null,
+      verifiedAt: null,
+      refreshing: true,
+      error: null,
+    });
+    wrapper.findComponent(GatewayLoading).vm.$emit("disable-mxc");
+    await flushPromises();
+    expect(setEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: false });
+    expect(gateway.ready).toBe(false);
+    expect(wrapper.findComponent(GatewayLoading).props("mxcDesired")).toBe(false);
+
+    displayStatus({ status: null, verifiedAt: null, refreshing: false, error: "Status failed" });
+    await flushPromises();
+    expect(gateway.lastError).toContain("MXC status: Status failed");
+    expect(gateway.ready).toBe(false);
+
+    status = { ...status, requestedMode: "off", desiredEnabled: false };
+    emitPhase("idle");
+    displayStatus({
+      status,
+      verifiedAt: 200,
+      refreshing: false,
+      error: null,
+    });
+    serviceReady();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(650);
+    await flushPromises();
+    expect(gateway.ready).toBe(true);
+    expect(wrapper.find(".app-layout").exists()).toBe(true);
   });
 
   it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
@@ -1270,6 +1332,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
       updatedAt: new Date().toISOString(),
     };
     lifecycle(status.lifecycleState);
+    displayStatus({ status: null, verifiedAt: null, refreshing: true, error: null });
     await flushPromises();
     const dialog = wrapper.findComponent(PermissionDialog);
     expect(dialog.props("responding")).toBe(true);
@@ -1277,6 +1340,57 @@ describe("App MXC loading gate with the real Gateway store", () => {
     await flushPromises();
     expect(window.openclaw.windowsNodeMxc.respondApproval).not.toHaveBeenCalled();
     expect(dialog.props("request")?.requestId).toBe("live-update");
+  });
+
+  it("keeps approvals during a pending display refresh but invalidates them on a new Gateway generation", async () => {
+    status.gatewayGeneration = "generation-before";
+    await mountReadyApp();
+    await approvalRequest(permission("pending-refresh"));
+    await flushPromises();
+    displayStatus({ status: null, verifiedAt: null, refreshing: true, error: null });
+    await flushPromises();
+    const dialog = wrapper.findComponent(PermissionDialog);
+    expect(dialog.props("request")?.requestId).toBe("pending-refresh");
+
+    status = { ...status, gatewayGeneration: "generation-after" };
+    displayStatus({ status, verifiedAt: 200, refreshing: false, error: null });
+    await flushPromises();
+    expect(dialog.props("request")).toBeNull();
+  });
+
+  it("does not discard a new Gateway approval when readiness already invalidated the previous generation", async () => {
+    status.gatewayGeneration = "generation-before";
+    const { gateway } = await mountReadyApp();
+    displayStatus({ status: null, verifiedAt: null, refreshing: true, error: null });
+    gateway.resetReady();
+    displayStatus({ status, verifiedAt: 100, refreshing: false, error: null });
+    displayStatus({ status: null, verifiedAt: null, refreshing: true, error: null });
+    status = { ...status, gatewayGeneration: "generation-after" };
+    approvalRequest(permission("new-generation"));
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe(
+      "new-generation",
+    );
+  });
+
+  it("invalidates approvals added after readiness resets if their Gateway generation changes", async () => {
+    status.gatewayGeneration = "generation-before";
+    const { gateway } = await mountReadyApp();
+    gateway.resetReady();
+    displayStatus({ status, verifiedAt: 100, refreshing: false, error: null });
+    approvalRequest(permission("old-generation"));
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe(
+      "old-generation",
+    );
+    displayStatus({
+      status: { ...status, gatewayGeneration: "generation-after" },
+      verifiedAt: 200,
+      refreshing: false,
+      error: null,
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
   });
 
   it("does not pop the next permission or show a stale IPC error when main resolution wins the Desktop response race", async () => {

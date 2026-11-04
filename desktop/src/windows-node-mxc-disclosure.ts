@@ -1,6 +1,6 @@
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
-export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION = 1 as const;
+export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION = 2 as const;
 
 export type WindowsNodeMxcDisclosureTargetMode = Exclude<WindowsNodeMxcRequestedMode, "off">;
 
@@ -62,10 +62,6 @@ export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE = {
         { id: "location", translationKey: "settings.windowsNodeMxcConsent.item.location" },
         { id: "tts", translationKey: "settings.windowsNodeMxcConsent.item.tts" },
         { id: "stt", translationKey: "settings.windowsNodeMxcConsent.item.stt" },
-        {
-          id: "gateway-memory",
-          translationKey: "settings.windowsNodeMxcConsent.item.gateway-memory",
-        },
       ],
     },
     {
@@ -86,6 +82,10 @@ export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE = {
       summaryKey: "settings.windowsNodeMxcConsent.groupSummary.available-restricted",
       items: [
         { id: "exec", translationKey: "settings.windowsNodeMxcConsent.item.exec" },
+        {
+          id: "gateway-memory",
+          translationKey: "settings.windowsNodeMxcConsent.item.gateway-memory",
+        },
         {
           id: "gateway-web",
           translationKey: "settings.windowsNodeMxcConsent.item.gateway-web",

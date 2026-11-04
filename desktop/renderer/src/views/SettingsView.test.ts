@@ -352,6 +352,62 @@ describe("SettingsView", () => {
     wrapper.unmount();
   });
 
+  it("shows pending and failed Off status honestly, then accepts the current verified snapshot", async () => {
+    routeState.section = "security";
+    let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+    window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+      update = callback;
+      return vi.fn();
+    };
+    window.openclaw.windowsNodeMxc.getDisplayStatus = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: status("node-local"),
+        verifiedAt: 100,
+        refreshing: false,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        status: null,
+        verifiedAt: null,
+        refreshing: true,
+        error: null,
+      });
+    setWindowsNodeMxcEnabled.mockResolvedValueOnce(null);
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+
+    await toggleSandbox(wrapper);
+    await flushPromises();
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: false });
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
+    expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(false);
+    expect(errorMessage).not.toHaveBeenCalled();
+
+    update({ status: null, verifiedAt: null, refreshing: false, error: "Inspection failed" });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mxc-status-error"]').text()).toContain("Inspection failed");
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
+
+    update({
+      status: offStatus({ probe: null, fullAvailability: null, limitedAvailability: null }),
+      verifiedAt: 200,
+      refreshing: false,
+      error: null,
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mxc-status-error"]').exists()).toBe(false);
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-availability-deferred"]').text()).toBe(
+      "Sandbox availability is checked when you turn it on.",
+    );
+    await toggleSandbox(wrapper);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenLastCalledWith({ enabled: true });
+    wrapper.unmount();
+  });
+
   it("loads the sandbox switch independently of general settings without optimistic state", async () => {
     routeState.section = "security";
     vi.mocked(window.openclaw.settings.get).mockReturnValueOnce(new Promise(() => {}));
@@ -1067,6 +1123,9 @@ describe("SettingsView", () => {
     async (reason) => {
       routeState.section = "security";
       const current = offStatus();
+      if (!current.fullAvailability || !current.limitedAvailability || !current.probe) {
+        throw new Error("Expected a previously verified probe");
+      }
       current.fullAvailability.available = false;
       current.limitedAvailability.available = reason === "probe-error";
       current.probe.outcome = reason === "probe-error" ? "error" : "unsupported";
@@ -1165,7 +1224,7 @@ describe("SettingsView", () => {
       update({ status: null, verifiedAt: null, refreshing: true, error: null });
       await flushPromises();
       expect(wrapper.get('[data-testid="mxc-status-loading"]').text()).toBe(
-        "Checking MXC availability...",
+        "Checking MXC status...",
       );
       update({ status: initial, verifiedAt: 200, refreshing: false, error: null });
       await flushPromises();

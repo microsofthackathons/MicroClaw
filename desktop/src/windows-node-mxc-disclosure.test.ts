@@ -3,7 +3,7 @@ import {
   applyWindowsNodeMxcGatewayPolicy,
   WINDOWS_NODE_MXC_CANVAS_ACTIONS,
   WINDOWS_NODE_MXC_CANVAS_COMMANDS,
-  WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS,
+  WINDOWS_NODE_MXC_MEMORY_TOOLS,
   WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
   WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST,
   WINDOWS_NODE_MXC_TOOL_ALLOWLIST,
@@ -41,7 +41,6 @@ describe("Windows Node MXC capability disclosure", () => {
     expect(WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST).toEqual(
       expect.arrayContaining(["group:runtime", "group:fs", "group:plugins", "browser"]),
     );
-    expect(WINDOWS_NODE_MXC_DISABLED_PLUGIN_IDS).toContain("memory-core");
     expect(disclosureIds).toEqual(
       expect.arrayContaining([
         "gateway-native-filesystem",
@@ -52,7 +51,6 @@ describe("Windows Node MXC capability disclosure", () => {
         "location",
         "tts",
         "stt",
-        "gateway-memory",
       ]),
     );
 
@@ -97,6 +95,7 @@ describe("Windows Node MXC capability disclosure", () => {
       "web_fetch",
       "message",
       "canvas",
+      ...WINDOWS_NODE_MXC_MEMORY_TOOLS,
     ]);
     expect(WINDOWS_NODE_MXC_CANVAS_COMMANDS).toEqual([
       "canvas.present",
@@ -117,6 +116,7 @@ describe("Windows Node MXC capability disclosure", () => {
         "gateway-web",
         "wechat-message",
         "canvas-phase-1",
+        "gateway-memory",
       ]),
     );
 
@@ -149,14 +149,26 @@ describe("Windows Node MXC capability disclosure", () => {
       cron: { enabled: false },
       hooks: { enabled: false, internal: { enabled: false } },
       plugins: {
-        allow: ["canvas", "openclaw-weixin"],
-        slots: { memory: "none" },
+        allow: ["canvas", "memory-core", "openclaw-weixin"],
+        slots: { memory: "memory-core" },
         entries: {
           canvas: { enabled: true },
           "openclaw-weixin": { enabled: true },
-          "memory-core": { enabled: false },
+          "memory-core": { enabled: true },
         },
       },
     });
+  });
+
+  it("discloses Gateway-host memory recall as restricted availability, not disabled", () => {
+    const disabled = WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups.find(
+      (group) => group.id === "disabled",
+    );
+    const available = WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups.find(
+      (group) => group.id === "available-restricted",
+    );
+    expect(disabled?.items.map((item) => item.id)).not.toContain("gateway-memory");
+    expect(available?.items.map((item) => item.id)).toContain("gateway-memory");
+    expect(WINDOWS_NODE_MXC_MEMORY_TOOLS).toEqual(["memory_search", "memory_get"]);
   });
 });

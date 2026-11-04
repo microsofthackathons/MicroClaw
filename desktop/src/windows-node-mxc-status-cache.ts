@@ -10,6 +10,7 @@ export class WindowsNodeMxcStatusCache<T> {
   private latest: { key: string; status: T; verifiedAt: number } | null = null;
   private failure: { key: string; message: string } | null = null;
   private pending = new Map<string, Promise<T>>();
+  private displayRefreshes = new Map<string, Promise<void>>();
 
   constructor(
     private readonly hooks: {
@@ -34,14 +35,16 @@ export class WindowsNodeMxcStatusCache<T> {
   display(): MxcStatusSnapshot<T> {
     const snapshot = this.snapshot();
     if (snapshot.verifiedAt === null || this.now() - snapshot.verifiedAt >= 10_000) {
-      // Errors are published to the display and still reject enforcement callers.
-      void this.fresh().catch(() => undefined);
+      this.refreshDisplay();
     }
     return this.snapshot();
   }
 
   fresh(): Promise<T> {
-    const key = this.hooks.key();
+    return this.freshForKey(this.hooks.key());
+  }
+
+  private freshForKey(key: string): Promise<T> {
     const pending = this.pending.get(key);
     if (pending) return pending;
     const operation = Promise.resolve()
@@ -65,8 +68,57 @@ export class WindowsNodeMxcStatusCache<T> {
         this.hooks.publish(this.snapshot());
       });
     this.pending.set(key, operation);
-    this.hooks.publish(this.snapshot());
+    try {
+      this.hooks.publish(this.snapshot());
+    } catch (error) {
+      void operation.catch((completionError: unknown) =>
+        console.error("[windows-node-mxc] Status inspection failed:", completionError),
+      );
+      throw error;
+    }
     return operation;
+  }
+
+  private refreshDisplay(attempt = 0): void {
+    const key = this.hooks.key();
+    if (this.displayRefreshes.has(key)) return;
+    const refresh = this.freshForKey(key)
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          if (this.hooks.key() === key) {
+            if (this.failure?.key !== key) throw error;
+            return;
+          }
+          const current = this.snapshot();
+          if (current.verifiedAt !== null) return;
+          if (attempt < 2) {
+            this.refreshDisplay(attempt + 1);
+            return;
+          }
+          if (current.refreshing && this.displayRefreshes.has(this.hooks.key())) return;
+          this.failure = {
+            key: this.hooks.key(),
+            message: "MXC status changed repeatedly during inspection; refresh the current state",
+          };
+          this.hooks.publish(this.snapshot());
+        },
+      )
+      .catch((error: unknown) => {
+        this.hooks.publish({
+          status: null,
+          verifiedAt: null,
+          refreshing: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[windows-node-mxc] Could not publish status-refresh failure:", error);
+      })
+      .finally(() => {
+        if (this.displayRefreshes.get(key) === refresh) this.displayRefreshes.delete(key);
+      });
+    this.displayRefreshes.set(key, refresh);
   }
 
   private now(): number {

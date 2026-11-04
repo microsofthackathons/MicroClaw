@@ -571,6 +571,12 @@
             data-testid="mxc-off-disclosure"
           >
             {{ t("settings.windowsNodeMxcOffDisclosure") }}
+            <span
+              v-if="windowsNodeMxcStatus?.probe === null"
+              data-testid="mxc-availability-deferred"
+            >
+              {{ t("settings.windowsNodeMxcAvailabilityOnEnable") }}
+            </span>
           </div>
           <template v-if="windowsNodeMxcStatus && !windowsNodeMxcFullyOff">
             <div
@@ -1119,8 +1125,9 @@ const windowsNodeMxcUnavailable = computed(() => {
   return (
     !!status &&
     !status.desiredEnabled &&
+    !!status.probe &&
     (status.probe.outcome === "error" ||
-      (!status.fullAvailability.available && !status.limitedAvailability.available))
+      (!status.fullAvailability?.available && !status.limitedAvailability?.available))
   );
 });
 
@@ -1365,7 +1372,14 @@ async function toggleWindowsNodeMxc(): Promise<boolean> {
   windowsNodeMxcApplying.value = true;
   try {
     const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
-    updateWindowsNodeMxcStatus(status);
+    if (status) {
+      updateWindowsNodeMxcStatus(status);
+    } else {
+      windowsNodeMxcStatus.value = null;
+      windowsNodeMxcVerifiedAt.value = null;
+      windowsNodeMxcStatusLoading.value = false;
+      await loadWindowsNodeMxcStatus();
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
     await loadWindowsNodeMxcStatus();
