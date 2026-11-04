@@ -324,7 +324,11 @@
         <div class="card-group">
           <div class="card-row" :class="{ 'no-border': !activeSearchProvider.requiresKey }">
             <span class="row-label">{{ t("settings.provider") }}</span>
-            <el-select v-model="searchProvider" style="width: 130px" @change="handleSearchProviderChange">
+            <el-select
+              v-model="searchProvider"
+              style="width: 130px"
+              @change="handleSearchProviderChange"
+            >
               <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
           </div>
@@ -838,6 +842,12 @@ import {
 } from "@/utils/auth-managed-models";
 import { getManagedModelProvider } from "@/utils/managed-model-providers";
 import {
+  createSearchAutosave,
+  patchSearchConfig,
+  type SearchProviderId,
+  type SearchSaveRequest,
+} from "@/utils/search-settings-autosave";
+import {
   hydratePrivacyControls,
   type PrivacyControls,
   type PrivacyLevel,
@@ -1220,7 +1230,6 @@ const currentProviderName = computed(() => {
 });
 
 // --- Web search providers ---
-type SearchProviderId = "parallel-free" | "brave" | "tavily";
 const searchProviders: {
   id: SearchProviderId;
   name: string;
@@ -1260,8 +1269,7 @@ const searchKeys = reactive<Record<SearchProviderId, string>>({
 const activeSearchProvider = computed(
   () => searchProviders.find((p) => p.id === searchProvider.value) ?? searchProviders[0],
 );
-// Snapshot of the last persisted state, used to drive the "Configured" status and the
-// enabled/disabled state of the single Save button.
+// Only the provider/key actually written is committed to this persisted snapshot.
 const savedSearchProvider = ref<SearchProviderId>("parallel-free");
 const savedSearchKeys = reactive<Record<SearchProviderId, string>>({
   "parallel-free": "",
@@ -1283,6 +1291,36 @@ const searchSaveStatusText = computed(() => {
   if (searchSaveStatus.value === "error") return t("settings.searchSaveFailed");
   return "";
 });
+const searchAutosave = createSearchAutosave({
+  persist: persistSearchConfig,
+  saving() {
+    searchSaveError.value = "";
+    searchSaveStatus.value = "saving";
+  },
+  saved(request, current) {
+    savedSearchProvider.value = request.provider;
+    savedSearchKeys[request.provider] = request.key;
+    if (current) {
+      searchSaveError.value = "";
+      searchSaveStatus.value = "saved";
+    }
+  },
+  failed(error) {
+    searchSaveStatus.value = "error";
+    ElMessage.error(
+      t("settings.saveFailed", { error: error instanceof Error ? error.message : String(error) }),
+    );
+  },
+});
+watch(
+  [searchProvider, () => searchKeys[searchProvider.value]],
+  () => {
+    searchAutosave.invalidate();
+    searchSaveError.value = "";
+    searchSaveStatus.value = "idle";
+  },
+  { flush: "sync" },
+);
 
 // --- Usage state ---
 interface UsageStats {
@@ -1584,10 +1622,11 @@ onMounted(async () => {
   }
 
   // Load web search provider configuration
-  loadSearchConfig(config);
+  if (!searchAutosave.isDisposed()) loadSearchConfig(config);
 });
 
 onUnmounted(() => {
+  searchAutosave.dispose();
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
 });
@@ -1770,14 +1809,14 @@ function snapshotSearchConfig(): void {
   for (const p of searchProviders) savedSearchKeys[p.id] = searchKeys[p.id].trim();
 }
 
-function validateActiveSearchKey(): string | null {
-  if (!activeSearchProvider.value.requiresKey) return null;
-  const key = searchKeys[searchProvider.value].trim();
+function validateActiveSearchKey(request: SearchSaveRequest): string | null {
+  if (!request.requiresKey) return null;
+  const key = request.key;
   if (!key) return t("settings.searchApiKeyRequired");
-  if (searchProvider.value === "brave" && !key.startsWith("BSA")) {
+  if (request.provider === "brave" && !key.startsWith("BSA")) {
     return t("settings.searchApiKeyFormatInvalid");
   }
-  if (searchProvider.value === "tavily" && !key.startsWith("tvly-")) {
+  if (request.provider === "tavily" && !key.startsWith("tvly-")) {
     return t("settings.searchApiKeyFormatInvalid");
   }
   return null;
@@ -1791,53 +1830,37 @@ function setSearchValidationError(message: string): void {
 // Writes only the active provider into tools.web.search — the single object the gateway
 // consumes. The gateway schema rejects any extra keys under tools.web, so no per-provider map
 // is persisted; unsaved keys for other providers live only in-memory for quick switching.
-async function persistSearchConfig(): Promise<void> {
-  const config = (await window.openclaw.config.read()) || {};
-  config.tools = config.tools || {};
-  config.tools.web = config.tools.web || {};
-  delete config.tools.web.searchProviders;
-  const activeKey = searchKeys[searchProvider.value].trim();
-  if (!activeSearchProvider.value.requiresKey) {
-    config.tools.web.search = { provider: searchProvider.value };
-  } else if (activeKey) {
-    config.tools.web.search = { provider: searchProvider.value, apiKey: activeKey };
-  } else {
-    delete config.tools.web.search;
-  }
-  await window.openclaw.config.write(config);
+async function persistSearchConfig(
+  request: SearchSaveRequest,
+  canWrite: () => boolean,
+): Promise<boolean> {
+  const config = await window.openclaw.config.read();
+  if (!canWrite()) return false;
+  await window.openclaw.config.write(patchSearchConfig(config, request));
+  return true;
 }
 
-// Single save for the Web search section: commits both provider keys and the selected default
-// provider in one action. The gateway hot-reloads the tools config on write.
-async function saveSearchSettings(): Promise<void> {
-  searchSaveStatus.value = "saving";
-  try {
-    await persistSearchConfig();
-    snapshotSearchConfig();
-    searchSaveError.value = "";
-    searchSaveStatus.value = "saved";
-  } catch (err: any) {
-    searchSaveStatus.value = "error";
-    ElMessage.error(t("settings.saveFailed", { error: err.message || err }));
-  }
-}
-
-async function handleSearchProviderChange(): Promise<void> {
-  const validationError = validateActiveSearchKey();
+// Capture and validate synchronously before any read, then serialize read/patch/write.
+function saveSearchSettings(): void {
+  const request: SearchSaveRequest = Object.freeze({
+    provider: searchProvider.value,
+    key: searchKeys[searchProvider.value].trim(),
+    requiresKey: activeSearchProvider.value.requiresKey,
+  });
+  const validationError = validateActiveSearchKey(request);
   if (validationError) {
     setSearchValidationError(validationError);
     return;
   }
-  await saveSearchSettings();
+  searchAutosave.save(request);
 }
 
-async function saveSearchKeyIfReady(): Promise<void> {
-  const validationError = validateActiveSearchKey();
-  if (validationError) {
-    setSearchValidationError(validationError);
-    return;
-  }
-  await saveSearchSettings();
+function handleSearchProviderChange(): void {
+  saveSearchSettings();
+}
+
+function saveSearchKeyIfReady(): void {
+  saveSearchSettings();
 }
 
 function openExternal(url: string) {
