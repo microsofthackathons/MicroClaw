@@ -115,14 +115,25 @@ interface ReadOnlyLiteralFilesystemOperation {
   encoding: null;
   noNewline: false;
 }
+interface MoveLiteralFilesystemOperation {
+  kind: "move-path" | "rename-path";
+  path: string;
+  destination: string;
+  force: boolean;
+  recursive: false;
+  content: null;
+  encoding: null;
+  noNewline: false;
+}
 type LiteralFilesystemOperation =
   | MutatingLiteralFilesystemOperation
+  | MoveLiteralFilesystemOperation
   | ReadOnlyLiteralFilesystemOperation;
 
 // Only these low-entropy public primitives may be disclosed as inline content.
 const PUBLIC_CONTENT_LITERALS = new Set(["", "0", "1", "true", "false", "null"]);
 
-function filesystemPayload(
+export function classifyLiteralFilesystemScript(
   text: string,
   allowNestedShell: boolean,
 ): LiteralFilesystemOperation | null {
@@ -130,14 +141,25 @@ function filesystemPayload(
   if (!tokens) return null;
   if (allowNestedShell) {
     const nested = shellPayload(tokens);
-    if (nested !== null) return filesystemPayload(nested, false);
+    if (nested !== null) return classifyLiteralFilesystemScript(nested, false);
   }
   if (!tokens[0] || tokens[0].quoted) return null;
   const command = tokens[0].value.toLowerCase();
   const rules: Record<string, { values: string[]; flags: string[] }> = {
     "test-path": { values: ["-path", "-literalpath"], flags: [] },
-    "new-item": { values: ["-itemtype", "-path", "-value"], flags: ["-force"] },
-    "remove-item": { values: ["-path", "-literalpath"], flags: ["-force", "-recurse"] },
+    "new-item": { values: ["-itemtype", "-path", "-value", "-erroraction"], flags: ["-force"] },
+    "remove-item": {
+      values: ["-path", "-literalpath", "-erroraction"],
+      flags: ["-force", "-recurse"],
+    },
+    "move-item": {
+      values: ["-path", "-literalpath", "-destination", "-erroraction"],
+      flags: ["-force"],
+    },
+    "rename-item": {
+      values: ["-path", "-literalpath", "-newname", "-erroraction"],
+      flags: ["-force"],
+    },
     "clear-content": { values: ["-path", "-literalpath"], flags: ["-force"] },
     "set-content": {
       values: ["-path", "-literalpath", "-value", "-encoding"],
@@ -172,6 +194,31 @@ function filesystemPayload(
   if (values.has("-path") && values.has("-literalpath")) return null;
   const target = values.get("-path") ?? values.get("-literalpath");
   if (!target || !isLiteralLocalPath(target)) return null;
+  if (values.has("-erroraction") && values.get("-erroraction")?.toLowerCase() !== "stop")
+    return null;
+  if (command === "move-item" || command === "rename-item") {
+    const name = values.get("-newname");
+    if (
+      command === "rename-item" &&
+      (!name || /[\\/:]/.test(name) || !isLiteralLocalPath(`C:\\${name}`))
+    )
+      return null;
+    const destination =
+      command === "rename-item" && name
+        ? path.win32.join(path.win32.dirname(target), name)
+        : values.get("-destination");
+    if (!destination || !isLiteralLocalPath(destination)) return null;
+    return {
+      kind: command === "rename-item" ? "rename-path" : "move-path",
+      path: target,
+      destination,
+      force: flags.has("-force"),
+      recursive: false,
+      content: null,
+      encoding: null,
+      noNewline: false,
+    };
+  }
   const value = values.get("-value");
   if (value !== undefined && !PUBLIC_CONTENT_LITERALS.has(value)) return null;
   const encoding = values.get("-encoding");
@@ -237,16 +284,30 @@ export function classifyLiteralFilesystemCommand(approval: {
     })),
   ]);
   if (payload === null) return null;
-  const operation = filesystemPayload(payload, true);
+  const operation = classifyLiteralFilesystemScript(payload, true);
   if (!operation) return null;
-  const declared = approval.declaredAccess.some((entry) => {
-    if (
-      (entry.access !== "rw" && !(operation.kind === "exists-path" && entry.access === "ro")) ||
-      !isLiteralLocalPath(entry.path)
-    )
-      return false;
-    const relative = path.win32.relative(entry.path.toLowerCase(), operation.path.toLowerCase());
-    return relative === "" || (!relative.startsWith("..") && !path.win32.isAbsolute(relative));
-  });
-  return declared ? operation : null;
+  return isDeclaredLiteralFilesystemOperation(operation, approval.declaredAccess)
+    ? operation
+    : null;
+}
+
+export function isDeclaredLiteralFilesystemOperation(
+  operation: LiteralFilesystemOperation,
+  access: Array<{ access: string; path: string }>,
+): boolean {
+  const targets =
+    operation.kind === "move-path" || operation.kind === "rename-path"
+      ? [operation.path, operation.destination]
+      : [operation.path];
+  return targets.every((target) =>
+    access.some((entry) => {
+      if (
+        (entry.access !== "rw" && !(operation.kind === "exists-path" && entry.access === "ro")) ||
+        !isLiteralLocalPath(entry.path)
+      )
+        return false;
+      const relative = path.win32.relative(entry.path.toLowerCase(), target.toLowerCase());
+      return relative === "" || (!relative.startsWith("..") && !path.win32.isAbsolute(relative));
+    }),
+  );
 }

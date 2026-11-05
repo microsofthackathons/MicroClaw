@@ -99,13 +99,36 @@ internal sealed class BundledSystemCapability(
                 && !(request.Args.TryGetProperty("agentId", out var preparationAgent)
                     && preparationAgent.GetString() == ReadinessProbeContract.AgentId);
             var run = ParseRun(request.Args, allowMissingGrants);
+            PreparedCommandConsent? consentPreparation = null;
             if (policy.RequestedStrength != "off")
-                run = PowerShellFilesystemScope.Prepare(run, policy);
+            {
+                string? resolvedCarrier = null;
+                if (run.Argv[0].Equals("cmd.exe", StringComparison.OrdinalIgnoreCase) ||
+                    PowerShellFilesystemScope.IsPowerShell(run.Argv[0]))
+                {
+                    if (commandConsent is not null && run.AgentId != ReadinessProbeContract.AgentId)
+                    {
+                        consentPreparation = await commandConsent.PrepareAsync(CommandConsent.Request(
+                            run.Argv, run.Cwd, run.TimeoutMs, run.AgentId, run.SessionKey));
+                        resolvedCarrier = consentPreparation.Execution.Argv[0];
+                    }
+                    else
+                        resolvedCarrier = ResolveExecutable(run.Argv[0]);
+                }
+                var previousInitialization = run.ProviderInitialization;
+                run = PowerShellFilesystemScope.Prepare(run, policy, resolvedCarrier);
+                if (previousInitialization is null && run.ProviderInitialization is not null)
+                    consentPreparation = null;
+            }
             CommandConsentPreview? consentPreview = null;
             if (commandConsent is not null && run.AgentId != ReadinessProbeContract.AgentId)
             {
-                var preparation = await commandConsent.PrepareAsync(CommandConsent.Request(
+                var preparation = consentPreparation ?? await commandConsent.PrepareAsync(CommandConsent.Request(
                     run.Argv, run.Cwd, run.TimeoutMs, run.AgentId, run.SessionKey));
+                if (run.ProviderInitialization is not null &&
+                    !preparation.Execution.Argv.SequenceEqual(run.ProviderInitialization.FinalArgv, StringComparer.Ordinal))
+                    throw new HostPolicyException("powershell-initialization-invalid",
+                        "Command consent changed the initialized PowerShell command; it was not prepared for execution.");
                 run = run with { Argv = preparation.Execution.Argv.ToArray() };
                 consentPreview = preparation.Preview;
                 if (run.DeclaredAccess.Count > 0)

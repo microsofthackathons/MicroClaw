@@ -77,7 +77,7 @@ export interface CanonicalExecPresentation {
   } | null;
   initialization: {
     contract: string;
-    form: "direct" | "nested";
+    form: "direct" | "nested" | "cmd";
     originalArgv: string[];
     originalCommandPreview: string;
     finalArgv: string[];
