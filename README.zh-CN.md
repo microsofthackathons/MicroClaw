@@ -177,7 +177,9 @@ npm --prefix desktop test -- src/local-model-gateway.integration.test.ts
 
 设置 `MICROCLAW_TEST_OPENCLAW_ENTRY` 和 `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` 后，运行 `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts` 可通过真实插件加载器检查精确模型下载确认，再取消操作。不设置 `MICROCLAW_TEST_LOCAL_CACHE` 时，还需将 `MICROCLAW_TEST_LOCAL_PLUGIN_ARCHIVE` 指向官方 `@openclaw/llama-cpp-provider@2026.10.5` npm `.tgz` 的绝对路径，可在隔离目录用 `npm pack @openclaw/llama-cpp-provider@2026.10.5` 获取；缺失或内容改变会使验证失败，不会静默跳过。测试核验固定 SHA-512，在 provider 尚不存在时启动一次性 Gateway，再通过真实归档安装路径安装并准备运行依赖。为保留原服务启用/旧回执回退覆盖，安装后显式禁用 fixture，再由服务启用，模拟缺失运行时应用回执，验证真实定向热加载既不重连也不更换 Gateway 进程，不会下载模型或运行推理。设置模型缓存的完整准备路径仍使用已有 provider 目录副本，不要求归档输入。
 
-完整准备检查还需将 `MICROCLAW_TEST_LOCAL_CACHE` 指向包含固定 4B 和 embedding 文件的缓存，再运行 `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts`。它将模型文件复制到一次性状态目录，要求确认回执中的模型和 embedding 下载量均为零，再安装、校验官方运行组件。运行组件压缩包可能需要下载，但不下载模型权重，不选用模型、不推理，也不改变原缓存或用户配置。
+安装包不再内置 llama.cpp 和 CUDA 运行依赖，`npm run dev` 也不要求预先准备这些资源。点击下载本地模型时，由官方插件按需下载并校验所需运行组件，已有可用组件会复用。职责边界、官方 CDN 异常的有限重试和隔离验证见[按需下载运行时说明](docs/local-model-runtime.md)。
+
+完整准备检查还需将 `MICROCLAW_TEST_LOCAL_CACHE` 指向包含固定 4B 和 embedding 文件的缓存，再运行 `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts`。它将模型文件复制到一次性状态目录，要求确认回执中的模型和 embedding 下载量均为零，缺失的运行组件由官方插件在线下载并校验；不选用模型、不推理，也不改变原缓存或用户配置。
 
 ### 3. 安装完就能开始做事
 

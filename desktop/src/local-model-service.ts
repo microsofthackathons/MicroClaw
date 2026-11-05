@@ -126,6 +126,15 @@ function localProvider(config: unknown): JsonObject {
   );
 }
 
+function assertManagedLocalProvider(config: unknown): void {
+  const provider = localProvider(config);
+  if (!provider.localService && Array.isArray(provider.models) && provider.models.length) {
+    throw new Error(
+      "Remove the existing external llama.cpp connection before preparing managed models",
+    );
+  }
+}
+
 function configuredPrimary(config: unknown): string | undefined {
   const agents = optionalRecord(optionalRecord(config).agents);
   const entries = optionalRecord(agents.entries);
@@ -220,6 +229,7 @@ export class LocalModelService {
   private pendingReview: LocalModelInstallReview | undefined;
   private installRequest: JsonObject | undefined;
   private externalEndpointPending = false;
+  private approvedDownload?: { operationId: string; modelRef: string };
   private detectionRevision = 0;
   private detectionCache?: DetectionContext & { expiresAt: number; value: LocalModelDetection };
   private detectionRequest?: DetectionContext & { promise: Promise<LocalModelDetection> };
@@ -326,6 +336,7 @@ export class LocalModelService {
 
   private finish(update: Partial<LocalModelOperation>): void {
     this.invalidateDetection();
+    this.approvedDownload = undefined;
     this.deps.saveReceipt(null);
     this.receipt = null;
     this.publish({
@@ -524,7 +535,7 @@ export class LocalModelService {
     };
   }
 
-  private async requireReady(): Promise<LocalModelGateway> {
+  private async requireReady(managed = false): Promise<LocalModelGateway> {
     this.deps.assertMutable();
     assertConfigHotReload(this.deps.readConfig());
     const capabilities = await this.getCapabilities();
@@ -536,7 +547,9 @@ export class LocalModelService {
     }
     if (capabilities.plugin.loaded === false) await this.reloadProvider(this.gateway());
     this.checkEndpoint();
-    return this.gateway();
+    const gateway = this.gateway();
+    if (managed) assertManagedLocalProvider(this.deps.readConfig());
+    return gateway;
   }
 
   private assertProviderGateway(gateway: LocalModelGateway, generation: number | undefined): void {
@@ -872,25 +885,23 @@ export class LocalModelService {
         : undefined;
     if (modelRef && !isManagedLocalModel(modelRef))
       throw new Error("Only models in the managed ModelScope catalog can be prepared");
+    if (
+      params.downloadConfirmed !== undefined &&
+      (params.downloadConfirmed !== true || authChoice !== PROVIDER || !params.modelRef)
+    )
+      throw new Error("Download approval requires an explicit managed model and confirmation");
     this.assertIdle();
     this.mutationPending = true;
     try {
-      await this.requireReady();
+      await this.requireReady(authChoice === PROVIDER);
       const agentId = await this.setupAgent(params.agentId);
-      if (modelRef) {
-        const provider = localProvider(this.deps.readConfig());
-        if (!provider.localService && Array.isArray(provider.models) && provider.models.length) {
-          throw new Error(
-            "Remove the existing external llama.cpp connection before preparing managed models",
-          );
-        }
-      }
       this.deps.assertMutable();
       this.externalEndpointPending = authChoice === "llama-cpp-existing-server";
       return this.start(
         { kind: "prepare", agentId, authChoice, ...(modelRef ? { modelRef } : {}) },
         "openclaw.setup.prepare.start",
         { authChoice, agentId },
+        params.downloadConfirmed === true ? modelRef : undefined,
       );
     } finally {
       this.mutationPending = false;
@@ -986,6 +997,7 @@ export class LocalModelService {
     target: Pick<LocalModelReceipt, "kind" | "agentId" | "authChoice" | "modelRef">,
     method: string,
     params: JsonObject,
+    approvedModelRef?: string,
   ): LocalModelOperation {
     this.invalidateDetection();
     const receipt: LocalModelReceipt = {
@@ -995,6 +1007,9 @@ export class LocalModelService {
     };
     this.deps.saveReceipt(receipt);
     this.receipt = receipt;
+    this.approvedDownload = approvedModelRef
+      ? { operationId: receipt.id, modelRef: approvedModelRef }
+      : undefined;
     this.operation = {
       ...target,
       id: receipt.id,
@@ -1236,6 +1251,24 @@ export class LocalModelService {
               await gateway.request("wizard.cancel", { sessionId: this.receipt.id });
               throw cause;
             }
+            if (
+              this.approvedDownload?.operationId === this.operation.id &&
+              this.approvedDownload.modelRef === this.receipt.modelRef &&
+              !this.operation.cancellationPending &&
+              step.executor !== "gateway"
+            ) {
+              this.deps.assertMutable();
+              this.approvedDownload = undefined;
+              raw = await gateway.request(
+                "wizard.next",
+                {
+                  sessionId: this.receipt.id,
+                  answer: { stepId: step.id, value: true },
+                },
+                NEXT_TIMEOUT_MS,
+              );
+              continue;
+            }
           }
         }
         this.publish({
@@ -1400,6 +1433,7 @@ export class LocalModelService {
       });
       return this.getOperation()!;
     }
+    this.approvedDownload = undefined;
     this.publish({ cancellationPending: true });
     try {
       const result = record(

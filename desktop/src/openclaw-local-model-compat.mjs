@@ -68,6 +68,66 @@ export function modelScopeDownloadPolicy(url, policy) {
   return policy;
 }
 
+export function cacheIsolatedGitHubAssetUrl(value) {
+  try {
+    const url = new globalThis.URL(value);
+    const match = url.pathname.match(
+      /^\/github-production-release-asset\/\d+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu,
+    );
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "release-assets.githubusercontent.com" ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !match
+    )
+      return undefined;
+    const leaf = match[1];
+    url.pathname =
+      url.pathname.slice(0, -leaf.length) +
+      `%${leaf.charCodeAt(0).toString(16).toUpperCase()}${leaf.slice(1)}`;
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function downloadWithOfficialGitHubRetry(params, download) {
+  let url;
+  try {
+    url = new globalThis.URL(params.url);
+  } catch {
+    return download(params);
+  }
+  if (
+    url.origin !== "https://github.com" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !/^\/ggml-org\/llama\.cpp\/releases\/download\/b\d+\/[a-z0-9._+-]+\.zip$/iu.test(
+      url.pathname,
+    ) ||
+    !/^[a-f0-9]{64}$/iu.test(params.expectedSha256 ?? "")
+  )
+    return download(params);
+  let responseUrl;
+  try {
+    return await download({ ...params, onMicroclawResponse: (value) => (responseUrl = value) });
+  } catch (error) {
+    if (
+      params.signal?.aborted ||
+      !(error instanceof Error) ||
+      !/^download (?:SHA-256|size) mismatch:/u.test(error.message)
+    )
+      throw error;
+    const isolated = cacheIsolatedGitHubAssetUrl(responseUrl);
+    if (!isolated) throw error;
+    return download({ ...params, url: isolated });
+  }
+}
+
 const MODEL_SCOPE_SOURCE_HELPERS = `const MICROCLAW_LOCAL_MODEL_SOURCES = ${JSON.stringify(MICROCLAW_LOCAL_MODEL_SOURCES)};
 ${modelScopeModelUrl.toString()}
 ${modelScopeArtifact.toString()}
@@ -389,6 +449,28 @@ ${patched}`;
     "\t\tawait fs.rename(extractedRoot, installDir);",
     "\t\tawait publishLlamaRuntime(fs, extractedRoot, installDir, options.signal);",
   );
+  const downloadStart = patched.indexOf("async function downloadVerifiedFile(params) {");
+  const downloadEnd = patched.indexOf("\nasync function ", downloadStart + 1);
+  if (downloadStart < 0 || downloadEnd < 0)
+    throw new Error("The pinned runtime download function is unavailable");
+  const verifiedDownload = replaceExactly(
+    replaceExactly(
+      patched.slice(downloadStart, downloadEnd),
+      "async function downloadVerifiedFile(params) {",
+      "async function microclawDownloadVerifiedFileOnce(params) {",
+    ),
+    "\t\t\tif (!response.ok || !response.body)",
+    "\t\t\tparams.onMicroclawResponse?.(response.url);\n\t\t\tif (!response.ok || !response.body)",
+  );
+  patched =
+    patched.slice(0, downloadStart) +
+    `async function downloadVerifiedFile(params) {
+  return downloadWithOfficialGitHubRetry(params, microclawDownloadVerifiedFileOnce);
+}
+${cacheIsolatedGitHubAssetUrl.toString()}
+${downloadWithOfficialGitHubRetry.toString()}
+${verifiedDownload}` +
+    patched.slice(downloadEnd);
   patched = replaceExactly(
     patched,
     "\t\t\t...buildLlamaCppAuthProfileRemovalPatch(params.config),",

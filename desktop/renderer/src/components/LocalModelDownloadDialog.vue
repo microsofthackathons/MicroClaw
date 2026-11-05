@@ -132,7 +132,12 @@ import { useLocalModelOperation } from "@/composables/use-local-model-operation"
 import { parseManagedDownloadProgress } from "@/utils/local-model-presentation";
 import { LOCAL_MODEL_PRESETS } from "../../../src/local-model-catalog";
 
-const props = defineProps<{ modelRef: string; sessionKey?: string; streaming?: boolean }>();
+const props = defineProps<{
+  modelRef: string;
+  sessionKey?: string;
+  streaming?: boolean;
+  downloadRequested?: boolean;
+}>();
 const emit = defineEmits<{
   close: [];
   selected: [];
@@ -285,9 +290,9 @@ async function start() {
       await refresh();
       return;
     }
+    if (props.streaming) throw new Error(t("localModel.streaming"));
     const saved = snapshot.value.models.find((model) => model.modelRef === props.modelRef);
     if (saved?.fileStatus === "present" || saved?.fileStatus === "external") {
-      if (props.streaming) throw new Error(t("localModel.streaming"));
       await selectPrepared();
       return;
     }
@@ -298,6 +303,7 @@ async function start() {
       const result = await api.prepare({
         authChoice: "llama-cpp",
         modelRef: props.modelRef,
+        ...(props.downloadRequested ? { downloadConfirmed: true as const } : {}),
         ...(agentId ? { agentId } : {}),
       });
       if (result.ok) ownedId.value = result.value.id;

@@ -802,102 +802,190 @@ describe("LocalModelSetupDialog", () => {
     expect(api.prepare).toHaveBeenCalledWith({ authChoice: "llama-cpp" });
   });
 
-  it.each([
-    ["en-US", "Install and enable"],
-    ["zh-CN", "安装并启用"],
-  ] as const)(
-    "installs in one explicit click without a review step in %s",
-    async (locale, label) => {
-      setLocale(locale);
+  describe("managed model first use", () => {
+    const modelRef = LOCAL_MODEL_PRESETS[0].modelRef;
+    const modelSelector = `[data-model-ref="${modelRef}"]`;
+    const catalogSnapshot: LocalModelSnapshot = {
+      models: [],
+      catalog: LOCAL_MODEL_PRESETS.map((model) => ({
+        ...model,
+        configured: false,
+        fileStatus: "not-downloaded",
+      })),
+    };
+    const uninstalled: LocalModelCapabilities = {
+      ...capabilities,
+      plugin: { installed: false, enabled: false, canInstall: true },
+    };
+
+    beforeEach(() => {
+      vi.mocked(api.getSnapshot).mockResolvedValue(ok(catalogSnapshot));
       vi.mocked(api.getCapabilities)
-        .mockResolvedValueOnce(
-          ok({ ...capabilities, plugin: { installed: false, enabled: false, canInstall: true } }),
-        )
+        .mockResolvedValueOnce(ok(uninstalled))
         .mockResolvedValue(ok(capabilities));
-      vi.mocked(api.getSnapshot).mockResolvedValue(
-        ok({
-          models: [],
-          catalog: [{ ...LOCAL_MODEL_PRESETS[0], configured: false, fileStatus: "missing" }],
-        }),
+      vi.mocked(api.prepare).mockResolvedValue(
+        ok(
+          operation({
+            modelRef,
+            phase: "starting",
+          }),
+        ),
       );
-      const wrapper = await open();
-      expect(api.inspectProvider).not.toHaveBeenCalled();
+    });
+
+    it.each(["en-US", "zh-CN"] as const)(
+      "shows all models directly without an installation card or automatic mutation in %s",
+      async (locale) => {
+        setLocale(locale);
+        const wrapper = await open({ inline: true });
+        const catalog = wrapper.get('[data-testid="fixed-local-models"]');
+        for (const model of LOCAL_MODEL_PRESETS) {
+          expect(catalog.text()).toContain(model.name.replace(/\s+(?:UD-)?Q4_K_M$/u, ""));
+        }
+        expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="provider-install"]').exists()).toBe(false);
+        expect(wrapper.text()).not.toMatch(/安装并启用|Install and enable|本地运行组件/);
+        expect(wrapper.find('[data-testid="local-details"]').exists()).toBe(false);
+        expect(wrapper.find(".trial-badge").exists()).toBe(false);
+        expect(wrapper.get(modelSelector).attributes("disabled")).toBeUndefined();
+        expect(api.getHardware).toHaveBeenCalledOnce();
+        expect(api.inspectProvider).not.toHaveBeenCalled();
+        expect(api.installProvider).not.toHaveBeenCalled();
+        expect(api.prepare).not.toHaveBeenCalled();
+        expect(api.detect).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not flash the installation card while the model catalog is loading", async () => {
+      const metadata = deferred<LocalModelResult<LocalModelSnapshot>>();
+      vi.mocked(api.getSnapshot).mockReturnValueOnce(metadata.promise);
+      const wrapper = mount(LocalModelSetupDialog);
+      wrappers.push(wrapper);
+      await flushPromises();
+      expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
       expect(api.installProvider).not.toHaveBeenCalled();
-      expect(wrapper.find('[data-testid="provider-review"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="provider-confirm"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="provider-permissions"]').exists()).toBe(false);
-      expect(wrapper.get('[data-testid="provider-install"]').text()).toBe(label);
-      expect(wrapper.find('[data-testid="local-details"]').exists()).toBe(false);
-      expect(wrapper.find(".trial-badge").exists()).toBe(false);
-      expect(wrapper.find('[data-testid="prepare-llama-cpp-existing-server"]').exists()).toBe(
-        false,
-      );
-      expect(wrapper.find('[data-testid="local-discover"]').exists()).toBe(false);
-      await wrapper.get('[data-testid="provider-install"]').trigger("click");
+      metadata.resolve(ok(catalogSnapshot));
+      await flushPromises();
+      expect(wrapper.get('[data-testid="fixed-local-models"]').text()).toContain("Qwen3.5 4B");
+    });
+
+    it("uses the model click to prepare the runtime and approve its exact download once", async () => {
+      const wrapper = await open();
+      await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
       expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
       expect(api.inspectProvider).not.toHaveBeenCalled();
-      expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
-      expect(wrapper.get('[data-testid="fixed-local-models"]').text()).toContain("Qwen3.5 4B");
-      expect(api.prepare).not.toHaveBeenCalled();
-      expect(api.detect).not.toHaveBeenCalled();
-    },
-  );
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
+      });
+      expect(api.answer).not.toHaveBeenCalled();
+      expect(api.activate).not.toHaveBeenCalled();
+      expect(wrapper.findComponent({ name: "LocalModelDownloadDialog" }).exists()).toBe(true);
+      expect(document.querySelector('[data-testid="confirm-local-download"]')).toBeNull();
+      expect(document.querySelector(".download-panel progress")).not.toBeNull();
+    });
 
-  it("hides irrelevant setup controls and technical copy before the runtime is enabled", async () => {
-    vi.mocked(api.getSnapshot).mockResolvedValue(ok({ models: [] }));
-    vi.mocked(api.getCapabilities).mockResolvedValue(
-      ok({ ...capabilities, plugin: { installed: false, enabled: false, canInstall: true } }),
-    );
-    const wrapper = await open();
-    expect(wrapper.find('[data-testid="prepare-llama-cpp"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="local-activate"]').exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Experimental compatibility support");
-    expect(wrapper.text()).not.toContain("OpenClaw manages automatic setup");
-    expect(wrapper.find('[data-testid="local-refresh"]').exists()).toBe(false);
-  });
-
-  it.each(["en-US", "zh-CN"] as const)(
-    "omits the trial badge and advanced controls with an enabled runtime in %s",
-    async (locale) => {
-      setLocale(locale);
-      const wrapper = await open();
-      expect(wrapper.find(".trial-badge").exists()).toBe(false);
-      expect(wrapper.find('[data-testid="local-details"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="local-refresh"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="local-discover"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="prepare-llama-cpp-existing-server"]').exists()).toBe(
-        false,
-      );
-      expect(wrapper.text()).not.toMatch(/试用|Preview|高级选项|Advanced options/);
-      expect(wrapper.find('[data-testid="local-activate"]').exists()).toBe(true);
-      expect(api.getSnapshot).toHaveBeenCalledOnce();
-      expect(api.getCapabilities).toHaveBeenCalledOnce();
-      expect(api.getOperation).toHaveBeenCalledOnce();
-      expect(api.detect).not.toHaveBeenCalled();
-    },
-  );
-
-  it("enables an installed but disabled runtime without a separate review", async () => {
-    vi.mocked(api.getCapabilities).mockResolvedValueOnce(
-      ok({ ...capabilities, plugin: { installed: true, enabled: false, canInstall: false } }),
-    );
-    const wrapper = await open();
-    expect(wrapper.get('[data-testid="provider-install"]').text()).toBe("Enable component");
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
-    expect(api.inspectProvider).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["en-US", "Retry loading component", "Loading component…"],
-    ["zh-CN", "重试加载组件", "正在加载组件…"],
-  ] as const)(
-    "offers hot-load retry for an installed but unloaded component in %s",
-    async (locale, label, loadingLabel) => {
-      setLocale(locale);
+    it.each([
+      { installed: true, enabled: false, canInstall: false },
+      { installed: true, enabled: true, loaded: false, canInstall: false },
+    ])("prepares a disabled or unloaded runtime on model selection: %j", async (plugin) => {
       vi.mocked(api.getCapabilities)
+        .mockReset()
+        .mockResolvedValueOnce(ok({ ...capabilities, plugin }))
+        .mockResolvedValue(ok(capabilities));
+      const wrapper = await open();
+      expect(wrapper.find('[data-testid="provider-install"]').exists()).toBe(false);
+      await wrapper.get(modelSelector).trigger("click");
+      await flushPromises();
+      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
+      });
+    });
+
+    it("skips runtime installation when it is already ready", async () => {
+      vi.mocked(api.getCapabilities).mockReset().mockResolvedValue(ok(capabilities));
+      const wrapper = await open();
+      await wrapper.get(modelSelector).trigger("click");
+      await flushPromises();
+      expect(api.installProvider).not.toHaveBeenCalled();
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
+      });
+    });
+
+    it.each(["streaming", "read-only", "unsupported", "unavailable", "busy"])(
+      "keeps models visible but blocks setup when %s",
+      async (reason) => {
+        vi.mocked(api.getCapabilities)
+          .mockReset()
+          .mockResolvedValue(
+            ok({
+              ...uninstalled,
+              mutable: reason !== "read-only",
+              supported: reason !== "unsupported",
+              plugin: { ...uninstalled.plugin, canInstall: reason !== "unavailable" },
+            }),
+          );
+        if (reason === "busy") vi.mocked(api.getOperation).mockResolvedValue(ok(operation()));
+        const wrapper = await open({ streaming: reason === "streaming" });
+        expect(wrapper.get(modelSelector).attributes("disabled")).toBeDefined();
+        await wrapper.get(modelSelector).trigger("click");
+        wrapper.getComponent({ name: "LocalModelCatalog" }).vm.$emit("select", modelRef);
+        await flushPromises();
+        expect(api.installProvider).not.toHaveBeenCalled();
+        expect(api.prepare).not.toHaveBeenCalled();
+        expect(api.inspectProvider).not.toHaveBeenCalled();
+      },
+    );
+
+    it("shows preparation progress and prevents duplicate selection or closing", async () => {
+      const installation = deferred<LocalModelResult<LocalModelCapabilities>>();
+      vi.mocked(api.installProvider).mockReturnValueOnce(installation.promise);
+      const wrapper = await open();
+      const button = wrapper.get(modelSelector);
+      await button.trigger("click");
+      expect(wrapper.text()).toContain("Preparing the selected model");
+      expect(button.attributes("aria-busy")).toBe("true");
+      expect(button.attributes("disabled")).toBeDefined();
+      expect(wrapper.get('[data-testid="local-close"]').attributes("disabled")).toBeDefined();
+      await button.trigger("click");
+      wrapper.getComponent({ name: "LocalModelCatalog" }).vm.$emit("select", modelRef);
+      await flushPromises();
+      expect(api.installProvider).toHaveBeenCalledOnce();
+      expect(api.prepare).not.toHaveBeenCalled();
+      installation.resolve(ok(capabilities));
+      await flushPromises();
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
+      });
+    });
+
+    it("does not continue into model preparation if streaming begins during runtime setup", async () => {
+      const installation = deferred<LocalModelResult<LocalModelCapabilities>>();
+      vi.mocked(api.installProvider).mockReturnValueOnce(installation.promise);
+      const wrapper = await open();
+      await wrapper.get(modelSelector).trigger("click");
+      await wrapper.setProps({ streaming: true });
+      installation.resolve(ok(capabilities));
+      await flushPromises();
+      expect(api.prepare).not.toHaveBeenCalled();
+      expect(wrapper.findComponent({ name: "LocalModelDownloadDialog" }).exists()).toBe(false);
+      expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    });
+
+    it("refreshes a saved installation after a loading failure and retries from the model", async () => {
+      vi.mocked(api.getCapabilities)
+        .mockReset()
+        .mockResolvedValueOnce(ok(uninstalled))
         .mockResolvedValueOnce(
           ok({
             ...capabilities,
@@ -905,189 +993,129 @@ describe("LocalModelSetupDialog", () => {
           }),
         )
         .mockResolvedValue(ok(capabilities));
-      const loading = deferred<LocalModelResult<LocalModelCapabilities>>();
-      vi.mocked(api.installProvider).mockReturnValueOnce(loading.promise);
+      vi.mocked(api.installProvider)
+        .mockResolvedValueOnce({
+          ok: false,
+          error: "Hot loading failed; downloaded files are retained",
+        })
+        .mockResolvedValueOnce(ok(capabilities));
       const wrapper = await open();
-      expect(wrapper.get('[data-testid="provider-install"]').text()).toBe(label);
-      await wrapper.get('[data-testid="provider-install"]').trigger("click");
-      expect(wrapper.get('[data-testid="provider-install"]').text()).toBe(loadingLabel);
-      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+      await wrapper.get(modelSelector).trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').text()).toContain("downloaded files are retained");
+      expect(api.getCapabilities).toHaveBeenCalledTimes(2);
       expect(api.prepare).not.toHaveBeenCalled();
-      loading.resolve(ok(capabilities));
+      expect(wrapper.get(modelSelector).attributes("disabled")).toBeUndefined();
+      await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
-    },
-  );
-
-  it("refreshes a saved installation after a loading failure so retry does not download again", async () => {
-    vi.mocked(api.getCapabilities)
-      .mockResolvedValueOnce(
-        ok({
-          ...capabilities,
-          plugin: { installed: false, enabled: false, canInstall: true },
-        }),
-      )
-      .mockResolvedValueOnce(
-        ok({
-          ...capabilities,
-          plugin: { installed: true, enabled: true, loaded: false, canInstall: false },
-        }),
-      )
-      .mockResolvedValue(ok(capabilities));
-    vi.mocked(api.installProvider)
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "Hot loading failed; downloaded files are retained",
-      })
-      .mockResolvedValueOnce(ok(capabilities));
-    const wrapper = await open();
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain("downloaded files are retained");
-    expect(wrapper.get('[data-testid="provider-install"]').text()).toBe("Retry loading component");
-    expect(api.getCapabilities).toHaveBeenCalledTimes(2);
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(api.installProvider).toHaveBeenCalledTimes(2);
-    expect(api.prepare).not.toHaveBeenCalled();
-    expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
-  });
-
-  it.each(["streaming", "read-only", "unsupported", "unavailable", "busy"])(
-    "blocks installation when %s",
-    async (reason) => {
-      vi.mocked(api.getCapabilities).mockResolvedValue(
-        ok({
-          ...capabilities,
-          mutable: reason !== "read-only",
-          supported: reason !== "unsupported",
-          plugin: { installed: false, enabled: false, canInstall: reason !== "unavailable" },
-        }),
-      );
-      if (reason === "busy") vi.mocked(api.getOperation).mockResolvedValue(ok(operation()));
-      const wrapper = await open({ streaming: reason === "streaming" });
-      expect(wrapper.get('[data-testid="provider-install"]').attributes("disabled")).toBeDefined();
-      await wrapper.get('[data-testid="provider-install"]').trigger("click");
-      expect(api.installProvider).not.toHaveBeenCalled();
-      expect(api.inspectProvider).not.toHaveBeenCalled();
-    },
-  );
-
-  it("shows installation progress and prevents duplicate requests or closing", async () => {
-    vi.mocked(api.getCapabilities).mockResolvedValueOnce(
-      ok({ ...capabilities, plugin: { installed: false, enabled: false, canInstall: true } }),
-    );
-    const installation = deferred<LocalModelResult<LocalModelCapabilities>>();
-    vi.mocked(api.installProvider).mockReturnValue(installation.promise);
-    const wrapper = await open();
-    const button = wrapper.get('[data-testid="provider-install"]');
-    await button.trigger("click");
-    expect(button.text()).toBe("Installing and enabling…");
-    expect(button.attributes("aria-busy")).toBe("true");
-    expect(button.attributes("disabled")).toBeDefined();
-    expect(wrapper.get('[data-testid="local-close"]').attributes("disabled")).toBeDefined();
-    await button.trigger("click");
-    expect(api.installProvider).toHaveBeenCalledOnce();
-    installation.resolve(ok(capabilities));
-    await flushPromises();
-    expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
-    expect(wrapper.get('[data-testid="local-close"]').attributes("disabled")).toBeUndefined();
-  });
-
-  it("keeps ordinary installation errors retryable without treating error text as permission consent", async () => {
-    vi.mocked(api.getCapabilities).mockResolvedValue(
-      ok({ ...capabilities, plugin: { installed: false, enabled: false, canInstall: true } }),
-    );
-    vi.mocked(api.installProvider)
-      .mockResolvedValueOnce({ ok: false, error: "Permission review failed: download unavailable" })
-      .mockResolvedValueOnce(ok(capabilities));
-    const wrapper = await open();
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain("download unavailable");
-    expect(api.inspectProvider).not.toHaveBeenCalled();
-    expect(wrapper.get('[data-testid="provider-install"]').attributes("disabled")).toBeUndefined();
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(api.installProvider).toHaveBeenNthCalledWith(2, { confirmed: true });
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
-  });
-
-  it("shows newly required permissions inline and waits for another explicit click", async () => {
-    vi.mocked(api.getCapabilities)
-      .mockResolvedValueOnce(
-        ok({
-          ...capabilities,
-          plugin: { installed: false, enabled: false, canInstall: true },
-        }),
-      )
-      .mockResolvedValue(ok(capabilities));
-    vi.mocked(api.inspectProvider).mockResolvedValueOnce(
-      ok({
-        pluginId: "llama-cpp",
-        source: "ClawHub @openclaw/llama-cpp-provider",
-        version: "2026.9.3",
-        capabilities: { permissions: ["Start local runtime", "Download model files"] },
-        reviewToken: "staged-manifest-review",
-      }),
-    );
-    vi.mocked(api.installProvider)
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "Staged manifest capability review required",
-        code: "PLUGIN_CAPABILITY_CONSENT_REQUIRED",
-      })
-      .mockResolvedValueOnce(ok(capabilities));
-
-    const wrapper = await open();
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(api.installProvider).toHaveBeenNthCalledWith(1, { confirmed: true });
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="provider-confirm"]').exists()).toBe(false);
-    expect(api.inspectProvider).toHaveBeenCalledOnce();
-    expect(api.installProvider).toHaveBeenCalledOnce();
-    expect(wrapper.get('[data-testid="provider-permissions"]').text()).toContain(
-      "Start local runtime",
-    );
-    expect(wrapper.get('[data-testid="provider-install"]').text()).toBe("Allow and continue");
-    expect(wrapper.get('[data-testid="provider-details"]').attributes("open")).toBeUndefined();
-    await wrapper.get('[data-testid="provider-install"]').trigger("click");
-    await flushPromises();
-    expect(api.installProvider).toHaveBeenNthCalledWith(2, {
-      confirmed: true,
-      reviewToken: "staged-manifest-review",
-    });
-    expect(api.prepare).not.toHaveBeenCalled();
-  });
-
-  it.each(["inspection failed", "missing token"])(
-    "does not acknowledge new permissions when %s",
-    async (failure) => {
-      vi.mocked(api.getCapabilities).mockResolvedValue(
-        ok({ ...capabilities, plugin: { installed: false, enabled: false, canInstall: true } }),
-      );
-      vi.mocked(api.installProvider).mockResolvedValue({
-        ok: false,
-        error: "Permission confirmation required",
-        code: "PLUGIN_CAPABILITY_CONSENT_REQUIRED",
+      expect(api.installProvider).toHaveBeenCalledTimes(2);
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
       });
-      vi.mocked(api.inspectProvider).mockResolvedValue(
-        failure === "inspection failed"
-          ? { ok: false, error: "Could not read permissions" }
-          : ok({ pluginId: "llama-cpp", capabilities: {} }),
-      );
+    });
+
+    it("keeps ordinary errors retryable without treating error text as permission consent", async () => {
+      vi.mocked(api.getCapabilities)
+        .mockReset()
+        .mockResolvedValueOnce(ok(uninstalled))
+        .mockResolvedValueOnce(ok(uninstalled))
+        .mockResolvedValue(ok(capabilities));
+      vi.mocked(api.installProvider)
+        .mockResolvedValueOnce({
+          ok: false,
+          error: "Permission review failed: download unavailable",
+        })
+        .mockResolvedValueOnce(ok(capabilities));
       const wrapper = await open();
-      await wrapper.get('[data-testid="provider-install"]').trigger("click");
+      await wrapper.get(modelSelector).trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[role="alert"]').text()).toContain("download unavailable");
+      expect(api.inspectProvider).not.toHaveBeenCalled();
+      expect(wrapper.get(modelSelector).attributes("disabled")).toBeUndefined();
+      await wrapper.get(modelSelector).trigger("click");
+      await flushPromises();
+      expect(api.installProvider).toHaveBeenNthCalledWith(2, { confirmed: true });
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
+      });
+    });
+
+    it("shows new permissions inline and waits for explicit consent before continuing the selected model", async () => {
+      vi.mocked(api.inspectProvider).mockResolvedValueOnce(
+        ok({
+          pluginId: "llama-cpp",
+          source: "ClawHub @openclaw/llama-cpp-provider",
+          version: "2026.9.3",
+          capabilities: { permissions: ["Start local runtime", "Download model files"] },
+          reviewToken: "staged-manifest-review",
+        }),
+      );
+      vi.mocked(api.installProvider)
+        .mockResolvedValueOnce({
+          ok: false,
+          error: "Staged manifest capability review required",
+          code: "PLUGIN_CAPABILITY_CONSENT_REQUIRED",
+        })
+        .mockResolvedValueOnce(ok(capabilities));
+      const wrapper = await open();
+      await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
       expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
-      expect(wrapper.find('[data-testid="provider-permissions"]').exists()).toBe(false);
-      expect(wrapper.find('[role="alert"]').exists()).toBe(true);
-      expect(
-        wrapper.get('[data-testid="provider-install"]').attributes("disabled"),
-      ).toBeUndefined();
-    },
-  );
+      expect(api.inspectProvider).toHaveBeenCalledOnce();
+      expect(wrapper.get('[data-testid="provider-permissions"]').text()).toContain(
+        "Start local runtime",
+      );
+      expect(wrapper.get('[data-testid="provider-install"]').text()).toBe("Allow and continue");
+      expect(wrapper.get('[data-testid="provider-details"]').attributes("open")).toBeUndefined();
+      expect(wrapper.get(modelSelector).attributes("disabled")).toBeDefined();
+      wrapper.getComponent({ name: "LocalModelCatalog" }).vm.$emit("select", modelRef);
+      await flushPromises();
+      expect(api.installProvider).toHaveBeenCalledOnce();
+      expect(api.prepare).not.toHaveBeenCalled();
+      await wrapper.get('[data-testid="provider-install"]').trigger("click");
+      await flushPromises();
+      expect(api.installProvider).toHaveBeenNthCalledWith(2, {
+        confirmed: true,
+        reviewToken: "staged-manifest-review",
+      });
+      expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef,
+        downloadConfirmed: true,
+      });
+      expect(api.answer).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="provider-setup"]').exists()).toBe(false);
+    });
+
+    it.each(["inspection failed", "missing token"])(
+      "does not acknowledge new permissions when %s",
+      async (failure) => {
+        vi.mocked(api.getCapabilities).mockReset().mockResolvedValue(ok(uninstalled));
+        vi.mocked(api.installProvider).mockResolvedValue({
+          ok: false,
+          error: "Permission confirmation required",
+          code: "PLUGIN_CAPABILITY_CONSENT_REQUIRED",
+        });
+        vi.mocked(api.inspectProvider).mockResolvedValue(
+          failure === "inspection failed"
+            ? { ok: false, error: "Could not read permissions" }
+            : ok({ pluginId: "llama-cpp", capabilities: {} }),
+        );
+        const wrapper = await open();
+        await wrapper.get(modelSelector).trigger("click");
+        await flushPromises();
+        expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+        expect(api.prepare).not.toHaveBeenCalled();
+        expect(wrapper.find('[data-testid="provider-permissions"]').exists()).toBe(false);
+        expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+        expect(wrapper.get(modelSelector).attributes("disabled")).toBeUndefined();
+      },
+    );
+  });
 
   it("unsubscribes from main operation events on close", async () => {
     const wrapper = await open();

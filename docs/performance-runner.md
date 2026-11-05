@@ -145,10 +145,22 @@ hardware information must not be inferred from the source checkout.
   SQLite Workers and forked inspectors that explicitly clear `execArgv`. It only
   activates when the process/Worker entry belongs to the bundled runtime; unrelated
   Node tool processes do not open the archive or register the loader.
-  The local-model compatibility preload only registers its synchronous module
-  loader when the local provider directory exists. A fixture without that provider
-  retains Node's normal loader; installing the provider for the first time restarts
-  the Gateway before model setup so the verified compatibility adapter takes effect.
+  The local-model compatibility preload registers its module loader even when the
+  local provider is not installed yet. Unrelated modules pass through unchanged;
+  provider entries and captured setup modules are checked against the pinned
+  official version, source hashes and unredirected paths when loaded. First-use
+  installation can therefore hot-load the verified adapter in the same Gateway
+  process. The backend checks the applied provider runtime before preparation and
+  requires exact-model selection and explicit download consent. The catalog's
+  Download action passes `downloadConfirmed: true` with the exact model
+  reference; after validating the provider's pinned download plan, the backend
+  consumes that approval once without a second UI confirmation. Approval is not
+  persisted across app restarts, reused by other operations, or applied to
+  unexpected confirmation steps. Cancelling revokes unused approval. Legacy setup
+  and recovered operations still require confirmation when no approval exists.
+  Ordinary model-picker selections are not download approvals; only an explicit
+  Download action opts into this one-click flow.
+  Installation does not require a Gateway restart or bypass those checks.
 - `chat.new-session`: the real new-conversation button and composer are operated.
   If the fixture's current conversation is empty, one UI chat first makes it nonempty
   outside the measured interval. This preparation uses the same reply/error gates,

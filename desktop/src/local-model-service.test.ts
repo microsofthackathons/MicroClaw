@@ -50,6 +50,29 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function downloadConfirmation(modelRef: string, summary: Record<string, unknown> = {}) {
+  const model = LOCAL_MODEL_PRESETS.find((preset) => preset.modelRef === modelRef)!;
+  return {
+    done: false,
+    status: "running",
+    step: {
+      id: "consent",
+      type: "confirm",
+      message: `${LOCAL_MODEL_DOWNLOAD_PROMPT}\n${JSON.stringify({
+        modelRef,
+        modelName: model.name,
+        modelBytes: model.downloadBytes,
+        embeddingBytes: 328577056,
+        runtimeDiskBytes: 2 * 1024 ** 3,
+        backend: "cpu",
+        runtimeNote: "",
+        ...summary,
+      })}`,
+      initialValue: false,
+    },
+  };
+}
+
 function fixture(initialReceipt?: LocalModelReceipt) {
   let receipt = initialReceipt;
   let revision = 1;
@@ -270,6 +293,20 @@ async function waitPhase(f: ReturnType<typeof fixture>, phase: LocalModelOperati
 }
 
 describe("local model protocol guards", () => {
+  it("delegates managed runtime preparation to the official provider", async () => {
+    const setup = fixture();
+    await setup.service.prepare({
+      authChoice: "llama-cpp",
+      modelRef: PRESET,
+      downloadConfirmed: true,
+    });
+    await vi.waitFor(() =>
+      expect(
+        setup.request.mock.calls.some(([method]) => method === "openclaw.setup.prepare.start"),
+      ).toBe(true),
+    );
+  });
+
   it("keeps the installer and provider adapter on the reviewed default release", () => {
     const installer = readFileSync(
       path.join(__dirname, "../../deployer/openclaw_version.py"),
@@ -297,6 +334,161 @@ describe("local model protocol guards", () => {
       await f.service.cancel(operation.id);
     },
   );
+  it.each(LOCAL_MODEL_PRESETS)(
+    "downloads the exact $name with one approval without selecting it early",
+    async (model) => {
+      const f = fixture();
+      const before = structuredClone(f.readConfig());
+      f.next((params) =>
+        (params as { answer?: { stepId: string } }).answer?.stepId === "consent"
+          ? { done: true, status: "done", preparedModelRef: model.modelRef }
+          : downloadConfirmation(model.modelRef),
+      );
+      const operation = await f.service.prepare({
+        authChoice: "llama-cpp",
+        modelRef: model.modelRef,
+        downloadConfirmed: true,
+      });
+      await waitPhase(f, "prepared");
+      expect(f.request).toHaveBeenCalledWith(
+        "wizard.next",
+        { sessionId: operation.id, answer: { stepId: "consent", value: true } },
+        180_000,
+      );
+      expect(
+        f.events.some((event) => event.phase === "step" && event.step?.type === "confirm"),
+      ).toBe(false);
+      expect(f.service.getOperation()?.preparedModelRef).toBe(model.modelRef);
+      expect(f.readConfig()).toEqual(before);
+      expect(f.request.mock.calls.some(([method]) => method === "config.patch")).toBe(false);
+    },
+  );
+
+  it.each([
+    { modelRef: LOCAL_MODEL_PRESETS[1].modelRef },
+    { modelBytes: 1 },
+    { embeddingBytes: 1 },
+    { runtimeDiskBytes: 1 },
+    { backend: "unknown" },
+  ])("rejects an invalid download plan despite prior approval: %j", async (summary) => {
+    const f = fixture();
+    f.next(() => downloadConfirmation(PRESET, summary));
+    await f.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET, downloadConfirmed: true });
+    await waitPhase(f, "error");
+    expect(f.service.getOperation()?.error).toContain("download receipt is invalid");
+    expect(f.request.mock.calls.some(([method]) => method === "wizard.cancel")).toBe(true);
+    expect(
+      f.request.mock.calls.some(
+        ([, params]) =>
+          (params as { answer?: { value: unknown } } | undefined)?.answer?.value === true,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    { authChoice: "llama-cpp", modelRef: PRESET, downloadConfirmed: "true" },
+    { authChoice: "llama-cpp", modelRef: PRESET, downloadConfirmed: false },
+    { authChoice: "llama-cpp", downloadConfirmed: true },
+    { authChoice: "llama-cpp-existing-server", downloadConfirmed: true },
+  ])("rejects unscoped or implicit approval before starting setup: %j", async (params) => {
+    const f = fixture();
+    await expect(f.service.prepare(params)).rejects.toThrow("explicit managed model");
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("consumes approval once and never carries it into a later operation", async () => {
+    const f = fixture();
+    const operation = await f.service.prepare({
+      authChoice: "llama-cpp",
+      modelRef: PRESET,
+      downloadConfirmed: true,
+    });
+    await waitPhase(f, "step");
+    expect(
+      f.request.mock.calls.filter(
+        ([, params]) =>
+          (params as { answer?: { value: unknown } } | undefined)?.answer?.value === true,
+      ),
+    ).toHaveLength(1);
+    expect(f.receipt()).not.toHaveProperty("downloadConfirmed");
+    await f.service.cancel(operation.id);
+    await f.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
+    await waitPhase(f, "step");
+    expect(
+      f.request.mock.calls.filter(
+        ([, params]) =>
+          (params as { answer?: { value: unknown } } | undefined)?.answer?.value === true,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not recover download approval from a persisted setup receipt", async () => {
+    const f = fixture({
+      id: "restored-prepare",
+      kind: "prepare",
+      agentId: "main",
+      authChoice: "llama-cpp",
+      modelRef: PRESET,
+      gatewayIdentity: "test-gateway",
+    });
+    await f.service.resume();
+    await waitPhase(f, "step");
+    expect(f.service.getOperation()?.step?.type).toBe("confirm");
+    expect(
+      f.request.mock.calls.some(
+        ([, params]) =>
+          (params as { answer?: { value: unknown } } | undefined)?.answer?.value === true,
+      ),
+    ).toBe(false);
+  });
+
+  it("revokes unused approval as soon as cancellation is requested", async () => {
+    const f = fixture();
+    const plan = deferred<unknown>();
+    f.next(() => plan.promise);
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, params, timeout) =>
+      method === "wizard.cancel"
+        ? Promise.resolve({ status: "running" })
+        : original(method, params, timeout),
+    );
+    const operation = await f.service.prepare({
+      authChoice: "llama-cpp",
+      modelRef: PRESET,
+      downloadConfirmed: true,
+    });
+    await vi.waitFor(() => expect(f.receipt()?.exactModelSelected).toBe(true));
+    await f.service.cancel(operation.id);
+    plan.resolve(downloadConfirmation(PRESET));
+    await waitPhase(f, "step");
+    expect(f.service.getOperation()?.cancellationPending).toBe(true);
+    expect(
+      f.request.mock.calls.some(
+        ([, params]) =>
+          (params as { answer?: { value: unknown } } | undefined)?.answer?.value === true,
+      ),
+    ).toBe(false);
+  });
+
+  it("rechecks mutability before consuming approval for the verified plan", async () => {
+    const f = fixture();
+    f.next(() => {
+      f.assertMutable.mockImplementation(() => {
+        throw new Error("Configuration is now read-only");
+      });
+      return downloadConfirmation(PRESET);
+    });
+    await f.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET, downloadConfirmed: true });
+    await waitPhase(f, "error");
+    expect(f.service.getOperation()?.error).toContain("read-only");
+    expect(
+      f.request.mock.calls.some(
+        ([, params]) =>
+          (params as { answer?: { value: unknown } } | undefined)?.answer?.value === true,
+      ),
+    ).toBe(false);
+  });
+
   it("requires a valid explicit owner for an ambiguous multi-agent preparation", async () => {
     const f = fixture();
     f.config({ agents: { entries: { first: {}, second: {} } } });
@@ -367,30 +559,33 @@ describe("local model protocol guards", () => {
     expect(f.request.mock.calls.map(([method]) => method)).toEqual(["plugins.list"]);
   });
 
-  it("refuses to confirm a download unless the provider first acknowledged the exact model", async () => {
-    const f = fixture();
-    const original = f.request.getMockImplementation()!;
-    f.request.mockImplementation(async (method, params, timeout) =>
-      method === "wizard.next"
-        ? {
-            done: false,
-            step: {
-              id: "wrong",
-              type: "confirm",
-              message: "Download an automatically recommended model?",
-            },
-          }
-        : original(method, params, timeout),
-    );
-    await f.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
-    await waitPhase(f, "error");
-    expect(f.request.mock.calls.some(([method]) => method === "wizard.cancel")).toBe(true);
-    expect(
-      f.request.mock.calls.some(
-        ([method, params]) => method === "wizard.next" && (params as { answer?: unknown }).answer,
-      ),
-    ).toBe(false);
-  });
+  it.each([undefined, true])(
+    "refuses unexpected confirmation even with download approval %s",
+    async (downloadConfirmed) => {
+      const f = fixture();
+      const original = f.request.getMockImplementation()!;
+      f.request.mockImplementation(async (method, params, timeout) =>
+        method === "wizard.next"
+          ? {
+              done: false,
+              step: {
+                id: "wrong",
+                type: "confirm",
+                message: "Download an automatically recommended model?",
+              },
+            }
+          : original(method, params, timeout),
+      );
+      await f.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET, downloadConfirmed });
+      await waitPhase(f, "error");
+      expect(f.request.mock.calls.some(([method]) => method === "wizard.cancel")).toBe(true);
+      expect(
+        f.request.mock.calls.some(
+          ([method, params]) => method === "wizard.next" && (params as { answer?: unknown }).answer,
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("rejects any prepared model that differs from the selected preset", async () => {
     const f = fixture();
@@ -887,6 +1082,73 @@ describe("local model provider hot loading", () => {
     expect(methods.indexOf("plugins.reload")).toBeLessThan(
       methods.indexOf("openclaw.setup.prepare.start"),
     );
+  });
+
+  it.each(["plugins.install", "plugins.reload"])(
+    "blocks preparation until first installation completes %s and readiness verification",
+    async (pendingMethod) => {
+      const context = fixture();
+      context.plugin({ installed: false, enabled: false, runtime: { state: "unloaded" } });
+      const pending = deferred<void>();
+      const original = context.request.getMockImplementation()!;
+      context.request.mockImplementation(async (method, params, timeout) => {
+        if (method === pendingMethod) await pending.promise;
+        const result = await original(method, params, timeout);
+        return method === "plugins.install" && pendingMethod === "plugins.reload"
+          ? { ok: true, restartRequired: false }
+          : result;
+      });
+
+      const installation = context.service.installProvider({ confirmed: true });
+      await vi.waitFor(() =>
+        expect(context.request.mock.calls.some(([method]) => method === pendingMethod)).toBe(true),
+      );
+      await expect(
+        context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET }),
+      ).rejects.toThrow("operation is still active");
+      expect(
+        context.request.mock.calls.some(([method]) => method === "openclaw.setup.prepare.start"),
+      ).toBe(false);
+
+      pending.resolve();
+      expect((await installation).plugin.loaded).toBe(true);
+      await context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
+      await waitPhase(context, "step");
+      const methods = context.request.mock.calls.map(([method]) => method);
+      expect(methods.indexOf(pendingMethod)).toBeLessThan(
+        methods.indexOf("openclaw.setup.prepare.start"),
+      );
+      expect(context.receipt()?.exactModelSelected).toBe(true);
+      expect(context.service.getOperation()?.step?.type).toBe("confirm");
+      expect(
+        context.request.mock.calls.some(
+          ([method, params]) =>
+            method === "wizard.next" &&
+            (params as { answer?: { stepId?: string } })?.answer?.stepId === "consent",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("does not prepare downloads if compatibility validation fails during hot loading", async () => {
+    const context = fixture();
+    context.plugin({ state: "error", runtime: { state: "unloaded" } });
+    const before = structuredClone(context.readConfig());
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (method, params, timeout) => {
+      if (method === "plugins.reload")
+        throw new Error("The local provider source differs from its pinned release");
+      return original(method, params, timeout);
+    });
+
+    await expect(
+      context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET }),
+    ).rejects.toThrow("differs from its pinned release");
+    expect(
+      context.request.mock.calls.some(([method]) => method === "openclaw.setup.prepare.start"),
+    ).toBe(false);
+    expect(context.readConfig()).toEqual(before);
+    expect(context.service.busy).toBe(false);
   });
 
   it("hot-loads after preparation if the downloaded provider is no longer active", async () => {

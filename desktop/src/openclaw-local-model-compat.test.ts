@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,6 +23,7 @@ import * as compatibility from "./openclaw-local-model-compat.mjs";
 const {
   EXACT_SETUP_PLAN,
   EXACT_MODEL_SELECTION_PROMPT,
+  PINNED_LOCAL_CONFIG_FILE,
   PINNED_LOCAL_PLUGIN_VERSION,
   patchLocalModelPlugin,
   createLocalModelCompatibilityLoadHook,
@@ -54,6 +56,7 @@ function withProviderFiles(
         JSON.stringify({
           name: "@openclaw/llama-cpp-provider",
           version: PINNED_LOCAL_PLUGIN_VERSION,
+          type: "module",
         }),
       );
     }
@@ -61,6 +64,71 @@ function withProviderFiles(
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+function expectLateProviderLoad(
+  paths: { root: string; plugin: string; captured: string; entry: string },
+  verified: boolean,
+) {
+  expect(paths.plugin).toBe(join(paths.root, "extensions", "llama-cpp"));
+  rmSync(paths.plugin, { recursive: true });
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      pathToFileURL(join(__dirname, "openclaw-local-model-compat.mjs")).href,
+      "--input-type=module",
+      "--eval",
+      `
+import assert from "node:assert/strict";
+import { cpSync, existsSync, readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const fixture = JSON.parse(process.argv[1]);
+assert.equal(existsSync(fixture.plugin), false);
+await import("node:os");
+cpSync(fixture.captured, fixture.plugin, { recursive: true });
+const entryUrl = pathToFileURL(fixture.entry).href;
+if (fixture.verified) {
+  const expected = new Map([
+    [entryUrl, ${JSON.stringify(EXACT_MODEL_SELECTION_PROMPT)}],
+    [pathToFileURL(join(dirname(fixture.entry), ${JSON.stringify(PINNED_LOCAL_CONFIG_FILE)})).href, "modelscope.cn"],
+  ]);
+  registerHooks({
+    load(url, context, nextLoad) {
+      const result = nextLoad(url, context);
+      if (!expected.has(url)) return result;
+      assert.ok(String(result.source).includes(expected.get(url)));
+      return { ...result, format: "module", source: "export default true;" };
+    },
+  });
+  for (const url of expected.keys()) assert.equal((await import(url)).default, true);
+} else {
+  await assert.rejects(import(entryUrl), /differs from its pinned release/);
+}
+assert.equal(
+  readFileSync(join(fixture.plugin, "dist", "index.js"), "utf8"),
+  readFileSync(join(fixture.captured, "dist", "index.js"), "utf8"),
+);
+`,
+      JSON.stringify({ ...paths, verified }),
+    ],
+    {
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: paths.root,
+        MICROCLAW_EXACT_LOCAL_MODELS: "1",
+        MICROCLAW_LOCAL_MODEL_PLUGIN_DIR: paths.plugin,
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+    },
+  );
+  expect(child.error).toBeUndefined();
+  expect(child.status, `${child.stderr}\n${child.stdout}`).toBe(0);
 }
 
 describe("local provider compatibility initialization", () => {
@@ -148,6 +216,21 @@ describe("local provider compatibility initialization", () => {
       expect(load("node:fs", {}, () => result)).toBe(result);
     });
   });
+
+  it.each(["installed", "captured"])(
+    "rejects unverified %s modules installed after the Gateway preload ran",
+    (location) => {
+      withProviderFiles((paths) => {
+        expectLateProviderLoad(
+          {
+            ...paths,
+            entry: location === "installed" ? join(paths.plugin, "dist", "index.js") : paths.entry,
+          },
+          false,
+        );
+      }, 'export default "unverified provider";');
+    },
+  );
 
   it("registers the verified load hook when the provider directory exists", () => {
     withProviderFiles(({ plugin }) => {
@@ -391,6 +474,27 @@ describe("pinned exact local model chooser", () => {
     expect(() => patchLocalModelPlugin("unknown plugin")).toThrow("pinned");
   });
   const directory = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
+  it.skipIf(!directory).each(["installed", "captured"])(
+    "adapts verified %s modules on first installation without restarting the Gateway runtime",
+    (location) => {
+      const source = readFileSync(join(directory!, "dist", "index.js"), "utf8");
+      withProviderFiles((paths) => {
+        mkdirSync(join(paths.captured, "dist", ".setup"), { recursive: true });
+        copyFileSync(
+          join(directory!, "dist", PINNED_LOCAL_CONFIG_FILE),
+          join(paths.captured, "dist", PINNED_LOCAL_CONFIG_FILE),
+        );
+        expectLateProviderLoad(
+          {
+            ...paths,
+            entry: location === "installed" ? join(paths.plugin, "dist", "index.js") : paths.entry,
+          },
+          true,
+        );
+      }, source);
+    },
+  );
+
   it.skipIf(!directory)(
     "adapts the real pinned source and preserves the official runtime/download paths",
     () => {

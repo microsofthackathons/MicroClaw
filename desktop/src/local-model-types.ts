@@ -137,6 +137,7 @@ export interface LocalModelAPI {
     authChoice: LocalModelChoice;
     modelRef?: string;
     agentId?: string;
+    downloadConfirmed?: true;
   }): Promise<LocalModelResult<LocalModelOperation>>;
   activate(params: {
     kind: string;

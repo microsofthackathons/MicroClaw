@@ -6,7 +6,7 @@
     <section
       v-show="!fixedDialogVisible"
       class="local-model-panel"
-      :class="{ 'catalog-panel': providerReady && snapshot?.catalog }"
+      :class="{ 'catalog-panel': snapshot?.catalog }"
       :role="inline ? 'region' : 'dialog'"
       :aria-modal="inline ? undefined : true"
       aria-labelledby="local-model-title"
@@ -49,7 +49,9 @@
       <p v-else-if="refreshing" class="status-hint" role="status">
         {{ t("localModel.refreshingStatus") }}
       </p>
-      <p v-if="metadataPending && providerReady" role="status">{{ t("localModel.checking") }}</p>
+      <p v-if="metadataPending" role="status">
+        {{ t(providerSelection ? "fixedLocal.preparing" : "localModel.checking") }}
+      </p>
       <p v-if="error || metadataError || snapshotError || statusError" class="error" role="alert">
         {{ error || metadataError || snapshotError || statusError }}
       </p>
@@ -96,20 +98,8 @@
         <ul v-if="capabilityReasons.length" class="notice" data-testid="local-blockers">
           <li v-for="reason in capabilityReasons" :key="reason">{{ reason }}</li>
         </ul>
-        <section v-if="!providerReady" class="provider-setup" data-testid="provider-setup">
-          <div class="provider-heading">
-            <span class="provider-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <rect x="3" y="4" width="18" height="13" rx="2" />
-                <path d="M8 21h8m-4-4v4m-4-9 2 2 4-4" />
-              </svg>
-            </span>
-            <div>
-              <h3>{{ t("localModel.runtimeTitle") }}</h3>
-              <p>{{ t("localModel.providerRequired") }}</p>
-            </div>
-          </div>
-          <section v-if="review" class="provider-permissions" data-testid="provider-permissions">
+        <section v-if="review" class="provider-setup" data-testid="provider-setup">
+          <section class="provider-permissions" data-testid="provider-permissions">
             <h4>{{ t("localModel.permissionTitle") }}</h4>
             <p>{{ t("localModel.permissionHint") }}</p>
             <template v-for="(items, name) in review.capabilities" :key="name">
@@ -142,16 +132,8 @@
             {{
               t(
                 metadataPending
-                  ? capabilities.plugin.installed && capabilities.plugin.enabled
-                    ? "localModel.loadingProvider"
-                    : "localModel.installingProvider"
-                  : review
-                    ? "localModel.confirmProviderInstall"
-                    : capabilities.plugin.installed
-                      ? capabilities.plugin.enabled
-                        ? "localModel.reloadProvider"
-                        : "localModel.enableProvider"
-                      : "localModel.installProvider",
+                  ? "localModel.installingProvider"
+                  : "localModel.confirmProviderInstall",
               )
             }}
           </button>
@@ -159,16 +141,18 @@
       </template>
 
       <LocalModelCatalog
-        v-if="providerReady && snapshot?.catalog"
+        v-if="snapshot?.catalog"
         data-testid="fixed-local-models"
         :catalog="snapshot.catalog"
         :hardware="hardware"
         :loading="hardwareLoading"
-        :disabled="streaming || fixedSelecting || !canMutate"
+        :disabled="catalogBlocked"
         :busy-model-ref="operation?.busy ? operation.modelRef : undefined"
-        :selecting-model-ref="fixedSelecting ? fixedSelection : undefined"
+        :selecting-model-ref="
+          fixedSelecting ? fixedSelection : metadataPending ? providerSelection : undefined
+        "
         :current-model-ref="snapshot.configuredModel"
-        @select="fixedSelection = $event"
+        @select="selectFixedModel"
       />
       <section
         v-if="operation && !operationFilesMissing && !snapshot?.catalog"
@@ -313,6 +297,7 @@
       v-if="fixedSelection"
       :key="fixedSelection"
       :model-ref="fixedSelection"
+      :download-requested="true"
       :streaming="streaming"
       @busy="fixedSelecting = $event"
       @visible="fixedDialogVisible = $event"
@@ -376,6 +361,7 @@ const metadataPending = ref(false);
 const metadataError = ref("");
 const review = ref<LocalModelInstallReview | null>(null);
 const selectedCandidate = ref("");
+const providerSelection = ref("");
 const fixedSelection = ref("");
 const fixedSelecting = ref(false);
 const fixedDialogVisible = ref(false);
@@ -419,6 +405,15 @@ const canInstall = computed(
       (capabilities.value?.plugin.installed &&
         (!capabilities.value.plugin.enabled || capabilities.value.plugin.loaded === false)),
     ),
+);
+const catalogBlocked = computed(
+  () =>
+    props.streaming ||
+    fixedSelecting.value ||
+    metadataPending.value ||
+    Boolean(review.value) ||
+    !canMutate.value ||
+    (!providerReady.value && (!canInstall.value || operationBlocked.value)),
 );
 const capabilityReasons = computed(() => {
   const value = capabilities.value;
@@ -584,6 +579,31 @@ async function installProvider() {
     capabilities.value = result.value;
     await Promise.all([loadSnapshot(), loadCapabilities()]);
   });
+  if (
+    disposed ||
+    metadataError.value ||
+    review.value ||
+    !providerReady.value ||
+    !providerSelection.value
+  )
+    return;
+  if (props.streaming) {
+    metadataError.value = t("localModel.streaming");
+    return;
+  }
+  fixedSelection.value = providerSelection.value;
+  providerSelection.value = "";
+}
+async function selectFixedModel(modelRef: string) {
+  if (catalogBlocked.value) return;
+  metadataError.value = "";
+  if (providerReady.value) {
+    providerSelection.value = "";
+    fixedSelection.value = modelRef;
+    return;
+  }
+  providerSelection.value = modelRef;
+  await installProvider();
 }
 function prepare(authChoice: LocalModelChoice) {
   if (
@@ -792,40 +812,11 @@ onUnmounted(() => {
   border-radius: 12px;
   background: var(--smtc-background-ctrl-subtle-hover, #f8f9fa);
 }
-.provider-heading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.provider-heading h3 {
-  margin: 0;
-  font-size: 16px;
-}
-.provider-heading p {
-  margin: 6px 0 0;
-  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #60646c);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.provider-icon {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--smtc-background-card-on-primary-default-rest, #fff);
-}
-.provider-icon svg {
-  width: 24px;
-  height: 24px;
-}
 .provider-setup .primary-action {
   width: 100%;
   margin: 20px 0 0;
 }
 .provider-permissions {
-  margin-top: 16px;
   font-size: 13px;
   line-height: 1.6;
 }
