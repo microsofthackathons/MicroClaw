@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, it, vi } from "vitest";
-import { GatewayClient } from "./gateway-client";
+import { GatewayClient, GatewayRequestError } from "./gateway-client";
 import { LocalModelService } from "./local-model-service";
 import { LOCAL_MODEL_PRESETS } from "./local-model-catalog";
 import type { LocalModelOperation, LocalModelReceipt } from "./local-model-types";
@@ -24,20 +24,34 @@ import { parseManagedModelPaths } from "./local-model-files";
 const entry = process.env.MICROCLAW_TEST_OPENCLAW_ENTRY;
 const cache = process.env.MICROCLAW_TEST_LOCAL_CACHE;
 const plugin = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
+const archive = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_ARCHIVE;
+// Official @openclaw/llama-cpp-provider@2026.10.5 npm artifact.
+const archiveIntegrity =
+  "sha512-684tJyhLoMFfS8JC/mlUXF0c5o4RM4mEwex9upr2PI4jowxvgdqKAeJKho3B23K0xZ6T2klI8QcQiUXXqeB6dA==";
 it.skipIf(!entry || !plugin)(
   cache
     ? "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults"
-    : "hot-loads a copied provider and reaches download consent without restarting or downloading weights",
+    : "installs the verified official provider archive after Gateway startup and reaches download consent without restarting or downloading weights",
   async () => {
     const root = mkdtempSync(path.join(tmpdir(), "microclaw-complete-local-"));
     const configPath = path.join(root, "openclaw.json");
     const isolatedCache = path.join(root, "models", "llama.cpp");
+    const isolatedPlugin = path.join(root, "extensions", "llama-cpp");
     const token = randomUUID();
     const model = LOCAL_MODEL_PRESETS[0];
     let child: ReturnType<typeof spawn> | undefined;
     let client: GatewayClient | undefined;
     let log = "";
     try {
+      if (!cache) {
+        if (!archive || !path.isAbsolute(archive)) {
+          throw new Error(
+            "First-install validation requires MICROCLAW_TEST_LOCAL_PLUGIN_ARCHIVE pointing to the official 2026.10.5 archive",
+          );
+        }
+        const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
+        expect(integrity, "Official provider archive integrity").toBe(archiveIntegrity);
+      }
       mkdirSync(isolatedCache, { recursive: true });
       const weightFiles = [model.cacheFile, "hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"];
       const originals = new Map(
@@ -46,10 +60,8 @@ it.skipIf(!entry || !plugin)(
       for (const [file, original] of originals) {
         copyFileSync(original, path.join(isolatedCache, file));
       }
-      cpSync(plugin!, path.join(root, "extensions", "llama-cpp"), {
-        recursive: true,
-        verbatimSymlinks: true,
-      });
+      if (cache) cpSync(plugin!, isolatedPlugin, { recursive: true, verbatimSymlinks: true });
+      else expect(existsSync(isolatedPlugin)).toBe(false);
       const listener = createServer();
       await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
       const address = listener.address();
@@ -67,7 +79,9 @@ it.skipIf(!entry || !plugin)(
             heartbeat: { every: "0m" },
           },
         },
-        plugins: { allow: ["llama-cpp"], entries: { "llama-cpp": { enabled: !!cache } } },
+        plugins: cache
+          ? { allow: ["llama-cpp"], entries: { "llama-cpp": { enabled: true } } }
+          : { allow: [], entries: {} },
         skills: { allowBundled: [] },
       };
       await writeFile(configPath, JSON.stringify(before));
@@ -95,7 +109,7 @@ it.skipIf(!entry || !plugin)(
             MICROCLAW_FS_SAFE_COMPAT: "1",
             MICROCLAW_OPENCLAW_PACKAGE_DIR: path.dirname(entry!),
             MICROCLAW_EXACT_LOCAL_MODELS: "1",
-            MICROCLAW_LOCAL_MODEL_PLUGIN_DIR: path.join(root, "extensions", "llama-cpp"),
+            MICROCLAW_LOCAL_MODEL_PLUGIN_DIR: isolatedPlugin,
           },
           windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
@@ -113,6 +127,46 @@ it.skipIf(!entry || !plugin)(
         timeout: 180_000,
         interval: 500,
       });
+      const connectionGeneration = client.connectionGeneration;
+      const rawGatewayRequest = client.request.bind(client);
+      async function gatewayRequest<Response>(
+        method: string,
+        params?: unknown,
+        timeout?: number | null,
+      ): Promise<Response> {
+        const deadline = Date.now() + 30_000;
+        for (;;) {
+          try {
+            return await rawGatewayRequest<Response>(method, params, timeout);
+          } catch (error) {
+            // This exact refusal occurs before the Gateway enters any mutation.
+            // A background config observer can hold the same lifecycle lease.
+            if (
+              !["plugins.install", "plugins.setEnabled", "plugins.reload"].includes(method) ||
+              !(error instanceof GatewayRequestError) ||
+              error.code !== "UNAVAILABLE" ||
+              error.message !==
+                "Another plugin or config operation is already running; retry when it completes." ||
+              Date.now() + 1_000 > deadline
+            ) {
+              throw error;
+            }
+            await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+          }
+        }
+      }
+      if (!cache) {
+        expect(existsSync(isolatedPlugin)).toBe(false);
+        const installed = await gatewayRequest<{ ok: boolean }>(
+          "plugins.install",
+          { source: "local", path: archive! },
+          300_000,
+        );
+        expect(installed.ok).toBe(true);
+        expect(existsSync(isolatedPlugin)).toBe(true);
+        // Keep the existing enable/reload fallback coverage after the real fixture install.
+        await gatewayRequest("plugins.setEnabled", { pluginId: "llama-cpp", enabled: false });
+      }
       const events: LocalModelOperation[] = [];
       let receipt: LocalModelReceipt | undefined;
       const service = new LocalModelService({
@@ -127,8 +181,6 @@ it.skipIf(!entry || !plugin)(
         },
         onChange: (value) => events.push(value),
       });
-      const connectionGeneration = client.connectionGeneration;
-      const gatewayRequest = client.request.bind(client);
       const request = vi.spyOn(client, "request");
       if (!cache) {
         request.mockImplementation(
