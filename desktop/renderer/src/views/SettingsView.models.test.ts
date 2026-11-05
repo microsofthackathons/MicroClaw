@@ -13,6 +13,7 @@ import { LOCAL_MODEL_PRESETS } from "../../../src/local-model-catalog";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
+import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import { selectPrimaryModelConfig } from "@/utils/model-provider";
 
 vi.mock("vue-router", () => ({ useRoute: () => ({ params: { section: "models" } }) }));
@@ -132,6 +133,44 @@ describe("SettingsView model integration", () => {
     await flushPromises();
     return { wrapper, chat: useChatStore(pinia) };
   }
+
+  it("reopens a connection-only provider and offers its live models in the unified picker", async () => {
+    config.models.providers.qwen = {
+      baseUrl: "https://provider.example/v1",
+      apiKey: "fixture-key",
+      api: "openai-completions",
+      models: [],
+    };
+    window.openclaw.model.discoverModels = vi
+      .fn()
+      .mockResolvedValue({ ok: true, models: ["qwen3.7-plus"] });
+    const original = structuredClone(config);
+    const { wrapper } = await open();
+    const card = wrapper.get('[data-provider="qwen"]');
+    expect(card.get(".provider-state").text()).toBe("Configured connection");
+    await card.get('[data-testid="manage-provider-qwen"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.getComponent(ModelSetupDialog).props("currentProvider")).toMatchObject({
+      familyId: "qwen",
+      providerKey: "qwen",
+      modelName: "",
+      baseUrl: "https://provider.example/v1",
+      apiKey: "fixture-key",
+    });
+    const picker = wrapper.getComponent(DefaultPickerStub);
+    expect(picker.props("models")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerKey: "qwen", id: "qwen3.7-plus" }),
+      ]),
+    );
+    expect(config).toEqual(original);
+    picker.vm.$emit("change", "qwen/qwen3.7-plus");
+    await flushPromises();
+    expect(window.openclaw.model.selectDefault).toHaveBeenCalledWith({
+      modelRef: "qwen/qwen3.7-plus",
+      expectedConfig: original,
+    });
+  });
 
   it("retains the configured Copilot default and catalog while keeping setup hidden without the flag", async () => {
     Object.assign(window.openclaw.features, { githubCopilot: false });

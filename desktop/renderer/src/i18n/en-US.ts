@@ -810,6 +810,10 @@ export default {
     "Could not fetch models. Check the network or endpoint and retry.",
   "modelManager.saveOnlyHint":
     "Save connection settings without changing the default model or sending a test prompt.",
+  "modelManager.connectionOnlyHint":
+    "After verifying and saving this connection, choose a default model above or a model for the current conversation in chat. No test prompt is sent.",
+  "modelManager.saveConnection": "Verify and save connection",
+  "modelManager.verifyingConnection": "Verifying and saving...",
   "modelManager.sessionModel": "Model for this conversation",
   "modelManager.switching": "Switching...",
   "modelManager.loading": "Loading models...",

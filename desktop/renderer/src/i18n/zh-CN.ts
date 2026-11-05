@@ -757,6 +757,10 @@ export default {
   "modelSetup.catalogError.empty": "服务商没有为此连接返回模型。",
   "modelSetup.catalogError.network": "获取模型失败，请检查网络或接口地址后重试。",
   "modelManager.saveOnlyHint": "仅保存连接设置，不切换默认模型，也不发送测试消息。",
+  "modelManager.connectionOnlyHint":
+    "验证并保存连接后，可在上方选择默认模型，或在聊天中为当前会话选择模型。不会发送测试消息。",
+  "modelManager.saveConnection": "验证并保存连接",
+  "modelManager.verifyingConnection": "正在验证并保存…",
   "modelManager.sessionModel": "当前会话模型",
   "modelManager.switching": "切换中…",
   "modelManager.loading": "读取模型中…",

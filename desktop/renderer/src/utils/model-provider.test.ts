@@ -4,6 +4,7 @@ import {
   getDefaultAgentModelOverride,
   isValidHttpUrl,
   mergeModelProviderConfig,
+  mergeModelProviderConnectionConfig,
   normalizeModelInput,
   removeModelProviderConfig,
   removeProviderConnectionConfig,
@@ -11,6 +12,7 @@ import {
   selectPrimaryModelConfig,
   updateModelProviderConfig,
   validateModelProviderInput,
+  validateModelProviderConnectionInput,
   type ModelProviderInput,
 } from "./model-provider";
 
@@ -96,6 +98,71 @@ describe("model provider validation", () => {
 });
 
 describe("model provider config", () => {
+  it("validates and saves a connection without selecting or registering a model", () => {
+    const { modelName: _modelName, ...connection } = validInput;
+    expect(validateModelProviderConnectionInput(connection)).toBeNull();
+    expect(validateModelProviderConnectionInput({ ...connection, apiKey: "" })).toBe(
+      "apiKeyRequired",
+    );
+    expect(validateModelProviderConnectionInput({ ...connection, baseUrl: "file:///model" })).toBe(
+      "invalidBaseUrl",
+    );
+    const config = mergeModelProviderConnectionConfig({}, connection);
+    expect(config.models).toEqual({
+      mode: "merge",
+      providers: {
+        "azure-openai": {
+          baseUrl: "https://example.openai.azure.com/v1",
+          apiKey: connection.apiKey,
+          api: "openai-completions",
+          models: [],
+        },
+      },
+    });
+    expect(config).not.toHaveProperty("agents");
+  });
+
+  it("preserves model definitions, agent policies and sessions when updating only a connection", () => {
+    const existing = {
+      models: {
+        mode: "replace",
+        providers: {
+          "azure-openai": {
+            baseUrl: "https://old.example/v1",
+            apiKey: "old-key",
+            headers: { "X-Custom": "keep" },
+            models: [
+              { id: "model", name: "Custom", input: ["text", "image"], contextWindow: 12345 },
+            ],
+          },
+          other: { models: [{ id: "other" }] },
+        },
+      },
+      agents: {
+        defaults: { model: "other/other", modelPolicy: { allow: ["other/other"] } },
+        list: [{ id: "main", model: "azure-openai/model" }],
+      },
+      sessions: { keep: true },
+    };
+    const original = structuredClone(existing);
+    const config = mergeModelProviderConnectionConfig(existing, validInput);
+    expect(config.agents).toEqual(original.agents);
+    expect(config.sessions).toEqual(original.sessions);
+    expect(config.models).toEqual({
+      ...original.models,
+      providers: {
+        ...original.models.providers,
+        "azure-openai": {
+          ...original.models.providers["azure-openai"],
+          baseUrl: "https://example.openai.azure.com/v1",
+          apiKey: validInput.apiKey,
+          api: "openai-completions",
+        },
+      },
+    });
+    expect(existing).toEqual(original);
+  });
+
   it("defaults unknown capabilities to text-only", () => {
     expect(normalizeModelInput(undefined)).toEqual(["text"]);
     expect(normalizeModelInput(["image", "audio", "text"])).toEqual(["image", "text"]);

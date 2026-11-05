@@ -284,7 +284,7 @@
               </div>
             </el-form-item>
             <el-form-item
-              v-if="selectedManagedProvider"
+              v-if="selectedManagedProvider && !connectionOnly"
               :label="t('modelSetup.modelSelect')"
               data-testid="provider-model-field"
             >
@@ -389,6 +389,9 @@
               </p>
             </el-form-item>
           </template>
+          <p v-if="connectionOnly" class="field-hint" data-testid="provider-connection-hint">
+            {{ t("modelManager.connectionOnlyHint") }}
+          </p>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
         </el-form>
 
@@ -438,10 +441,12 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import {
   mergeModelProviderConfig,
-  matchesProviderConnection,
+  mergeModelProviderConnectionConfig,
   getDefaultAgentModelOverride,
   selectPrimaryModelConfig,
   validateModelProviderInput,
+  validateModelProviderConnectionInput,
+  type ModelProviderConnectionInput,
   type ModelApiFormat,
   type ModelProviderInput,
   type ModelProviderValidationError,
@@ -580,6 +585,7 @@ let submissionGeneration = 0;
 
 const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
 const selectedManagedProvider = computed(() => getManagedModelProvider(selectedFamilyId.value));
+const connectionOnly = computed(() => props.manageOnly && Boolean(selectedManagedProvider.value));
 const catalogModels = ref<string[]>([]);
 const catalogQuery = ref("");
 const catalogMoreExpanded = ref(false);
@@ -678,8 +684,10 @@ const formPrimaryDisabled = computed(
   () =>
     saving.value ||
     props.streaming ||
-    Boolean(selectedModelRestriction.value) ||
-    (Boolean(selectedManagedProvider.value) &&
+    (connectionOnly.value && (!apiKey.value.trim() || !baseUrl.value.trim())) ||
+    (!connectionOnly.value && Boolean(selectedModelRestriction.value)) ||
+    (!connectionOnly.value &&
+      Boolean(selectedManagedProvider.value) &&
       (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))) ||
     (isGitHubCopilot.value &&
       (githubAuthState.value === "checking" ||
@@ -690,6 +698,8 @@ const formPrimaryDisabled = computed(
           !selectedGitHubModel.value))),
 );
 const formPrimaryLabel = computed(() => {
+  if (connectionOnly.value)
+    return t(saving.value ? "modelManager.verifyingConnection" : "modelManager.saveConnection");
   if (props.manageOnly && (!isGitHubCopilot.value || githubAuthState.value === "authenticated"))
     return t(saving.value ? "modelManager.saving" : "settings.save");
   if (isGitHubCopilot.value) {
@@ -768,7 +778,7 @@ watch(
 );
 
 watch(
-  [() => props.modelValue, isKeyStep, selectedFamilyId, baseUrl, apiKey],
+  [() => props.modelValue, isKeyStep, selectedFamilyId, baseUrl, apiKey, connectionOnly],
   () => {
     ++catalogGeneration;
     clearTimeout(catalogTimer);
@@ -777,7 +787,13 @@ watch(
     catalogModels.value = [];
     catalogError.value = "";
     resetCatalogPicker();
-    if (props.modelValue && isKeyStep.value && selectedManagedProvider.value && apiKey.value.trim())
+    if (
+      props.modelValue &&
+      isKeyStep.value &&
+      selectedManagedProvider.value &&
+      !connectionOnly.value &&
+      apiKey.value.trim()
+    )
       catalogTimer = setTimeout(() => void loadProviderModels(), 600);
   },
   { immediate: true, flush: "sync" },
@@ -971,8 +987,61 @@ function validationMessage(error: ModelProviderValidationError): string {
   return t(keys[error]);
 }
 
+async function saveProviderConnection() {
+  const input: ModelProviderConnectionInput = {
+    providerKey: providerKey.value,
+    baseUrl: baseUrl.value,
+    apiKey: apiKey.value,
+    apiFormat: selectedApiFormat.value,
+  };
+  const validationError = validateModelProviderConnectionInput(input);
+  if (validationError) {
+    errorMsg.value = validationMessage(validationError);
+    return;
+  }
+  const generation = ++submissionGeneration;
+  const isCurrent = () => generation === submissionGeneration && props.modelValue;
+  saving.value = true;
+  errorMsg.value = "";
+  try {
+    const existing = await window.openclaw.config.read();
+    if (!isCurrent()) return;
+    const catalog = await providerCatalog.load({ baseUrl: input.baseUrl, apiKey: input.apiKey });
+    if (!isCurrent() || props.streaming) return;
+    if (!catalog.ok) {
+      errorMsg.value = t(`modelSetup.catalogError.${catalog.error}`);
+      return;
+    }
+    configMutationInProgress.value = true;
+    await window.openclaw.model.applyConfig({
+      config: mergeModelProviderConnectionConfig(existing || {}, input),
+      expectedConfig: existing,
+      action: "provider-save",
+      providerKey: input.providerKey.trim(),
+    });
+    if (!isCurrent()) return;
+    configMutationInProgress.value = false;
+    emit("update:modelValue", false);
+    emit("configured");
+  } catch (error) {
+    if (isCurrent())
+      errorMsg.value = t("modelSetup.saveFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+  } finally {
+    if (generation === submissionGeneration) {
+      saving.value = false;
+      configMutationInProgress.value = false;
+    }
+  }
+}
+
 async function saveAndStart() {
   if (saving.value || props.streaming) return;
+  if (connectionOnly.value) {
+    await saveProviderConnection();
+    return;
+  }
   if (selectedModelRestriction.value) {
     errorMsg.value = t(`modelSetup.incompatible.${selectedModelRestriction.value}`);
     return;
@@ -1052,38 +1121,27 @@ async function saveAndStart() {
       return;
     }
     configMutationInProgress.value = true;
-    if (
-      props.manageOnly &&
-      selectedManagedProvider.value &&
-      matchesProviderConnection(existing, verifiedInput)
-    ) {
+    const nextConfig = props.manageOnly
+      ? mergeModelProviderConfig(existing || {}, verifiedInput, {
+          select: false,
+          displayName:
+            props.currentProvider?.modelName === verifiedInput.modelName
+              ? (props.currentProvider.displayName ?? verifiedInput.modelName)
+              : verifiedInput.modelName,
+        })
+      : mergeModelProviderConfig(existing || {}, verifiedInput);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "provider-save",
+      providerKey: verifiedInput.providerKey.trim(),
+    });
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (selectedManagedProvider.value) {
       await window.openclaw.model.registerCatalogModel({
         modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
-        expectedConfig: existing,
+        expectedConfig: await window.openclaw.config.read(),
       });
-    } else {
-      const nextConfig = props.manageOnly
-        ? mergeModelProviderConfig(existing || {}, verifiedInput, {
-            select: false,
-            displayName:
-              props.currentProvider?.modelName === verifiedInput.modelName
-                ? (props.currentProvider.displayName ?? verifiedInput.modelName)
-                : verifiedInput.modelName,
-          })
-        : mergeModelProviderConfig(existing || {}, verifiedInput);
-      await window.openclaw.model.applyConfig({
-        config: nextConfig,
-        expectedConfig: existing,
-        action: "provider-save",
-        providerKey: verifiedInput.providerKey.trim(),
-      });
-      if (generation !== submissionGeneration || !props.modelValue) return;
-      if (selectedManagedProvider.value) {
-        await window.openclaw.model.registerCatalogModel({
-          modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
-          expectedConfig: await window.openclaw.config.read(),
-        });
-      }
     }
     if (generation !== submissionGeneration || !props.modelValue) return;
     configMutationInProgress.value = false;
