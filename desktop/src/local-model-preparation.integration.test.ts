@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -24,10 +24,14 @@ import { parseManagedModelPaths } from "./local-model-files";
 const entry = process.env.MICROCLAW_TEST_OPENCLAW_ENTRY;
 const cache = process.env.MICROCLAW_TEST_LOCAL_CACHE;
 const plugin = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_DIR;
+const archive = process.env.MICROCLAW_TEST_LOCAL_PLUGIN_ARCHIVE;
+// Official @openclaw/llama-cpp-provider@2026.10.5 npm artifact.
+const archiveIntegrity =
+  "sha512-684tJyhLoMFfS8JC/mlUXF0c5o4RM4mEwex9upr2PI4jowxvgdqKAeJKho3B23K0xZ6T2klI8QcQiUXXqeB6dA==";
 it.skipIf(!entry || !plugin)(
   cache
     ? "completes confirmed exact-model preparation using copied cached weights without inference or changing defaults"
-    : "installs a local provider fixture after Gateway startup and reaches download consent without restarting or downloading weights",
+    : "installs the verified official provider archive after Gateway startup and reaches download consent without restarting or downloading weights",
   async () => {
     const root = mkdtempSync(path.join(tmpdir(), "microclaw-complete-local-"));
     const configPath = path.join(root, "openclaw.json");
@@ -39,6 +43,15 @@ it.skipIf(!entry || !plugin)(
     let client: GatewayClient | undefined;
     let log = "";
     try {
+      if (!cache) {
+        if (!archive || !path.isAbsolute(archive)) {
+          throw new Error(
+            "First-install validation requires MICROCLAW_TEST_LOCAL_PLUGIN_ARCHIVE pointing to the official 2026.10.5 archive",
+          );
+        }
+        const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
+        expect(integrity, "Official provider archive integrity").toBe(archiveIntegrity);
+      }
       mkdirSync(isolatedCache, { recursive: true });
       const weightFiles = [model.cacheFile, "hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"];
       const originals = new Map(
@@ -146,7 +159,7 @@ it.skipIf(!entry || !plugin)(
         expect(existsSync(isolatedPlugin)).toBe(false);
         const installed = await gatewayRequest<{ ok: boolean }>(
           "plugins.install",
-          { source: "local", path: plugin! },
+          { source: "local", path: archive! },
           300_000,
         );
         expect(installed.ok).toBe(true);
