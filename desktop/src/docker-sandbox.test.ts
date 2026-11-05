@@ -159,6 +159,68 @@ describe("Docker sandbox configuration", () => {
     ).rejects.toThrow("Overlapping");
   });
 
+  it("rejects ancestors of protected roots before generating agent bindings", async () => {
+    const options = {
+      homeDir: "C:\\Users\\test",
+      stateDir: "D:\\Private\\MicroClaw\\state",
+      environment: {
+        SystemRoot: "C:\\Windows",
+        APPDATA: "C:\\Users\\test\\AppData\\Roaming",
+        LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
+        ProgramData: "D:\\ApplicationData\\shared",
+      },
+      realpath: async (value: string) => value,
+      stat: async () => ({ isDirectory: () => true }) as never,
+    };
+    for (const source of [
+      "C:\\Users",
+      "c:\\USERS\\test\\AppData\\",
+      "D:\\Private",
+      "D:\\ApplicationData",
+    ]) {
+      for (const access of ["ro", "rw"] as const) {
+        await expect(validateDockerBindingSource(source, access, options)).rejects.toThrow();
+        await expect(
+          addAgentDockerBinding(
+            { agents: { list: [{ id: "main" }] } },
+            "main",
+            source,
+            access,
+            options,
+          ),
+        ).rejects.toThrow();
+        await expect(
+          normalizeAgentDockerBindings(
+            {
+              agents: {
+                list: [
+                  { id: "main", sandbox: { docker: { binds: [`${source}:/old:${access}`] } } },
+                ],
+              },
+            },
+            options,
+          ),
+        ).rejects.toThrow();
+      }
+    }
+    await expect(
+      validateDockerBindingSource("C:\\Work\\Link", "ro", {
+        ...options,
+        realpath: async () => "C:\\Users",
+      }),
+    ).rejects.toThrow();
+    for (const source of [
+      "C:\\Users\\test\\Projects",
+      "D:\\PrivateArchive",
+      "D:\\Private\\Project",
+    ]) {
+      await expect(validateDockerBindingSource(source, "rw", options)).resolves.toMatchObject({
+        source,
+        access: "rw",
+      });
+    }
+  });
+
   it("saves desired config before recreation and reports recreation failures honestly", async () => {
     const events: string[] = [];
     const config = { agents: { defaults: { sandbox: REQUIRED_DOCKER_SANDBOX } } };

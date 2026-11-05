@@ -601,10 +601,10 @@ function lexicalBlockedReason(
     environment.LOCALAPPDATA,
     options.stateDir,
   ].filter((value): value is string => Boolean(value));
-  if (broadRoots.some((root) => pathContains(root, source))) {
+  if (broadRoots.some((root) => pathContains(root, source) || pathContains(source, root))) {
     return "System, application-data, user-home, and MicroClaw state roots cannot be exposed";
   }
-  if (homeDir && normalizePathForComparison(homeDir) === normalized) {
+  if (homeDir && pathContains(source, homeDir)) {
     return "The user home root cannot be exposed";
   }
 
