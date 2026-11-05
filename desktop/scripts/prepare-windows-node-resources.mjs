@@ -9,8 +9,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { publishPreparedResource } from "./publish-prepared-resource.mjs";
 
 const desktopDir = path.resolve(import.meta.dirname, "..");
 const repositoryDir = path.resolve(desktopDir, "..");
@@ -96,13 +97,14 @@ if (upstreamRevision.stdout.trim() !== expectedWindowsNodeRevision) {
   );
 }
 
-const resourceRoot = path.join(desktopDir, "resources", "windows-node");
+const destination = path.resolve(desktopDir, "resources", "windows-node");
+const resourceRoot = `${destination}.staging-${randomUUID()}`;
 const hostOutput = path.join(resourceRoot, "host");
 const canvasHostOutput = path.join(resourceRoot, "canvas-host");
 const patchedHostPrepOutput = path.join(resourceRoot, "host-prep");
 const mxcOutput = path.join(resourceRoot, "mxc");
-rmSync(resourceRoot, { recursive: true, force: true });
 mkdirSync(resourceRoot, { recursive: true });
+process.on("exit", () => rmSync(resourceRoot, { recursive: true, force: true }));
 
 const publish = spawnSync(
   "dotnet",
@@ -257,6 +259,8 @@ writeFileSync(
     2,
   ),
 );
+const publication = publishPreparedResource(resourceRoot, destination);
+console.log(`[windows-node] Resources ${publication}`);
 console.log(
   `[windows-node] staged ${rid}, MXC ${packageJson.version}, ` +
     `wxc-exec sha256=${actualWxcExecHash}, ` +

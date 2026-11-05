@@ -22,11 +22,12 @@ included below or can be found in the respective project repositories.
 
 ## OpenClaw llama.cpp exact-model setup adapter
 - Source: https://github.com/openclaw/openclaw
-- Package: @openclaw/llama-cpp-provider@2026.9.3
-- Use: source-hash-pinned in-memory model-chooser adaptation for Qwen3.5 4B and 9B.
+- Package: @openclaw/llama-cpp-provider@2026.10.5 (legacy 2026.9.3 adapter retained)
+- Use: source-hash-pinned in-memory exact-model and ModelScope preparation adaptation.
   Adds bounded Windows runtime-directory publication retries after transient locks,
   retaining directory-identity checks and official pre/post-install validation.
   Artifact verification, runtime management and config persistence remain OpenClaw-owned.
+  Adds one same-official-asset retry for a bad GitHub CDN response without changing checksums.
   Installed provider files are unchanged.
 
 ## OpenClaw Windows Node

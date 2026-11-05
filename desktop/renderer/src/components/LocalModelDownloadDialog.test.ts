@@ -65,7 +65,10 @@ beforeEach(() => {
     listener = callback;
     return () => {};
   });
-  api.model.local.prepare = vi.fn().mockResolvedValue({ ok: true, value: active });
+  api.model.local.prepare = vi.fn().mockImplementation(async () => ({
+    ok: true,
+    value: { ...active, phase: "starting", step: undefined, download: undefined },
+  }));
   api.model.local.answer = vi
     .fn()
     .mockResolvedValue({ ok: true, value: { ...active, phase: "starting", step: undefined } });
@@ -89,7 +92,12 @@ afterEach(() => {
 });
 async function open(sessionKey: string | null = "agent:main:one", selectedModelRef = modelRef) {
   const wrapper = mount(LocalModelDownloadDialog, {
-    props: { modelRef: selectedModelRef, sessionKey: sessionKey ?? undefined, streaming: false },
+    props: {
+      modelRef: selectedModelRef,
+      sessionKey: sessionKey ?? undefined,
+      streaming: false,
+      downloadRequested: true,
+    },
     global: { stubs: { teleport: true } },
   });
   wrappers.push(wrapper);
@@ -97,8 +105,8 @@ async function open(sessionKey: string | null = "agent:main:one", selectedModelR
   return wrapper;
 }
 describe("fixed local model first-use dialog", () => {
-  it.each(LOCAL_MODEL_PRESETS.slice(2))(
-    "shows exact $name and ModelScope consent before starting downloads",
+  it.each(LOCAL_MODEL_PRESETS)(
+    "requests the exact $name download with the original click, without another confirmation",
     async (model) => {
       active.modelRef = model.modelRef;
       active.download = {
@@ -110,7 +118,14 @@ describe("fixed local model first-use dialog", () => {
       const wrapper = await open("agent:main:one", model.modelRef);
       expect(wrapper.get("h2").text()).toBe(model.name.replace(/\s+(?:UD-)?Q4_K_M$/u, ""));
       expect(wrapper.get("h2").attributes("title")).toBe(model.name);
-      expect(wrapper.text()).toContain("ModelScope");
+      expect(window.openclaw.model.local.prepare).toHaveBeenCalledExactlyOnceWith({
+        authChoice: "llama-cpp",
+        modelRef: model.modelRef,
+        downloadConfirmed: true,
+        agentId: "main",
+      });
+      expect(wrapper.find('[data-testid="confirm-local-download"]').exists()).toBe(false);
+      expect(wrapper.find("progress").exists()).toBe(true);
       expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
       expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
     },
@@ -198,7 +213,7 @@ describe("fixed local model first-use dialog", () => {
     });
     const wrapper = await open();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="confirm-local-download"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="confirm-local-download"]').exists()).toBe(false);
     expect(window.openclaw.model.local.prepare).toHaveBeenCalledOnce();
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
   });
@@ -258,7 +273,11 @@ describe("fixed local model first-use dialog", () => {
     expect(document.body.querySelector(".download-overlay")).toBeNull();
   });
 
-  it("replaces consent with gateway progress after confirmation instead of offering download again", async () => {
+  it("keeps explicit confirmation for a recovered operation and replaces it with progress", async () => {
+    vi.mocked(window.openclaw.model.local.getOperation).mockResolvedValue({
+      ok: true,
+      value: active,
+    });
     const wrapper = await open();
     window.openclaw.model.local.answer = vi.fn(async () => {
       const progress = {
@@ -297,6 +316,10 @@ describe("fixed local model first-use dialog", () => {
   });
 
   it("shows immediate feedback and prevents duplicate confirmation while IPC is pending", async () => {
+    vi.mocked(window.openclaw.model.local.getOperation).mockResolvedValue({
+      ok: true,
+      value: active,
+    });
     let resolve!: (result: Awaited<ReturnType<typeof window.openclaw.model.local.answer>>) => void;
     window.openclaw.model.local.answer = vi.fn(
       () =>
@@ -387,24 +410,45 @@ describe("fixed local model first-use dialog", () => {
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
     expect(wrapper.emitted("selected")).toHaveLength(1);
   });
-  it("prepares the precise selected ID but waits for explicit download confirmation", async () => {
+  it("passes one scoped download approval without selecting the model before preparation", async () => {
     const wrapper = await open();
     expect(window.openclaw.model.local.prepare).toHaveBeenCalledWith({
       authChoice: "llama-cpp",
       modelRef,
+      downloadConfirmed: true,
       agentId: "main",
     });
-    expect(wrapper.text()).toContain("2.7 GB");
-    expect(wrapper.text()).toContain("Larger models need more memory");
+    expect(wrapper.find('[data-testid="confirm-local-download"]').exists()).toBe(false);
     expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
-    await wrapper.get('[data-testid="confirm-local-download"]').trigger("click");
-    expect(window.openclaw.model.local.answer).toHaveBeenCalledWith({
-      operationId: active.id,
-      stepId: "consent",
-      value: true,
-    });
     expect(window.openclaw.model.testConnection).not.toHaveBeenCalled();
+  });
+  it("does not approve or prepare a new download while a conversation is streaming", async () => {
+    const wrapper = mount(LocalModelDownloadDialog, {
+      props: { modelRef, sessionKey: "agent:main:one", streaming: true, downloadRequested: true },
+      global: { stubs: { teleport: true } },
+    });
+    wrappers.push(wrapper);
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(window.openclaw.model.local.prepare).not.toHaveBeenCalled();
+    expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
+  });
+  it("does not treat ordinary model selection as explicit download approval", async () => {
+    vi.mocked(window.openclaw.model.local.prepare).mockResolvedValue({ ok: true, value: active });
+    const wrapper = mount(LocalModelDownloadDialog, {
+      props: { modelRef, sessionKey: "agent:main:one" },
+      global: { stubs: { teleport: true } },
+    });
+    wrappers.push(wrapper);
+    await flushPromises();
+    expect(window.openclaw.model.local.prepare).toHaveBeenCalledExactlyOnceWith({
+      authChoice: "llama-cpp",
+      modelRef,
+      agentId: "main",
+    });
+    expect(wrapper.find('[data-testid="confirm-local-download"]').exists()).toBe(true);
+    expect(window.openclaw.model.local.answer).not.toHaveBeenCalled();
   });
   it("selects only the original conversation after exact preparation succeeds", async () => {
     const wrapper = await open();

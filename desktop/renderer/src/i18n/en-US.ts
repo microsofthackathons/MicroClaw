@@ -754,7 +754,7 @@ export default {
   "fixedLocal.execution": "Execution",
   "fixedLocal.cpuWarning":
     "Larger models need more memory and can be slow on CPU. 4B is the lightweight choice.",
-  "fixedLocal.downloadAndUse": "Download and select",
+  "fixedLocal.downloadAndUse": "Download",
   "fixedLocal.selecting": "Applying model selection...",
   "fixedLocal.confirming": "Starting the confirmed download...",
   "fixedLocal.confirmationExpired":
@@ -779,7 +779,7 @@ export default {
   "fixedLocal.lightweight": "Lightweight",
   "fixedLocal.prepareModel": "Prepare",
   "fixedLocal.connectedHint":
-    "The provider is connected. Select a model and confirm before downloading its weights from ModelScope.",
+    "The provider is connected. Click Download to download the selected model from ModelScope.",
   "modelManager.copilotHint": "Sign in with your GitHub Copilot account.",
   "modelManager.apiHint": "Manage the endpoint, credentials and saved models.",
   "modelManager.apiKeyHint": "Expand to get an API key and configure the connection.",
@@ -908,12 +908,13 @@ export default {
     "Resources are tight right now, so we cannot recommend a download. Close other apps and reopen this window.",
   "localCatalog.downloadSize": "{size} GB download",
   "localCatalog.minimumMemory": "At least {size} GB memory",
-  "localCatalog.downloadModel": "Download model",
+  "localCatalog.downloadModel": "Download",
   "localCatalog.otherModels": "Other models",
   "localCatalog.fit.memory": "Memory is tight; setup will need to check further",
   "localCatalog.fit.gpu-memory": "Available VRAM is tight; not recommended right now",
   "localCatalog.fit.acceleration": "Needs GPU acceleration; support has not been detected",
-  "localCatalog.estimateNote": "A resource estimate. Downloads need your confirmation.",
+  "localCatalog.estimateNote":
+    "Downloads from ModelScope include an embedding model (~0.3 GB) and any missing runtime (up to ~3.3 GB disk). Your current model stays selected until setup succeeds.",
   "localModel.downloadSize": "Model download",
   "localModel.downloadAmount": "About {size} GB",
   "localModel.runMode": "Run using",

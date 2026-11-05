@@ -130,7 +130,19 @@ describe("LocalModelCatalog", () => {
       "未检测到可用 NVIDIA 加速，按 CPU 估算",
     );
     expect(wrapper.get('[data-testid="recommended-local-model"]').text()).toContain("Qwen3.5 4B");
-    expect(wrapper.text()).toContain("下载前需你确认");
+    expect(wrapper.get(`[data-model-ref="${catalog[0].modelRef}"]`).text()).toBe("下载");
+    expect(wrapper.text()).toContain("约 0.3 GB 的嵌入模型");
+    expect(wrapper.text()).toContain("最多约 3.3 GB 磁盘");
     expect(wrapper.text()).toContain("需要 GPU 加速");
+  });
+
+  it("discloses the download source and dependencies before the one-click action", () => {
+    const wrapper = mount(LocalModelCatalog, { props: { catalog, hardware } });
+    expect(wrapper.get(`[data-model-ref="${catalog[0].modelRef}"]`).text()).toBe("Download");
+    expect(wrapper.text()).toContain("2.7 GB");
+    expect(wrapper.get(".estimate-note").text()).toContain("ModelScope");
+    expect(wrapper.get(".estimate-note").text()).toContain("embedding model (~0.3 GB)");
+    expect(wrapper.get(".estimate-note").text()).toContain("up to ~3.3 GB disk");
+    expect(wrapper.get(".estimate-note").text()).toContain("current model stays selected");
   });
 });

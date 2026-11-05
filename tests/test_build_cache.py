@@ -136,6 +136,15 @@ class BuildCacheTests(unittest.TestCase):
                 self.write(name, "new content")
                 self.assertNotEqual(build_cache.input_key(self.root, "native"), before)
 
+    def test_native_cache_does_not_require_bundled_llama_runtime(self):
+        _, outputs = build_cache.stage_paths(self.root, "native")
+        self.assertNotIn("desktop/resources/llama-cpp", outputs)
+        for directory in outputs:
+            self.write(f"{directory}/RUNTIME.json", "prepared runtime")
+        key = build_cache.input_key(self.root, "native")
+        build_cache.save(self.root, "native", key, outputs)
+        self.assertTrue(build_cache.probe(self.root, "native", key, outputs)["hit"])
+
     def test_native_generated_obj_and_bin_do_not_invalidate_native(self):
         before = build_cache.input_key(self.root, "native")
         self.write("windows-node-host/obj/generated.cs", "generated")
@@ -160,6 +169,12 @@ class BuildCacheTests(unittest.TestCase):
                 before = build_cache.input_key(self.root, "desktop")
                 self.write(name, "updated build input")
                 self.assertNotEqual(build_cache.input_key(self.root, "desktop"), before)
+
+    def test_unused_llama_bundle_does_not_invalidate_desktop_cache(self):
+        self.write("desktop/resources/llama-cpp/RUNTIME.json", "obsolete bundle")
+        before = build_cache.input_key(self.root, "desktop")
+        self.write("desktop/resources/llama-cpp/win32-x64/llama-server.exe", "unused binary")
+        self.assertEqual(build_cache.input_key(self.root, "desktop"), before)
 
     def test_desktop_outputs_do_not_feed_back_into_the_desktop_input_key(self):
         self.write("desktop/src/main.ts", "source")

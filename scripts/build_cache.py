@@ -101,7 +101,10 @@ def stage_paths(root, stage):
         return [
             (common + sources, (*SOURCE_EXCLUDES, "bin", "obj")),
             (resources, SOURCE_EXCLUDES),
-        ], ["desktop/resources/windows-node", "desktop/resources/openclaw-weixin"]
+        ], [
+            "desktop/resources/windows-node",
+            "desktop/resources/openclaw-weixin",
+        ]
     if stage == "desktop":
         return [
             (
@@ -111,6 +114,7 @@ def stage_paths(root, stage):
                     "desktop/dist",
                     "desktop/renderer/dist",
                     "desktop/release",
+                    "desktop/resources/llama-cpp",
                     "desktop/native/build",
                     "desktop/studio-backend",
                     "desktop/logs",
