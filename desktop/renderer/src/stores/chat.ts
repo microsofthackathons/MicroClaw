@@ -49,7 +49,6 @@ export interface ChatErrorInfo {
     | "network" // ECONNREFUSED / ENOTFOUND / timeout
     | "agent_initializing"
     | "response_delayed" // UI inactivity estimate, not a reported model/network failure
-    | "empty_response" // server responded but message was blank (often bad key/model)
     | "server_error" // 5xx
     | "aborted"
     | "generic";
@@ -1392,24 +1391,7 @@ export const useChatStore = defineStore("chat", () => {
       streamText.value = applyChatDelta(streamText.value, payload, legacyText);
       if (streamText.value.trim() && isInferredWaitError(lastError.value)) lastError.value = null;
     } else if (payload.state === "final") {
-      // Track whether the model actually produced any observable output.
-      // A silent "final" with no text + no tool calls usually indicates a
-      // provider-side problem (e.g. invalid API key returning an empty
-      // stream) — we surface that as a chat error so the user isn't left
-      // staring at a blank bubble.
-      // NOTE: only look at *this turn's* tool calls (streamToolCalls),
-      // not the accumulated completedToolCallsMap — that would make every
-      // turn after the first appear to "have activity" even when empty.
-      const hadToolActivity = streamToolCalls.value.length > 0;
-      const hadStreamText = streamText.value.trim().length > 0;
-      const finalMsgText = extractTextOnly(payload.message) ?? "";
-      const hadFinalText = finalMsgText.trim().length > 0;
-      if (
-        (hadStreamText || hadFinalText || hadToolActivity) &&
-        isInferredWaitError(lastError.value)
-      ) {
-        lastError.value = null;
-      }
+      if (isInferredWaitError(lastError.value)) lastError.value = null;
       // Save tool calls to the completed map, keyed by assistant group index.
       // Count existing assistant groups in messages to align with the grouping
       // logic in ChatView (which maps groupIndex → assistantIdx).
@@ -1475,13 +1457,6 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
       _updateLastPreview();
-      // Detect silent empty response: no streamed text, no final-message
-      // text, and no tool activity. This is the "blank bubble" symptom
-      // users hit when their model endpoint accepts the request but
-      // returns nothing (classic invalid API key / wrong model name).
-      if (!hadStreamText && !hadFinalText && !hadToolActivity) {
-        lastError.value = { code: "empty_response" };
-      }
       streamText.value = "";
       streamTextOffset.value = 0;
       _toolPhaseActive.value = false;

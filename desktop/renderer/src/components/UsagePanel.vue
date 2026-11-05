@@ -203,7 +203,7 @@ const agentName = computed(() => t("app.name"));
 const gatewayOffline = computed(() => !gateway.ready || gateway.status !== "running");
 const hasData = computed(() => !!data.value);
 // A model error is any chat-flow error that points at the model endpoint /
-// auth / quota / rate-limit / network. `aborted` and `empty_response` are
+// auth / quota / rate-limit / network. `aborted` requests are
 // not model-offline conditions.
 const chatModelError = computed(() => {
   const code = chatStore.lastError?.code;

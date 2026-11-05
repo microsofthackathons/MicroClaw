@@ -189,9 +189,6 @@ export default {
     "请求在到达模型前发生了网络错误。请检查网络连接，以及「模型设置」中的 Base URL。",
   "chat.error.server_error.title": "模型提供方返回服务器错误",
   "chat.error.server_error.hint": "提供方返回了 5xx 错误，通常是临时故障，请稍后重试。",
-  "chat.error.empty_response.title": "模型返回了空响应",
-  "chat.error.empty_response.hint":
-    "请求成功但没有返回任何内容。这通常意味着 API Key 无效、模型名称错误，或接口并不完全兼容。请检查「模型设置」。",
   "chat.error.aborted.title": "请求已中止",
   "chat.error.aborted.hint": "生成在完成前被停止。",
   "chat.error.generic.title": "对话请求失败",
