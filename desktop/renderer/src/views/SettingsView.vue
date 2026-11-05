@@ -1576,7 +1576,14 @@ const modelOptions = computed(() =>
   mergeLocalModelCatalog(
     providerCatalog.merge(customModels.value, providerCatalogInputs.value),
     localCatalog.value,
-  ),
+  ).filter((model) => {
+    if (model.providerKey !== "llama-cpp") return true;
+    const modelRef = getModelRef(model);
+    const fileStatus =
+      localCatalog.value.find((entry) => entry.modelRef === modelRef)?.fileStatus ??
+      localFileStatus.value.get(modelRef);
+    return fileStatus === "present" || fileStatus === "external";
+  }),
 );
 function modelOptionStatus(model: ConfiguredModel): string {
   const preset = localCatalog.value.find((entry) => entry.modelRef === getModelRef(model));
@@ -1587,20 +1594,7 @@ function modelOptionStatus(model: ConfiguredModel): string {
         : "fixedLocal.preparing",
     );
   }
-  const status = preset
-    ? t(
-        preset.fileStatus === "external"
-          ? "modelManager.external"
-          : preset.fileStatus === "present"
-            ? "modelManager.downloaded"
-            : preset.fileStatus === "unknown"
-              ? "localModel.filesUnknown"
-              : "fixedLocal.notDownloaded",
-      )
-    : localFileStatus.value.get(getModelRef(model)) === "missing"
-      ? t("localModel.filesMissing")
-      : "";
-  return status;
+  return preset?.fileStatus === "external" ? t("modelManager.external") : "";
 }
 let localSnapshotRevision = 0;
 const providerCards = computed(() => {

@@ -90,6 +90,12 @@ describe("SettingsView model integration", () => {
       return { modelRef };
     });
     api.model.session.select = vi.fn();
+    api.model.local.getSnapshot = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        models: [{ modelRef: "llama-cpp/saved", name: "Saved local", fileStatus: "present" }],
+      },
+    });
     api.model.local.getOperation = vi.fn().mockResolvedValue({ ok: true, value: null });
     api.model.local.onEvent = vi.fn((callback) => {
       listener = callback;
@@ -332,8 +338,80 @@ describe("SettingsView model integration", () => {
     expect(window.openclaw.model.session.select).not.toHaveBeenCalled();
   });
 
-  it("shows a connected local provider without weights and offers all four managed presets", async () => {
-    config = {};
+  it("only offers downloaded local models without download labels and updates after files are removed", async () => {
+    const fileStatuses = ["present", "not-downloaded", "missing", "unknown"] as const;
+    config.models.providers["llama-cpp"].models.push(
+      ...LOCAL_MODEL_PRESETS.slice(1).map((preset) => ({
+        id: preset.modelRef.slice("llama-cpp/".length),
+        name: preset.name,
+      })),
+    );
+    const original = structuredClone(config);
+    window.openclaw.model.local.getSnapshot = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        models: [{ modelRef: "llama-cpp/saved", name: "Saved local", fileStatus: "external" }],
+        catalog: LOCAL_MODEL_PRESETS.map((preset, index) => ({
+          ...preset,
+          configured: index !== 0,
+          fileStatus: fileStatuses[index],
+        })),
+      },
+    });
+    const { wrapper } = await open(true);
+    const picker = wrapper.getComponent(DefaultModelPicker);
+    await picker.get('[data-testid="default-model-picker"]').trigger("click");
+    await picker.get('[data-provider-group="llama-cpp"]').trigger("click");
+    expect(
+      picker
+        .findAll('[data-model-ref^="llama-cpp/"]')
+        .map((option) => option.attributes("data-model-ref")),
+    ).toEqual([LOCAL_MODEL_PRESETS[0].modelRef, "llama-cpp/saved"]);
+    const downloaded = picker.get(`[data-model-ref="${LOCAL_MODEL_PRESETS[0].modelRef}"]`);
+    expect(downloaded.find(".model-menu-state").exists()).toBe(false);
+    expect(picker.text()).not.toContain("Downloaded");
+    expect(picker.get('[data-model-ref="llama-cpp/saved"]').attributes("aria-checked")).toBe(
+      "true",
+    );
+    vi.mocked(window.openclaw.model.local.getSnapshot).mockResolvedValue({
+      ok: true,
+      value: {
+        models: [{ modelRef: "llama-cpp/saved", name: "Saved local", fileStatus: "missing" }],
+        catalog: LOCAL_MODEL_PRESETS.map((preset) => ({
+          ...preset,
+          configured: true,
+          fileStatus: "not-downloaded",
+        })),
+      },
+    });
+    window.dispatchEvent(new Event("focus"));
+    await flushPromises();
+    expect(picker.find('[data-provider-group="llama-cpp"]').exists()).toBe(false);
+    expect(picker.find('[data-provider-group="cloud"]').exists()).toBe(true);
+    expect(wrapper.find('[data-provider="llama-cpp"]').exists()).toBe(true);
+    expect(config).toEqual(original);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "unknown", undefined] as const)(
+    "hides configured local models without confirmed files (%s)",
+    async (fileStatus) => {
+      window.openclaw.model.local.getSnapshot = vi.fn().mockResolvedValue({
+        ok: true,
+        value: { models: [{ modelRef: "llama-cpp/saved", name: "Saved local", fileStatus }] },
+      });
+      const { wrapper } = await open(true);
+      const picker = wrapper.getComponent(DefaultModelPicker);
+      await picker.get('[data-testid="default-model-picker"]').trigger("click");
+      expect(picker.find('[data-provider-group="llama-cpp"]').exists()).toBe(false);
+      expect(picker.find('[data-provider-group="cloud"]').exists()).toBe(true);
+      expect(write).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps local downloads in provider management when no weights exist", async () => {
+    delete config.models.providers["llama-cpp"];
+    config.agents.defaults.model.primary = "cloud/remote";
     window.openclaw.model.local.getCapabilities = vi.fn().mockResolvedValue({
       ok: true,
       value: {
@@ -355,18 +433,33 @@ describe("SettingsView model integration", () => {
         })),
       },
     });
-    const { wrapper } = await open();
+    const { wrapper } = await open(true);
     expect(wrapper.get('[data-provider="llama-cpp"]').text()).toContain("Connected");
-    expect(
-      wrapper
-        .findAll("select.model-picker-select option")
-        .map((option) => option.attributes("value")),
-    ).toEqual(LOCAL_MODEL_PRESETS.map((model) => model.modelRef));
-    expect(LOCAL_MODEL_PRESETS).toHaveLength(4);
-    await wrapper.get("select.model-picker-select").setValue(LOCAL_MODEL_PRESETS[2].modelRef);
-    expect(wrapper.getComponent(LocalModelDownloadDialog).props("modelRef")).toBe(
-      LOCAL_MODEL_PRESETS[2].modelRef,
-    );
+    const picker = wrapper.getComponent(DefaultModelPicker);
+    await picker.get('[data-testid="default-model-picker"]').trigger("click");
+    expect(picker.find('[data-provider-group="llama-cpp"]').exists()).toBe(false);
+    expect(picker.find('[data-provider-group="cloud"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="add-local-model"]').trigger("click");
+    expect(wrapper.getComponent(LocalModelSetupDialog).props("inline")).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("hides the default selector when no cloud or downloaded local models exist", async () => {
+    config = {};
+    window.openclaw.model.local.getSnapshot = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        models: [],
+        catalog: LOCAL_MODEL_PRESETS.map((preset) => ({
+          ...preset,
+          configured: false,
+          fileStatus: "not-downloaded",
+        })),
+      },
+    });
+    const { wrapper } = await open(true);
+    expect(wrapper.findComponent(DefaultModelPicker).exists()).toBe(false);
+    expect(wrapper.find('[data-testid="add-local-model"]').exists()).toBe(true);
     expect(write).not.toHaveBeenCalled();
   });
 
