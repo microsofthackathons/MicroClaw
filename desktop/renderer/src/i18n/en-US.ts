@@ -196,9 +196,6 @@ export default {
   "chat.error.server_error.title": "Model provider returned a server error",
   "chat.error.server_error.hint":
     "The provider reported a 5xx error. This is usually temporary — try again in a moment.",
-  "chat.error.empty_response.title": "Model returned an empty response",
-  "chat.error.empty_response.hint":
-    "The request succeeded but no content came back. This often means the API key is invalid, the model name is wrong, or the endpoint is not fully compatible. Please verify your settings.",
   "chat.error.aborted.title": "Request was aborted",
   "chat.error.aborted.hint": "The generation was stopped before completing.",
   "chat.error.generic.title": "Chat request failed",

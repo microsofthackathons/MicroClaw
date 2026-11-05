@@ -1070,6 +1070,127 @@ describe("server-driven WeChat conversation busy state", () => {
   });
 });
 
+describe("Gateway terminal outcome authority", () => {
+  const key = "agent:main:main";
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockLoadHistory.mockReset().mockResolvedValue({ messages: [] });
+    mockSendMessage.mockReset().mockResolvedValue({ runId: "submitted-run" });
+    mockGetSettings.mockReset().mockResolvedValue({});
+  });
+
+  it("does not mistake a silent heartbeat after a completed reply for model failure", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    const messages = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "Hello! How can I help you today?" },
+    ];
+    mockLoadHistory.mockResolvedValue({ sessionKey: key, messages });
+    await store.loadHistory();
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "heartbeat-run",
+      state: "status",
+      lifecyclePhase: "start",
+    });
+    store.handleChatEvent({ sessionKey: key, runId: "heartbeat-run", state: "final" });
+
+    expect(store.lastError).toBeNull();
+    expect(store.streaming).toBe(false);
+    expect(store.messages).toEqual(messages);
+    await store.loadHistory();
+    expect(store.lastError).toBeNull();
+    expect(store.messages).toEqual(messages);
+  });
+
+  it.each([undefined, { role: "assistant", content: [] }])(
+    "accepts a successful final without displayable text: %j",
+    (message) => {
+      const store = useChatStore();
+      store.setMainSessionKey(key);
+      store.handleChatEvent({ sessionKey: key, runId: "silent-run", state: "status" });
+      store.handleChatEvent({ sessionKey: key, runId: "silent-run", state: "final", message });
+
+      expect(store.lastError).toBeNull();
+      expect(store.streaming).toBe(false);
+      expect(store.chatRunId).toBeNull();
+    },
+  );
+
+  it("also accepts silent success for a request submitted from this renderer", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    expect(await store.sendMessage("hello")).toBe(true);
+    store.handleChatEvent({ sessionKey: key, runId: "submitted-run", state: "final" });
+
+    expect(store.lastError).toBeNull();
+    expect(store.streaming).toBe(false);
+    expect(store.sending).toBe(false);
+  });
+
+  it("does not require text when the final message contains non-text content", () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    const message = {
+      role: "assistant",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "" } }],
+    };
+    store.handleChatEvent({ sessionKey: key, runId: "image-run", state: "final", message });
+
+    expect(store.lastError).toBeNull();
+    expect(store.messages).toContainEqual(message);
+  });
+
+  it.each([
+    { code: "response_delayed" as const, source: "watchdog" as const },
+    { code: "network" as const },
+  ])("retires an inferred waiting notice on silent success: %j", (notice) => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({ sessionKey: key, runId: "silent-run", state: "status" });
+    store.lastError = notice;
+    store.handleChatEvent({ sessionKey: key, runId: "silent-run", state: "final" });
+
+    expect(store.lastError).toBeNull();
+    expect(store.streaming).toBe(false);
+  });
+
+  it.each([
+    ["HTTP 401 Invalid API key", "unauthorized"],
+    ["ECONNREFUSED", "network"],
+    ["Model returned an empty response", "generic"],
+  ])("still surfaces the Gateway-reported failure: %s", (errorMessage, code) => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({ sessionKey: key, runId: "failed-run", state: "status" });
+    store.handleChatEvent({ sessionKey: key, runId: "failed-run", state: "error", errorMessage });
+
+    expect(store.lastError).toMatchObject({ code, raw: errorMessage });
+    expect(store.streaming).toBe(false);
+  });
+
+  it("does not erase a reported provider failure when a silent final arrives later", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey(key);
+    store.handleChatEvent({
+      sessionKey: key,
+      runId: "failed-run",
+      state: "status",
+      lifecyclePhase: "error",
+      errorMessage: "HTTP 401 Invalid API key",
+    });
+    store.handleChatEvent({ sessionKey: key, runId: "failed-run", state: "final" });
+    await store.loadHistory();
+
+    expect(store.lastError).toMatchObject({
+      code: "unauthorized",
+      raw: "HTTP 401 Invalid API key",
+    });
+  });
+});
+
 describe("classifyChatError", () => {
   it.each([
     ["HTTP 403 Forbidden", "provider_access", 403],
