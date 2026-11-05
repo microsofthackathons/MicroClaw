@@ -286,7 +286,7 @@
                       ? "settings.connected"
                       : provider.missing
                         ? "localModel.filesMissing"
-                        : provider.models.length
+                        : provider.models.length || provider.removable
                           ? "localModel.configured"
                           : "modelManager.notConfigured",
                   )
@@ -1632,7 +1632,21 @@ const editingFamily = computed(
 );
 const providerPrefill = computed(() => {
   const model = customModels.value.find((item) => getModelRef(item) === editingModelRef.value);
-  if (!model) return null;
+  if (!model) {
+    const providerKey = editingProviderKey.value;
+    const connection = providerCatalogInputs.value[providerKey];
+    const provider = getManagedModelProvider(providerKey);
+    return connection && provider
+      ? {
+          familyId: provider.id,
+          providerKey,
+          modelName: "",
+          baseUrl: connection.baseUrl,
+          apiKey: connection.apiKey,
+          apiFormat: provider.apiFormat,
+        }
+      : null;
+  }
   return {
     familyId: editingFamily.value,
     providerKey: model.providerKey,

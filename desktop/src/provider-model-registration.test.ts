@@ -79,6 +79,33 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("live provider model registration", () => {
+  it("registers the first model of a connection-only provider when selecting its default", async () => {
+    const setup = fixture();
+    setup.config().models.providers.qwen.models = [];
+    setup.config().agents.defaults.model.primary = "github-copilot/keep";
+    const original = structuredClone(setup.config());
+    await expect(
+      selectDefaultModel(
+        {
+          ...setup.deps,
+          prepareModel: (ref, expected) => registerProviderCatalogModel(setup.deps, ref, expected),
+        },
+        { modelRef: "qwen/live-one", expectedConfig: original },
+      ),
+    ).resolves.toEqual({ modelRef: "qwen/live-one" });
+    expect(setup.config().models.providers.qwen.models).toEqual([
+      { id: "live-one", name: "live-one", input: ["text"] },
+    ]);
+    expect(setup.config().agents.defaults.model.primary).toBe("qwen/live-one");
+    expect(setup.config().agents.defaults.modelPolicy).toEqual(
+      original.agents.defaults.modelPolicy,
+    );
+    expect(setup.config().agents.entries).toEqual(original.agents.entries);
+    expect(setup.request.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(
+      2,
+    );
+  });
+
   it("preserves an explicit revision-bound restart requirement without replaying registration", async () => {
     const f = fixture();
     const original = f.request.getMockImplementation()!;

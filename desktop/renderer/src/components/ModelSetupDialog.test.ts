@@ -234,7 +234,9 @@ describe("ModelSetupDialog", () => {
       expect(panel.find(".model-setup-close").exists()).toBe(false);
       expect(panel.element.firstElementChild?.classList.contains("model-key-form")).toBe(true);
       expect(panel.find('[data-testid="provider-key-field"]').exists()).toBe(true);
-      expect(panel.find('[data-testid="provider-model-field"]').exists()).toBe(true);
+      expect(panel.find('[data-testid="provider-model-field"]').exists()).toBe(false);
+      expect(panel.find('[data-testid="provider-connection-hint"]').exists()).toBe(true);
+      expect(panel.find("select").exists()).toBe(false);
       wrapper.unmount();
     },
   );
@@ -267,7 +269,7 @@ describe("ModelSetupDialog", () => {
     });
     const wrapper = mountDialog({
       inline: true,
-      manageOnly: true,
+      manageOnly: false,
       currentProvider: {
         familyId: "qwen",
         providerKey: "qwen",
@@ -319,7 +321,7 @@ describe("ModelSetupDialog", () => {
   });
 
   it.each([false, true])(
-    "does not restart or rewrite a connection when only its model changes (failure: %s)",
+    "verifies an existing connection without changing registered models or defaults (failure: %s)",
     async (fail) => {
       const baseUrl = MANAGED_MODEL_PROVIDERS[0].baseUrl;
       const config = {
@@ -336,8 +338,7 @@ describe("ModelSetupDialog", () => {
         agents: { defaults: { model: { primary: "qwen/qwen" } } },
       };
       read.mockResolvedValue(config);
-      if (fail)
-        registerCatalogModel.mockRejectedValueOnce(new Error("Catalog could not be applied"));
+      if (fail) discoverModels.mockResolvedValueOnce({ ok: false, error: "authentication" });
       const wrapper = mountDialog({
         inline: true,
         manageOnly: true,
@@ -352,22 +353,59 @@ describe("ModelSetupDialog", () => {
       });
       await vi.advanceTimersByTimeAsync(600);
       await flushPromises();
-      await wrapper.get("select").setValue("qwen3.7-plus");
+      expect(discoverModels).not.toHaveBeenCalled();
       await wrapper.get(".primary-action").trigger("click");
       await flushPromises();
-      expect(registerCatalogModel).toHaveBeenCalledWith({
-        modelRef: "qwen/qwen3.7-plus",
-        expectedConfig: config,
-      });
-      expect(write).not.toHaveBeenCalled();
+      expect(discoverModels).toHaveBeenCalledWith({ baseUrl, apiKey: "existing-key" });
+      expect(registerCatalogModel).not.toHaveBeenCalled();
       expect(restart).not.toHaveBeenCalled();
       if (fail) {
-        expect(wrapper.text()).toContain("Catalog could not be applied");
+        expect(write).not.toHaveBeenCalled();
+        expect(wrapper.text()).toContain("provider rejected the API key");
         expect(wrapper.emitted("configured")).toBeUndefined();
-      } else expect(wrapper.emitted("configured")).toHaveLength(1);
+      } else {
+        expect(write).toHaveBeenCalledWith(
+          { ...config, models: { ...config.models, mode: "merge" } },
+          config,
+        );
+        expect(wrapper.emitted("configured")).toHaveLength(1);
+      }
       wrapper.unmount();
     },
   );
+
+  it("waits for connection verification and ignores the result after closing", async () => {
+    const response = deferred<{ ok: true; models: string[] }>();
+    discoverModels.mockReturnValueOnce(response.promise);
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture-key");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("Verifying and saving...");
+    expect(write).not.toHaveBeenCalled();
+    await wrapper.setProps({ modelValue: false });
+    response.resolve({ ok: true, models: ["qwen3.7-plus"] });
+    await flushPromises();
+    expect(write).not.toHaveBeenCalled();
+    expect(wrapper.emitted("configured")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("keeps a failed connection save open without registering a model or changing defaults", async () => {
+    write.mockRejectedValueOnce(new Error("Configuration changed while editing"));
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "minimax" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture-key");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Configuration changed while editing");
+    expect(wrapper.emitted("configured")).toBeUndefined();
+    expect(registerCatalogModel).not.toHaveBeenCalled();
+    expect(testConnection).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
 
   it("edits a custom connection inline without inference or changing the default and preserves its ID", async () => {
     const config = {
@@ -511,17 +549,13 @@ describe("ModelSetupDialog", () => {
         initialFamily: provider.id,
       });
       await flushPromises();
-      const model = provider.models.find((item) => item.id !== provider.defaultModel)!;
       await wrapper.get('input[placeholder="sk-..."]').setValue("sk-test-fixture");
       await vi.advanceTimersByTimeAsync(600);
       await flushPromises();
-      if (provider.id === "qwen")
-        await wrapper.get('[data-testid="more-provider-models"]').trigger("click");
-      await wrapper.get("select").setValue(model.id);
+      expect(discoverModels).not.toHaveBeenCalled();
       await wrapper.get(".provider-api-key-link").trigger("click");
       await flushPromises();
       expect(openExternal).toHaveBeenCalledWith(provider.signupUrl);
-      expect((wrapper.get("select").element as HTMLSelectElement).value).toBe(model.id);
       expect((wrapper.get('input[placeholder="sk-..."]').element as HTMLInputElement).value).toBe(
         "sk-test-fixture",
       );
@@ -532,10 +566,11 @@ describe("ModelSetupDialog", () => {
       expect(write).toHaveBeenCalledOnce();
       const saved = write.mock.calls[0][0];
       expect(saved.models.providers[provider.id].baseUrl).toBe(provider.baseUrl);
-      expect(saved.models.providers[provider.id].models[0].id).toBe(model.id);
+      expect(saved.models.providers[provider.id].models).toEqual([]);
       expect(saved.models.providers.cloud).toEqual(before.models.providers.cloud);
       expect(saved.agents.defaults.model).toEqual(before.agents.defaults.model);
       expect(testConnection).not.toHaveBeenCalled();
+      expect(registerCatalogModel).not.toHaveBeenCalled();
       expect(restart).not.toHaveBeenCalled();
       expect(window.openclaw.config.write).not.toHaveBeenCalled();
       wrapper.unmount();
@@ -555,7 +590,7 @@ describe("ModelSetupDialog", () => {
 
   it("disables model selection until a key fetch returns live IDs", async () => {
     discoverModels.mockResolvedValue({ ok: true, models: ["qwen3.8-max"] });
-    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
+    const wrapper = mountDialog({ inline: true, initialFamily: "qwen" });
     await flushPromises();
     expect(wrapper.get("select").attributes("disabled")).toBeDefined();
     expect(wrapper.findAll("option")).toHaveLength(0);
@@ -577,11 +612,11 @@ describe("ModelSetupDialog", () => {
   });
 
   it.each(["qwen", "minimax"] as const)(
-    "places %s credentials before models with adjacent key and refresh actions",
+    "keeps %s onboarding model selection with adjacent key and refresh actions",
     async (provider) => {
       const response = deferred<{ ok: true; models: string[] }>();
       discoverModels.mockReturnValueOnce(response.promise);
-      const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: provider });
+      const wrapper = mountDialog({ inline: true, initialFamily: provider });
       await flushPromises();
       const fields = wrapper
         .findAll('[data-testid$="-field"]')
@@ -619,7 +654,7 @@ describe("ModelSetupDialog", () => {
     discoverModels
       .mockReturnValueOnce(first.promise)
       .mockResolvedValueOnce({ ok: false, error: "authentication" });
-    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
+    const wrapper = mountDialog({ inline: true, initialFamily: "qwen" });
     await flushPromises();
     await wrapper.get('input[placeholder="sk-..."]').setValue("old-key");
     await vi.advanceTimersByTimeAsync(600);
@@ -636,7 +671,7 @@ describe("ModelSetupDialog", () => {
   });
 
   it("invalidates a fetched catalog immediately when the key is cleared", async () => {
-    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "minimax" });
+    const wrapper = mountDialog({ inline: true, initialFamily: "minimax" });
     await flushPromises();
     await wrapper.get('input[placeholder="sk-..."]').setValue("fixture");
     await vi.advanceTimersByTimeAsync(600);

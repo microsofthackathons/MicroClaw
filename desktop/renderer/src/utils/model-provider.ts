@@ -9,11 +9,14 @@ export type ModelReasoningEffort =
   | "xhigh"
   | "adaptive";
 
-export interface ModelProviderInput {
+export interface ModelProviderConnectionInput {
   providerKey: string;
   baseUrl: string;
   apiKey: string;
   apiFormat: ModelApiFormat;
+}
+
+export interface ModelProviderInput extends ModelProviderConnectionInput {
   modelName: string;
   input?: ModelInputCapability[];
 }
@@ -93,14 +96,22 @@ export function validateModelProviderInput(
   input: ModelProviderInput,
   options: { requireApiKey?: boolean } = {},
 ): ModelProviderValidationError | null {
+  return (
+    validateModelProviderConnectionInput(input, options) ||
+    (input.modelName.trim() ? null : "modelNameRequired")
+  );
+}
+
+export function validateModelProviderConnectionInput(
+  input: ModelProviderConnectionInput,
+  options: { requireApiKey?: boolean } = {},
+): ModelProviderValidationError | null {
   const providerKey = input.providerKey.trim();
-  const modelName = input.modelName.trim();
   const baseUrl = input.baseUrl.trim();
   const apiKey = input.apiKey.trim();
 
   if (!providerKey) return "providerKeyRequired";
   if (!PROVIDER_KEY_PATTERN.test(providerKey)) return "invalidProviderKey";
-  if (!modelName) return "modelNameRequired";
   if (!baseUrl) return "baseUrlRequired";
   if (!isValidHttpUrl(baseUrl)) return "invalidBaseUrl";
   if (options.requireApiKey !== false && !apiKey) return "apiKeyRequired";
@@ -290,6 +301,33 @@ export function mergeModelProviderConfig(
     displayName: options.displayName ?? input.modelName,
     select: options.select ?? true,
   });
+}
+
+export function mergeModelProviderConnectionConfig(
+  existing: JsonObject,
+  input: ModelProviderConnectionInput,
+): JsonObject {
+  const models = asJsonObject(existing.models);
+  const providers = asJsonObject(models.providers);
+  const providerKey = input.providerKey.trim();
+  const provider = asJsonObject(providers[providerKey]);
+  return {
+    ...existing,
+    models: {
+      ...models,
+      mode: models.mode ?? "merge",
+      providers: {
+        ...providers,
+        [providerKey]: {
+          ...provider,
+          baseUrl: input.baseUrl.trim().replace(/\/+$/, ""),
+          apiKey: input.apiKey.trim(),
+          api: resolveApiValue(input.apiFormat),
+          models: Array.isArray(provider.models) ? provider.models : [],
+        },
+      },
+    },
+  };
 }
 
 export function updateModelProviderConfig(
