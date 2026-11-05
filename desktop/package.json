@@ -41,7 +41,7 @@
     "eslint-config-prettier": "^10.1.8",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.58.0",
-    "vitest": "^4.1.1"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@electron/asar": "^3.4.1",
