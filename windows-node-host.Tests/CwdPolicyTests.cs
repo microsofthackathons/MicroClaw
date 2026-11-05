@@ -524,7 +524,8 @@ public sealed class CwdPolicyTests : IDisposable
             string[]? commandOverride = null,
             bool isolatedScratch = false,
             bool? expectedRememberable = null,
-            bool expectUnmodifiedPayload = false)
+            bool expectUnmodifiedPayload = false,
+            bool expectInitialized = false)
         {
             var requestedCwd = isolatedScratch ? null : allowed;
             var input = JsonSerializer.SerializeToElement(new
@@ -547,6 +548,16 @@ public sealed class CwdPolicyTests : IDisposable
             {
                 Assert.Equal(DeclaredAccessParser.StripLeadingDeclarations(payload), argv[^1]);
                 Assert.False(plan.TryGetProperty("providerInitialization", out _));
+            }
+            if (expectInitialized)
+            {
+                var initialization = plan.GetProperty("providerInitialization");
+                Assert.Equal("cmd", initialization.GetProperty("form").GetString());
+                Assert.Equal(DeclaredAccessParser.StripLeadingDeclarations(payload),
+                    initialization.GetProperty("originalArgv")[4].GetString());
+                Assert.Equal(argv, initialization.GetProperty("finalArgv").EnumerateArray()
+                    .Select(value => value.GetString()!).ToArray());
+                Assert.Contains(PowerShellFilesystemScope.Initializer, argv[4]);
             }
             var commandText = plan.GetProperty("commandText").GetString()!;
             var declaredAccess = plan.GetProperty("declaredAccess").EnumerateArray()
@@ -673,6 +684,43 @@ public sealed class CwdPolicyTests : IDisposable
         Assert.True(declaredDelete.GetProperty("success").GetBoolean(), declaredDelete.GetRawText());
         Assert.False(File.Exists(declaredFile), "The declared agent command did not remove the file.");
 
+        foreach (var quoted in new[] { true, false })
+        {
+            var automaticFile = Path.Combine(allowed, $"automatic-{quoted}.txt");
+            var movedFile = Path.Combine(allowed, $"moved-{quoted}.txt");
+            var renamedFile = Path.Combine(allowed, $"renamed-{quoted}.txt");
+            await File.WriteAllTextAsync(automaticFile, "automatic", TestContext.Current.CancellationToken);
+            async Task Automatic(string operation)
+            {
+                var script = quoted ? $"\"{operation}\"" : operation;
+                var prefix = quoted ? "#" : "REM";
+                var payload =
+                    $"{prefix} [declare-access]rw:{allowed}[/declare-access]\r\npowershell -Command {script}";
+                var result = await Run(
+                    payload, true, ["cmd.exe", "/d", "/s", "/c", payload],
+                    isolatedScratch: true, expectedRememberable: false, expectInitialized: true);
+                Assert.True(result.GetProperty("success").GetBoolean(), result.GetRawText());
+                Assert.Equal("", result.GetProperty("stderr").GetString());
+            }
+            await Automatic($"Move-Item -Path '{automaticFile}' -Destination '{movedFile}' -ErrorAction Stop");
+            Assert.False(File.Exists(automaticFile));
+            Assert.True(File.Exists(movedFile));
+            await Automatic($"Rename-Item -LiteralPath '{movedFile}' -NewName '{Path.GetFileName(renamedFile)}'");
+            Assert.False(File.Exists(movedFile));
+            Assert.True(File.Exists(renamedFile));
+            await Automatic($"Remove-Item -LiteralPath '{renamedFile}' -Force");
+            Assert.False(File.Exists(renamedFile));
+            var directory = Directory.CreateDirectory(Path.Combine(allowed, $"automatic-dir-{quoted}")).FullName;
+            await File.WriteAllTextAsync(Path.Combine(directory, "child.txt"), "child", TestContext.Current.CancellationToken);
+            var movedDirectory = directory + "-moved";
+            await Automatic($"Move-Item -LiteralPath '{directory}' -Destination '{movedDirectory}'");
+            Assert.True(File.Exists(Path.Combine(movedDirectory, "child.txt")));
+            await Automatic($"Rename-Item -LiteralPath '{movedDirectory}' -NewName '{Path.GetFileName(directory)}'");
+            Assert.True(File.Exists(Path.Combine(directory, "child.txt")));
+            await Automatic($"Remove-Item -LiteralPath '{directory}' -Recurse -Force -ErrorAction Stop");
+            Assert.False(Directory.Exists(directory));
+        }
+
         var outsideLiteral = outsideFile.Replace("'", "''");
         var deniedInitializedDelete = await Run(
             AgentInitializedRemove(outsideFile), true, isolatedScratch: true,
@@ -779,6 +827,296 @@ public sealed class CwdPolicyTests : IDisposable
 
     public static bool NativeApprovalBridgeAvailable => NativeMxcAvailable &&
         !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MICROCLAW_NATIVE_APPROVAL_BRIDGE"));
+
+    [Theory]
+    [InlineData("Remove-Item -LiteralPath 'C:\\workspace\\file.txt' -Force -ErrorAction Stop", true)]
+    [InlineData("Remove-Item -Path 'C:\\workspace\\folder' -Recurse -Force", false)]
+    [InlineData("Move-Item -Path 'C:\\workspace\\file.txt' -Destination 'C:\\workspace\\other file.txt'", true)]
+    [InlineData("Move-Item -LiteralPath 'C:\\workspace\\file.txt' -Destination 'C:\\workspace\\other.txt' -Force", false)]
+    [InlineData("Rename-Item -LiteralPath 'C:\\workspace\\file.txt' -NewName 'renamed.txt'", true)]
+    [InlineData("Rename-Item -Path 'C:\\workspace\\folder' -NewName 'renamed folder'", false)]
+    public void PowerShellFilesystemScopePreparesStockCmdWithoutRewritingTheOperation(string operation, bool quoted)
+    {
+        var payload = "powershell -Command " + (quoted ? $"\"{operation}\"" : operation);
+        string[] argv = [Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", payload];
+        DeclaredAccess[] access = [new("rw", @"C:\workspace")];
+        var initialized = PowerShellFilesystemScope.Create(argv, access);
+        Assert.NotNull(initialized);
+        Assert.Equal("cmd", initialized.Form);
+        Assert.Equal(argv, initialized.OriginalArgv);
+        Assert.Equal(argv[..^1], initialized.FinalArgv.Take(4));
+        Assert.Equal("powershell -Command \"" + PowerShellFilesystemScope.Initializer + operation + "\"",
+            initialized.FinalArgv[^1]);
+        Assert.Null(PowerShellFilesystemScope.Create(argv, []));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("ro", @"C:\workspace")]));
+    }
+
+    [Theory]
+    [InlineData("remove", true)]
+    [InlineData("remove", false)]
+    [InlineData("move", true)]
+    [InlineData("move", false)]
+    [InlineData("rename", true)]
+    [InlineData("rename", false)]
+    public async Task PowerShellFilesystemScopePreparesBareCmdBeforeConsent(string kind, bool quoted)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "bare-cmd-grant")).FullName;
+        var source = Path.Combine(grant, "source.txt");
+        var destination = Path.Combine(grant, "destination.txt");
+        var operation = kind switch
+        {
+            "remove" => $"Remove-Item -Path '{source}' -Force",
+            "move" => $"Move-Item -Path '{source}' -Destination '{destination}' -ErrorAction Stop",
+            "rename" => $"Rename-Item -LiteralPath '{source}' -NewName 'destination.txt'",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+        var script = $"powershell -Command {(quoted ? $"\"{operation}\"" : operation)}";
+        var payload = $"# [declare-access]rw:{grant}[/declare-access]\n{script}";
+        using var store = new ExecApprovalsStore(Path.Combine(_root, "bare-cmd-consent"), NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var capability = Capability(Policy([new(grant, FolderAccess.ReadWrite)]), commandConsent: consent);
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare",
+            Args = JsonSerializer.SerializeToElement(new
+            {
+                command = new[] { "cmd.exe", "/d", "/s", "/c", payload },
+                cwd = grant, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            }),
+        }, TestContext.Current.CancellationToken);
+
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        var initialization = plan.GetProperty("providerInitialization");
+        var argv = plan.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray();
+        Assert.Equal("cmd", initialization.GetProperty("form").GetString());
+        Assert.Equal(Path.Combine(Environment.SystemDirectory, "cmd.exe"), argv[0], ignoreCase: true);
+        Assert.Equal(argv[0], plan.GetProperty("executablePath").GetString(), ignoreCase: true);
+        Assert.Equal(argv[0], initialization.GetProperty("originalArgv")[0].GetString());
+        Assert.Equal(script, initialization.GetProperty("originalArgv")[4].GetString());
+        Assert.Equal(argv, initialization.GetProperty("finalArgv").EnumerateArray()
+            .Select(value => value.GetString()!).ToArray());
+        Assert.Equal($"powershell -Command \"{PowerShellFilesystemScope.Initializer}{operation}\"", argv[4]);
+        Assert.True(plan.GetProperty("commandConsent").GetProperty("required").GetBoolean());
+        Assert.False(plan.GetProperty("commandConsent").GetProperty("allowAlwaysAvailable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task PowerShellFilesystemScopePreparesAbsoluteSystemCmdBeforeConsent()
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "absolute-cmd-grant")).FullName;
+        var operation = $"Remove-Item -Path '{grant}\\source.txt' -Force";
+        var script = $"powershell -Command \"{operation}\"";
+        var payload = $"# [declare-access]rw:{grant}[/declare-access]\n{script}";
+        var executable = Path.Combine(Environment.SystemDirectory.ToLowerInvariant(), "CMD.EXE");
+        using var store = new ExecApprovalsStore(Path.Combine(_root, "absolute-cmd-consent"), NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var capability = Capability(Policy([new(grant, FolderAccess.ReadWrite)]), commandConsent: consent);
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare",
+            Args = JsonSerializer.SerializeToElement(new
+            {
+                command = new[] { executable, "/d", "/s", "/c", payload },
+                cwd = grant, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            }),
+        }, TestContext.Current.CancellationToken);
+
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        var initialization = plan.GetProperty("providerInitialization");
+        var argv = plan.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray();
+        Assert.Equal("cmd", initialization.GetProperty("form").GetString());
+        Assert.Equal(argv, initialization.GetProperty("finalArgv").EnumerateArray()
+            .Select(value => value.GetString()!).ToArray());
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task PowerShellFilesystemScopePreparesDirectAndNestedBeforeConsent(bool nested, bool bare)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "direct-powershell-grant")).FullName;
+        var operation = $"New-Item -ItemType Directory -Path '{grant}\\child' -Force";
+        var script = nested ? $"powershell -NoProfile -Command \"{operation}\"" : operation;
+        var payload = $"# [declare-access]rw:{grant}[/declare-access]\n{script}";
+        var executable = bare
+            ? "powershell.exe"
+            : Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        using var store = new ExecApprovalsStore(Path.Combine(_root, "direct-powershell-consent"), NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var capability = Capability(Policy([new(grant, FolderAccess.ReadWrite)]), commandConsent: consent);
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare",
+            Args = JsonSerializer.SerializeToElement(new
+            {
+                command = new[] { executable, "-NoProfile", "-Command", payload },
+                cwd = grant, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            }),
+        }, TestContext.Current.CancellationToken);
+
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        var initialization = plan.GetProperty("providerInitialization");
+        var argv = plan.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray();
+        Assert.Equal(nested ? "nested" : "direct", initialization.GetProperty("form").GetString());
+        Assert.Equal(argv, initialization.GetProperty("finalArgv").EnumerateArray()
+            .Select(value => value.GetString()!).ToArray());
+        Assert.Contains(PowerShellFilesystemScope.Initializer, argv[^1]);
+        Assert.True(plan.GetProperty("commandConsent").GetProperty("required").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("Get-Item -Path '{0}\\source.txt'")]
+    [InlineData("Copy-Item -Path '{0}\\source.txt' -Destination '{0}\\copy.txt'")]
+    [InlineData("New-Item -ItemType File -Path '{0}\\new.txt'")]
+    public async Task PowerShellFilesystemScopeLeavesOtherDirectCommandsUninitialized(string template)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "direct-powershell-other")).FullName;
+        var operation = string.Format(template, grant);
+        var payload = $"# [declare-access]rw:{grant}[/declare-access]\n{operation}";
+        using var store = new ExecApprovalsStore(Path.Combine(_root, "direct-other-consent"), NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var capability = Capability(Policy([new(grant, FolderAccess.ReadWrite)]), commandConsent: consent);
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare",
+            Args = JsonSerializer.SerializeToElement(new
+            {
+                command = new[] { "powershell.exe", "-NoProfile", "-Command", payload },
+                cwd = grant, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            }),
+        }, TestContext.Current.CancellationToken);
+
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        Assert.False(plan.TryGetProperty("providerInitialization", out _));
+        Assert.Equal(operation, plan.GetProperty("argv")[3].GetString());
+    }
+
+    [Fact]
+    public void PowerShellFilesystemScopeDoesNotInitializeUntrustedBareCmdResolution()
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "untrusted-cmd-grant")).FullName;
+        var payload = $"powershell -Command \"Remove-Item -Path '{grant}\\source.txt' -Force\"";
+        string[] argv = ["cmd.exe", "/d", "/s", "/c", payload];
+        DeclaredAccess[] access = [new("rw", grant)];
+        var request = new BundledSystemCapability.RunRequest(argv, null, 1000, "main", "test",
+            payload, null, access);
+        var policy = Policy([new(grant, FolderAccess.ReadWrite)]);
+        foreach (var resolved in new string?[] { null, "cmd.exe", Path.Combine(_root, "cmd.exe") })
+            Assert.Same(request, PowerShellFilesystemScope.Prepare(request, policy, resolved));
+    }
+
+    [Theory]
+    [InlineData("Get-Item -Path '{0}\\source.txt'")]
+    [InlineData("Copy-Item -Path '{0}\\source.txt' -Destination '{0}\\copy.txt'")]
+    [InlineData("New-Item -ItemType Directory -Path '{0}\\new-folder'")]
+    [InlineData("Remove-Item -Path '{0}\\source.txt'; Get-Date")]
+    public async Task PowerShellFilesystemScopeLeavesOtherBareCmdCommandsUninitialized(string template)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "bare-cmd-other")).FullName;
+        var operation = string.Format(template, grant);
+        var script = $"powershell -Command \"{operation}\"";
+        var payload = $"# [declare-access]rw:{grant}[/declare-access]\n{script}";
+        using var store = new ExecApprovalsStore(Path.Combine(_root, "bare-cmd-other-consent"), NullLogger.Instance);
+        var consent = new CommandConsent(store, NullLogger.Instance);
+        await consent.SetModeAsync(CommandConsent.AskWhenNeeded);
+        var capability = Capability(Policy([new(grant, FolderAccess.ReadWrite)]), commandConsent: consent);
+        var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
+        {
+            Command = "system.run.prepare",
+            Args = JsonSerializer.SerializeToElement(new
+            {
+                command = new[] { "cmd.exe", "/d", "/s", "/c", payload },
+                cwd = grant, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+            }),
+        }, TestContext.Current.CancellationToken);
+
+        Assert.True(prepared.Ok, prepared.Error);
+        var plan = JsonSerializer.SerializeToElement(prepared.Payload).GetProperty("plan");
+        Assert.False(plan.TryGetProperty("providerInitialization", out _));
+        Assert.Equal(script, plan.GetProperty("argv")[4].GetString());
+    }
+
+    [Theory]
+    [InlineData("powershell -Command \"Remove-Item -Path 'C:\\workspace\\*'\"")]
+    [InlineData("powershell -Command \"Remove-Item -Path 'C:\\workspace\\file'; Get-Date\"")]
+    [InlineData("powershell -Command \"Move-Item -Path 'C:\\workspace\\file' -Destination 'C:\\other\\file'\"")]
+    [InlineData("powershell -Command \"Move-Item -Path 'C:\\workspace\\file'\"")]
+    [InlineData("powershell -Command \"Rename-Item -Path 'C:\\workspace\\file' -NewName '..\\outside'\"")]
+    [InlineData("powershell -Command \"Rename-Item -Path 'C:\\workspace\\file' -NewName 'C:\\outside'\"")]
+    [InlineData("powershell -Command \"Remove-Item -Path 'C:\\workspace\\file'\" & echo changed")]
+    [InlineData("powershell -Command Remove-Item -Path \"C:\\workspace\\file\"")]
+    [InlineData("powershell -EncodedCommand ZmFrZQ==")]
+    [InlineData("powershell -File C:\\workspace\\remove.ps1")]
+    [InlineData("pwsh -Command \"Remove-Item -Path 'C:\\workspace\\file'\"")]
+    [InlineData("C:\\untrusted\\powershell.exe -Command \"Remove-Item -Path 'C:\\workspace\\file'\"")]
+    public void PowerShellFilesystemScopeLeavesUnsupportedCmdFormsUnchanged(string payload)
+    {
+        string[] argv = [Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", payload];
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", @"C:\workspace")]));
+    }
+
+    [Fact]
+    public void PowerShellFilesystemScopeValidatesCmdMetadataAndBothMoveGrants()
+    {
+        var source = Directory.CreateDirectory(Path.Combine(_root, "source")).FullName;
+        var destination = Directory.CreateDirectory(Path.Combine(_root, "destination")).FullName;
+        var operation = $"Move-Item -Path '{source}\\file.txt' -Destination '{destination}\\file.txt' -ErrorAction Stop";
+        string[] argv = [Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c",
+            $"powershell.exe -NoProfile -Command \"{operation}\""];
+        DeclaredAccess[] access = [new("rw", source), new("rw", destination)];
+        var initialization = PowerShellFilesystemScope.Create(argv, access)!;
+        var policy = Policy([new(source, FolderAccess.ReadWrite), new(destination, FolderAccess.ReadWrite)]);
+        var preview = PowerShellFilesystemScope.Preview(access, initialization.FinalArgv[^1]);
+        var verified = PowerShellFilesystemScope.Validate(
+            JsonSerializer.SerializeToElement(initialization), initialization.FinalArgv, preview, policy);
+        Assert.Equal(initialization.FinalArgv, verified.Initialization.FinalArgv);
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", source), new("ro", destination)]));
+        Assert.Null(PowerShellFilesystemScope.Create(argv, [new("rw", destination)]));
+        var changed = initialization with { OriginalArgv = [.. argv[..^1], argv[^1].Replace("file.txt", "other.txt")] };
+        Assert.Throws<HostPolicyException>(() => PowerShellFilesystemScope.Validate(
+            JsonSerializer.SerializeToElement(changed), initialization.FinalArgv, preview, policy));
+        var request = new BundledSystemCapability.RunRequest(argv, null, 1000, "main", "test",
+            argv[^1], null, access);
+        Assert.Same(request, PowerShellFilesystemScope.Prepare(request, new HostPolicy
+        {
+            ApprovedRoots = policy.ApprovedRoots, DeniedRoots = [], Canvas = policy.Canvas,
+            WxcExecPath = policy.WxcExecPath, RequestedStrength = "off", EffectiveTier = "host",
+        }));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PowerShellFilesystemScopeChecksMoveDestinationEvenWhenSourceIsMissing(bool existingDestination)
+    {
+        var grant = Directory.CreateDirectory(Path.Combine(_root, "move-grant")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "move-outside")).FullName;
+        var destination = Path.Combine(grant, "destination");
+        var link = existingDestination ? Path.Combine(destination, "source") : destination;
+        if (existingDestination) Directory.CreateDirectory(destination);
+        CreateDirectoryReparsePoint(link, outside);
+        try
+        {
+            string[] argv = [Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c",
+                $"powershell -Command \"Move-Item -Path '{grant}\\source' -Destination '{destination}'\""];
+            DeclaredAccess[] access = [new("rw", grant)];
+            var initialization = PowerShellFilesystemScope.Create(argv, access)!;
+            var error = Assert.Throws<HostPolicyException>(() =>
+                PowerShellFilesystemScope.ValidateTarget(initialization, access));
+            Assert.Equal("powershell-initialization-target-reparse", error.Code);
+        }
+        finally { Directory.Delete(link); }
+    }
 
     [Theory]
     [InlineData(false)]
@@ -2404,7 +2742,7 @@ public sealed class CwdPolicyTests : IDisposable
         };
 
     private BundledSystemCapability Capability(HostPolicy policy, string uiLocale = "en-US",
-        string? policyFingerprint = null) =>
+        string? policyFingerprint = null, CommandConsent? commandConsent = null) =>
         new(
             policy,
             string.Empty,
@@ -2416,7 +2754,8 @@ public sealed class CwdPolicyTests : IDisposable
                 "unused-fingerprint"),
             uiLocale,
             isolationGuard: NoopIsolationGuard,
-            policyFingerprint: policyFingerprint);
+            policyFingerprint: policyFingerprint,
+            commandConsent: commandConsent);
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 

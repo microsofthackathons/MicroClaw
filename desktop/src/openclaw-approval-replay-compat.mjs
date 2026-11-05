@@ -1577,7 +1577,7 @@ export function normalizePowerShellProviderInitialization(value) {
   if (
     Object.keys(value).some((key) => !keys.includes(key)) ||
     value.contract !== "microclaw.powershell-filesystem-scope.v1" ||
-    (value.form !== "direct" && value.form !== "nested") ||
+    (value.form !== "direct" && value.form !== "nested" && value.form !== "cmd") ||
     typeof value.originalCommandPreview !== "string" ||
     !value.originalCommandPreview ||
     value.originalCommandPreview.length > 8192

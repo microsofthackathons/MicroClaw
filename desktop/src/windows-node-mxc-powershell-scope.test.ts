@@ -21,14 +21,16 @@ import { computeWindowsNodeMxcApprovalPlanSha256 } from "./openclaw-approval-rep
 const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
 const access = [{ access: "rw" as const, path: String.raw`C:\workspace` }];
 const operation = String.raw`Remove-Item -Path 'C:\workspace\folder' -Recurse -Force`;
-function original(nested: boolean) {
+const cmd = String.raw`C:\Windows\System32\cmd.exe`;
+function original(form: boolean | "cmd") {
+  if (form === "cmd") return [cmd, "/d", "/s", "/c", `powershell -Command "${operation}"`];
   return [
     executable,
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    nested ? `powershell -NoProfile -Command "${operation}"` : operation,
+    form ? `powershell -NoProfile -Command "${operation}"` : operation,
   ];
 }
 function preview(payload: string) {
@@ -95,12 +97,80 @@ describe("exact contained PowerShell prepared initialization", () => {
       ),
     ).toBeNull();
   });
-  it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR)(
-    "preserves initialization through the actual pinned builder/closed handler and exact phone consent",
-    () => {
+  it.each([
+    operation,
+    String.raw`Move-Item -LiteralPath 'C:\workspace\a.txt' -Destination 'C:\workspace\b.txt' -ErrorAction Stop`,
+    String.raw`Rename-Item -Path 'C:\workspace\a.txt' -NewName 'b.txt' -Force`,
+  ])("prepares quoted and simple unquoted stock CMD commands: %s", (script) => {
+    for (const quoted of [false, true]) {
+      const payload = `powershell -Command ${quoted ? `"${script}"` : script}`;
+      const argv = [cmd, "/d", "/s", "/c", payload];
+      const initialization = createPowerShellFilesystemInitialization(argv, cmd, access);
+      expect(initialization).toEqual({
+        contract: "microclaw.powershell-filesystem-scope.v1",
+        form: "cmd",
+        originalArgv: argv,
+        originalCommandPreview: preview(payload),
+        finalArgv: [
+          cmd,
+          "/d",
+          "/s",
+          "/c",
+          `powershell -Command "${POWERSHELL_FILESYSTEM_INITIALIZER}${script}"`,
+        ],
+      });
+      if (!initialization) throw new Error("Missing CMD initialization");
+      expect(
+        validatePowerShellFilesystemInitialization(
+          initialization,
+          initialization.finalArgv,
+          cmd,
+          access,
+          preview(initialization.finalArgv[4]),
+        ),
+      ).toEqual(initialization);
+      expect(createPowerShellFilesystemInitialization(argv, cmd, [])).toBeNull();
+      expect(
+        createPowerShellFilesystemInitialization(argv, cmd, [
+          { access: "ro", path: access[0].path },
+        ]),
+      ).toBeNull();
+      expect(
+        validatePowerShellFilesystemInitialization(
+          {
+            ...initialization,
+            originalArgv: [cmd, "/d", "/s", "/c", "powershell -Command Get-Date"],
+          },
+          initialization.finalArgv,
+          cmd,
+          access,
+          preview(initialization.finalArgv[4]),
+        ),
+      ).toBeNull();
+    }
+  });
+  it.each([
+    `powershell -Command "${operation}; Get-Date"`,
+    `powershell -Command "${operation}" & echo changed`,
+    String.raw`powershell -Command "Move-Item -Path 'C:\workspace\a' -Destination 'C:\other\b'"`,
+    String.raw`powershell -Command "Rename-Item -Path 'C:\workspace\a' -NewName '..\outside'"`,
+    String.raw`powershell -Command Remove-Item -Path "C:\workspace\a"`,
+    `powershell -File C:\\workspace\\script.ps1`,
+    `powershell -EncodedCommand ZmFrZQ==`,
+    `pwsh -Command "${operation}"`,
+    `C:\\untrusted\\powershell.exe -Command "${operation}"`,
+  ])("leaves unsupported CMD input unchanged: %s", (payload) => {
+    expect(
+      createPowerShellFilesystemInitialization([cmd, "/d", "/s", "/c", payload], cmd, access),
+    ).toBeNull();
+  });
+  it.skipIf(!process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR).each([true, "cmd"] as const)(
+    "preserves initialization through the pinned handler and exact phone consent (form=%s)",
+    (form) => {
+      const shell = form === "cmd" ? cmd : executable;
       const initialization = createPowerShellFilesystemInitialization(
-        original(true),
-        executable,
+        original(form),
+        shell,
         access,
       );
       if (!initialization) throw new Error("Supported nested operation rejected");
@@ -114,8 +184,8 @@ describe("exact contained PowerShell prepared initialization", () => {
         cwdBinding: "isolated-scratch:v1",
         agentId: "main",
         sessionKey: "agent:main:main",
-        executablePath: executable,
-        executableSha256: createHash("sha256").update(readFileSync(executable)).digest("hex"),
+        executablePath: shell,
+        executableSha256: createHash("sha256").update(readFileSync(shell)).digest("hex"),
         declaredAccess: access,
         providerInitialization: initialization,
       };
@@ -140,7 +210,10 @@ describe("exact contained PowerShell prepared initialization", () => {
           (entry: { kind: string }) => entry.kind === "trusted",
         );
         expect(rejected.request).toBeNull();
-        expect(rejected.response).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+        expect(rejected.response).toMatchObject({
+          ok: false,
+          error: { code: "INVALID_REQUEST" },
+        });
       }
       const envelope = { id: "prepared-initialization-test", request: captured.request };
       const approval = normalizeWindowsNodeMxcGatewayApproval(

@@ -301,7 +301,7 @@ describe("agent personas", () => {
     expect(soul).toContain("Preserve these notes.");
     expect(soul).toContain("## Windows Node command transport");
     expect(soul).toContain("## PowerShell command quoting");
-    expect(soul).toContain("## PowerShell deletion in MXC");
+    expect(soul).not.toContain("## PowerShell deletion in MXC");
     expect(soul).not.toContain("Legacy PowerShell examples.");
     expect(
       seedAgentPersonaWorkspaces(
@@ -351,7 +351,7 @@ My custom transport guidance.
       expect(soul).toContain("My custom folder guidance.");
       expect(soul).toContain("My custom transport guidance.");
       expect(soul).toContain("## PowerShell command quoting");
-      expect(soul).toContain("## PowerShell deletion in MXC");
+      expect(soul).not.toContain("## PowerShell deletion in MXC");
     }
   });
 

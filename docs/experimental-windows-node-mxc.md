@@ -509,8 +509,15 @@ additional permissions. The generic display does not change the host's execution
 guarantee that every possible Desktop approval can be represented safely on a phone.
 
 In verified Full (`base-container` / `appcontainer-bfs`) and Limited-DACL containment, the Windows host prepares a versioned public PowerShell filesystem scope
-for the closed literal directory-creation and removal forms above (direct Windows PowerShell or
-one literal nested Windows PowerShell). Windows PowerShell otherwise normalizes absolute paths
+for literal directory creation, removal, moves, and renames in direct Windows PowerShell or
+one literal nested Windows PowerShell. Literal `Remove-Item`, `Move-Item`, and `Rename-Item` also receive this
+initialization through the stock system `cmd.exe /d /s /c` carrier, including
+`powershell -Command` with a double-quoted or simple unquoted script. The bare `cmd.exe` carrier
+used by OpenClaw is resolved through normal command-consent preparation, and initialization is
+applied only when that resolves to the trusted system executable; consent is then prepared again
+for the final initialized argv. Existing direct/nested handling likewise binds its metadata to
+the consent-resolved PowerShell executable. Other carriers and unrelated commands are not rewritten.
+Windows PowerShell otherwise normalizes absolute paths
 against its default drive and can fail on ungranted ancestors even when the target has the approved
 RW rights. The scoped `MicroClawCwd:` PSDrive is rooted at the physical canonical or isolated
 working directory; logical `$PWD` becomes `MicroClawCwd:\`. The physical working directory,
@@ -521,8 +528,11 @@ identity capture and approval. Main independently regenerates them, and the proo
 Execution revalidates the prepared bytes and target, then launches those exact approved argv;
 it does not rewrite an approved command. Both phone and Desktop disclose the scoped initialization;
 the Desktop retains the complete executed command and metadata. Original output, errors and exit status are preserved;
-initialization failure exits 125 without executing the operation. Reparse targets are rejected.
-Arbitrary scripts, encoded/file/interactive/profile/relative forms and other unsupported commands
+initialization failure exits 125 without executing the operation. Move source and destination
+must both be covered by explicit RW declarations. Both paths, including the resulting child when
+moving into an existing directory, are checked for reparse points before approval and launch.
+Reparse targets are rejected.
+Arbitrary scripts, encoded/file/interactive/relative forms and unrecognized shell flags
 retain their existing behavior and approval rules; this is not a general PowerShell script rewrite.
 
 - `1` approves the single current delivered request once.
@@ -760,22 +770,29 @@ approval-driven changes. Once the main process accepts a decision for processing
 and its chat activity shows progress; final failure or expiry remains visible and is never retried
 automatically.
 
-For supported direct PowerShell operations with an explicit RW declaration, the exact prepared
+For supported PowerShell operations with explicit RW declarations, the exact prepared
 filesystem-provider initialization applies to Full as well as Limited containment. It uses a drive
 rooted at the contained CWD without granting access to drive roots or modifying host ACLs. Original
 and initialized command bytes remain bound to the approval proof; read-only, ungranted,
 reparse-point and unsupported-command restrictions are unchanged.
 
-The stock CMD-carried PowerShell path does not currently receive this initialization. In Full MXC,
-`Remove-Item` can consequently report access denied even within an RW grant. A literal file deletion
-through `[IO.File]::Delete` has succeeded through the stock carrier in an isolated test, while
-ungranted deletion remained denied; this is a different command and may require one-use approval.
-An agent can instead supply the scoped drive initialization as part of its own PowerShell script.
-An isolated Full MXC test verified that Windows Node kept this CMD-carried script unchanged,
-deleted an RW-granted file and rejected deletion outside the grants. The tested compound command
-required a one-use decision under Ask when needed. Agent workspace guidance includes this
-initialization for `Remove-Item` in MXC; it does not change the command after the agent submits it
-or grant additional folders.
+MicroClaw adds the initializer during native preparation, not through agent-authored shell setup.
+Generated workspace instructions no longer ask the agent to create a PSDrive; the previous exact
+generated section is removed during instruction migration while customized guidance is preserved.
+The stock CMD carrier remains intact. For a supported unquoted script, preparation adds the quotes
+needed to keep the initializer and original operation in the same PowerShell process. Only literal
+absolute source/destination paths, a literal rename filename, and the supported flags
+(`-Path`/`-LiteralPath`, `-Destination`, `-NewName`,
+`-Force`, removal-only `-Recurse`, and optional `-ErrorAction Stop`) are recognized. Dynamic scripts,
+wildcards, shell chains, encoded commands, and script files are not rewritten. Unsupported commands
+retain their normal execution errors rather than silently falling back to an unsandboxed operation.
+The final compound command may require one-use approval under Ask when needed. Off mode is unchanged.
+
+A native Full/base-container probe reproduced the provider-normalization failure for file and
+directory removal, movement, and renaming. The tested forms of `Copy-Item`, `New-Item`, content
+reads/writes, item enumeration/properties, path resolution, location changes, and ACL reads did not
+reproduce it. These other commands are not wrapped through CMD solely as a precaution; supported
+direct PowerShell directory creation retains its existing initialization.
 
 When Windows Node requires a decision, the normal route has one visible Gateway/MicroClaw prompt.
 It displays executable, exact argv, agent/session scope, canonical CWD, declared folder use, and

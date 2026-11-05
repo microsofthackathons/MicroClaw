@@ -3,7 +3,6 @@ import {
   updateWindowsNodeInstructions,
   WINDOWS_NODE_ACCESS_INSTRUCTIONS,
   WINDOWS_NODE_MEMORY_INSTRUCTIONS,
-  WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS,
   WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS,
   WINDOWS_NODE_SHELL_INSTRUCTIONS,
 } from "./windows-node-command-instructions";
@@ -61,7 +60,7 @@ to bypass this. MXC folder grants remain independent of command consent.
     expect(updated).toContain("Preserve my instructions.");
     expect(updated).not.toContain("inline PowerShell generally");
     expect(updated).toContain(WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS.trim());
-    expect(updated).toContain(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS.trim());
+    expect(updated).not.toContain("New-PSDrive");
     expect(updated.match(/## Windows Node command transport/g)).toHaveLength(1);
     expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
   });
@@ -92,17 +91,29 @@ to bypass this. MXC folder grants remain independent of command consent.
     );
   });
 
-  it("guides agents to initialize their own MXC deletion script without broadening access", () => {
-    expect(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS).toContain(
-      "include a scoped filesystem-drive setup in\nyour own PowerShell script",
+  it("removes the previous generated deletion workaround while preserving adjacent user notes", () => {
+    const previous =
+      "## PowerShell deletion in MXC\n\n" +
+      "When using Remove-Item in MXC mode, include a scoped filesystem-drive setup in\n" +
+      "your own PowerShell script before the deletion. This avoids a PowerShell provider\n" +
+      "initialization failure without changing the OpenClaw command transport. For a\n" +
+      "literal file, for example:\n\n" +
+      "```\nREM [declare-access]rw:C:\\work[/declare-access]\n" +
+      "powershell.exe -NoProfile -Command \"New-PSDrive -Name MicroClawCwd -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) -Scope Script -ErrorAction Stop | Out-Null; Set-Location -LiteralPath 'MicroClawCwd:\\' -ErrorAction Stop; Remove-Item -LiteralPath 'C:\\work\\notes.txt' -Force -ErrorAction Stop\"\n" +
+      "```\n\n" +
+      "Declare only the folder needed for the requested operation. Do not broaden\n" +
+      "folder grants or add recursive deletion unless the user requested it. Keep the\n" +
+      "script quotes and escape values correctly for CMD and PowerShell. This compound\n" +
+      "command may require one-use approval; do not alter it to bypass consent.\n";
+    const updated = updateWindowsNodeInstructions(
+      `# My agent\n\n${previous}\n## My notes\nKeep these.\n`,
+      legacy,
     );
-    expect(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS).toContain("New-PSDrive");
-    expect(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS).toContain("Remove-Item -LiteralPath");
-    expect(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS).toContain("-ErrorAction Stop");
-    expect(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS).toContain(
-      "Do not broaden\nfolder grants or add recursive deletion",
-    );
-    expect(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS).toContain("one-use approval");
+    expect(updated).toContain("## My notes\nKeep these.");
+    expect(updated).not.toContain("New-PSDrive");
+    expect(updated).not.toContain("## PowerShell deletion in MXC");
+    expect(WINDOWS_NODE_SHELL_INSTRUCTIONS).not.toContain("New-PSDrive");
+    expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
   });
 
   it("preserves customized deletion guidance and does not add a duplicate", () => {
@@ -110,7 +121,7 @@ to bypass this. MXC folder grants remain independent of command consent.
     const updated = updateWindowsNodeInstructions(source, legacy);
 
     expect(updated).toContain("My custom deletion instructions.");
-    expect(updated).not.toContain(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS.trim());
+    expect(updated).not.toContain("New-PSDrive");
     expect(updated.match(/## PowerShell deletion in MXC/g)).toHaveLength(1);
     expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
   });

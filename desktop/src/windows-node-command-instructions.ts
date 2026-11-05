@@ -59,7 +59,7 @@ Never sacrifice correctness or safety to make a command rememberable;
 Windows Node decides whether Allow always is available.
 `;
 
-export const WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS = `## PowerShell deletion in MXC
+const PREVIOUS_MXC_POWERSHELL_DELETE_INSTRUCTIONS = `## PowerShell deletion in MXC
 
 When using Remove-Item in MXC mode, include a scoped filesystem-drive setup in
 your own PowerShell script before the deletion. This avoids a PowerShell provider
@@ -79,8 +79,7 @@ command may require one-use approval; do not alter it to bypass consent.
 
 export const WINDOWS_NODE_SHELL_INSTRUCTIONS = `${WINDOWS_NODE_MEMORY_INSTRUCTIONS}
 ${WINDOWS_NODE_TRANSPORT_INSTRUCTIONS}
-${WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS}
-${WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS}`;
+${WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS}`;
 
 const WINDOWS_NODE_ACCESS_SECTION = `## Pre-declaring File System Access
 
@@ -135,7 +134,9 @@ const PREVIOUS_TRANSPORT_INSTRUCTIONS_SHORT_GRANT_COPY =
   );
 
 export function updateWindowsNodeInstructions(content: string, legacySection: string): string {
-  let updated = content;
+  let updated = content
+    .replace(`${PREVIOUS_MXC_POWERSHELL_DELETE_INSTRUCTIONS.trim()}\n\n`, "")
+    .replace(PREVIOUS_MXC_POWERSHELL_DELETE_INSTRUCTIONS.trim(), "");
   const legacy = legacySection.trim();
   if (legacy && updated.includes(legacy)) {
     const replacements = [WINDOWS_NODE_ACCESS_SECTION.trim()];
@@ -147,9 +148,6 @@ export function updateWindowsNodeInstructions(content: string, legacySection: st
     }
     if (!updated.includes("## PowerShell command quoting")) {
       replacements.push(WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS.trim());
-    }
-    if (!updated.includes("## PowerShell deletion in MXC")) {
-      replacements.push(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS.trim());
     }
     updated = updated.replace(legacy, replacements.join("\n\n"));
   }
@@ -176,9 +174,6 @@ export function updateWindowsNodeInstructions(content: string, legacySection: st
   }
   if (!updated.includes("## PowerShell command quoting")) {
     missing.push(WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS.trim());
-  }
-  if (!updated.includes("## PowerShell deletion in MXC")) {
-    missing.push(WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS.trim());
   }
   return missing.length ? `${updated.trimEnd()}\n\n${missing.join("\n\n")}\n` : updated;
 }

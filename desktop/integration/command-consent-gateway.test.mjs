@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { BundledWindowsNodeHost } from "../src/bundled-windows-node-host";
 import { GatewayClient } from "../src/gateway-client";
-import { WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS } from "../src/windows-node-command-instructions";
+import { createPowerShellFilesystemInitialization } from "../src/windows-node-mxc-powershell-scope";
 import {
   WINDOWS_NODE_COMMAND_CONSENT_COMMANDS,
   WINDOWS_NODE_MXC_NODE_COMMANDS,
@@ -238,14 +238,13 @@ describe.skipIf(
         }),
       ]);
       await host.setActivationLease("active", 120_000);
-      async function prepare(payload, sessionKey, expectedPayload = payload) {
-        const command = [
-          path.join(process.env.SystemRoot, "System32", "cmd.exe"),
-          "/d",
-          "/s",
-          "/c",
-          payload,
-        ];
+      async function prepare(
+        payload,
+        sessionKey,
+        expectedPayload = payload,
+        initialization = null,
+      ) {
+        const command = ["cmd.exe", "/d", "/s", "/c", payload];
         const prepared = await client.request("node.invoke", {
           nodeId,
           command: "system.run.prepare",
@@ -254,7 +253,17 @@ describe.skipIf(
           idempotencyKey: randomUUID(),
         });
         const plan = prepared.payload.plan;
-        expect(plan.argv).toEqual([...command.slice(0, -1), expectedPayload]);
+        expect(plan.argv[0].toLowerCase()).toBe(
+          path.join(process.env.SystemRoot, "System32", "cmd.exe").toLowerCase(),
+        );
+        expect(plan.argv.slice(1)).toEqual([...command.slice(1, -1), expectedPayload]);
+        if (initialization) {
+          expect(plan.providerInitialization).toEqual({
+            ...initialization,
+            originalArgv: [plan.argv[0], ...initialization.originalArgv.slice(1)],
+            finalArgv: [plan.argv[0], ...initialization.finalArgv.slice(1)],
+          });
+        }
         return plan;
       }
 
@@ -326,25 +335,56 @@ describe.skipIf(
 
       if (contained) {
         const workspace = path.join(root, "workspace");
-        const target = path.join(workspace, "notes.txt");
-        writeFileSync(target, "isolated deletion fixture");
-        const example = WINDOWS_NODE_MXC_POWERSHELL_DELETE_INSTRUCTIONS.match(
-          /```\r?\n([\s\S]*?)\r?\n```/,
-        )?.[1];
-        if (!example) throw new Error("MXC deletion guidance has no command example");
-        const payload = example
-          .replaceAll("C:\\work\\notes.txt", target)
-          .replaceAll("C:\\work", workspace);
-        const executable = payload.slice(payload.indexOf("\n") + 1);
-        const deletion = await prepare(payload, sessionKey, executable);
-        expect(deletion.commandConsent).toEqual({
-          required: true,
-          allowAlwaysAvailable: false,
-        });
-        expect(deletion.providerInitialization).toBeUndefined();
-        const deleted = await approveAndRun(deletion, sessionKey);
-        expect(deleted.result.payload).toMatchObject({ success: true, exitCode: 0 });
-        expect(existsSync(target)).toBe(false);
+        for (const quoted of [true, false]) {
+          const target = path.join(workspace, `notes-${quoted}.txt`);
+          const moved = path.join(workspace, `moved-${quoted}.txt`);
+          const renamed = path.join(workspace, `renamed-${quoted}.txt`);
+          writeFileSync(target, "isolated deletion fixture");
+          for (const operation of [
+            `Move-Item -LiteralPath '${target}' -Destination '${moved}' -ErrorAction Stop`,
+            `Rename-Item -LiteralPath '${moved}' -NewName 'renamed-${quoted}.txt'`,
+            `Remove-Item -LiteralPath '${renamed}' -Force`,
+          ]) {
+            const executable = `powershell -Command ${quoted ? `"${operation}"` : operation}`;
+            const cmd = path.join(process.env.SystemRoot, "System32", "cmd.exe");
+            const initialization = createPowerShellFilesystemInitialization(
+              [cmd, "/d", "/s", "/c", executable],
+              cmd,
+              [{ access: "rw", path: workspace }],
+            );
+            if (!initialization) throw new Error("Expected automatic CMD provider initialization");
+            const prefix = quoted ? "#" : "REM";
+            const payload = `${prefix} [declare-access]rw:${workspace}[/declare-access]\n${executable}`;
+            const prepared = await prepare(
+              payload,
+              sessionKey,
+              initialization.finalArgv[4],
+              initialization,
+            );
+            expect(prepared.commandConsent).toEqual({
+              required: true,
+              allowAlwaysAvailable: false,
+            });
+            const executed = await approveAndRun(prepared, sessionKey);
+            expect(executed.result.payload).toMatchObject({ success: true, exitCode: 0 });
+          }
+          expect(existsSync(target)).toBe(false);
+          expect(existsSync(moved)).toBe(false);
+          expect(existsSync(renamed)).toBe(false);
+        }
+        for (const operation of [
+          `Get-Item -Path '${workspace}\\missing.txt'`,
+          `Copy-Item -Path '${workspace}\\missing.txt' -Destination '${workspace}\\copy.txt'`,
+          `New-Item -ItemType Directory -Path '${workspace}\\new-folder'`,
+        ]) {
+          const script = `powershell -Command "${operation}"`;
+          const prepared = await prepare(
+            `# [declare-access]rw:${workspace}[/declare-access]\n${script}`,
+            sessionKey,
+            script,
+          );
+          expect(prepared.providerInitialization).toBeUndefined();
+        }
       }
 
       if (!contained) {
@@ -429,5 +469,5 @@ describe.skipIf(
       else process.env.USERPROFILE = previousProfile;
       rmSync(root, { recursive: true, force: true });
     }
-  }, 240_000);
+  }, 420_000);
 });

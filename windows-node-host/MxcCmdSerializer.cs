@@ -38,7 +38,7 @@ internal static class MxcCmdSerializer
         return result;
     }
 
-    private static bool IsSystemCmd(string executable) =>
+    internal static bool IsSystemCmd(string executable) =>
         new[]
         {
             Environment.GetFolderPath(Environment.SpecialFolder.System),
