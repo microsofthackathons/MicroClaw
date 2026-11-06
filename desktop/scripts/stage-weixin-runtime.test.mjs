@@ -548,6 +548,18 @@ test("prepared package resource is provenance-pinned and excludes a nested OpenC
   assert.equal(manifest.packageVersion, "2.4.6");
   assert.equal(manifest.sdkCompatibility, "2026.10.5");
   assert.ok(manifest.files.length > 0);
+  for (const relative of ["src/monitor/monitor.ts", "dist/src/monitor/monitor.js"]) {
+    const packaged = fs.readFileSync(path.join(destination, relative));
+    assert.deepEqual(
+      packaged,
+      fs.readFileSync(path.join(stageDir, relative)),
+      `Packaged ${relative} must include the current repository patches`,
+    );
+    assert.equal(
+      manifest.files.find((file) => file.path === relative)?.sha256,
+      createHash("sha256").update(packaged).digest("hex"),
+    );
+  }
   assert.ok(manifest.requiredOpenClawExports.includes("./plugin-sdk/command-auth-native"));
   assert.ok(!manifest.requiredOpenClawExports.includes("./plugin-sdk/infra-runtime"));
   assert.equal(fs.existsSync(path.join(destination, "node_modules", "openclaw")), false);

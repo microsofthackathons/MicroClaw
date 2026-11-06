@@ -251,7 +251,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           aLog.info("remote approval: consumed system reply before agent dispatch");
           continue;
         }
-        dispatchTail = dispatchTail
+        const dispatch = Promise.resolve()
           .then(async () => {
             if (replayRequired) return;
             const fromUserId = full.from_user_id ?? "";
@@ -271,6 +271,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             getUpdatesBuf = lastPersistedUpdatesBuf;
             errLog(`weixin message dispatch failed: ${String(error)}`);
           });
+        dispatchTail = Promise.all([dispatchTail, dispatch]).then(() => {});
       }
       if (responseUpdatesBuf) {
         dispatchTail = dispatchTail
