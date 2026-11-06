@@ -489,6 +489,7 @@ export function reconcileConfiguredAgentOwnedSkills(
   stateDirectory: string,
   bundleRoot: string,
   trust: AgentOwnedSkillTrust = {},
+  options: { deferRemovals?: boolean } = {},
 ): AgentOwnedSkillReconciliation {
   const installs: AgentOwnedSkillInstall[] = [];
   const removals: AgentOwnedSkillRemoval[] = [];
@@ -506,15 +507,17 @@ export function reconcileConfiguredAgentOwnedSkills(
         );
         configChanged = ensureAgentOwnedSkillsDefaultEnabled(config, agent.id) || configChanged;
       } else {
-        removals.push(
-          ...prepareUnusedAgentOwnedSkillRemoval(
-            config,
-            agent.id,
-            stateDirectory,
-            bundleRoot,
-            trust,
-          ),
-        );
+        if (!options.deferRemovals) {
+          removals.push(
+            ...prepareUnusedAgentOwnedSkillRemoval(
+              config,
+              agent.id,
+              stateDirectory,
+              bundleRoot,
+              trust,
+            ),
+          );
+        }
         configChanged = disableUnreferencedAgentOwnedSkills(config, agent.id) || configChanged;
       }
     }

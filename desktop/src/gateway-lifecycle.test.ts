@@ -82,7 +82,7 @@ describe("Gateway startup convergence", () => {
     expect(gracefulStop).not.toContain("timeoutMs: 10_000,\n      forceTimeoutMs:");
     const restart = main.slice(
       main.indexOf("async function restartManagedGateway("),
-      main.indexOf("async function restartManagedGatewayAndRequireReady("),
+      main.indexOf("function isManagedGatewayProcessAlive("),
     );
     expect(restart).toContain("() => stopGatewayProcessGracefully(reason)");
     const securityStop = main.slice(
@@ -174,7 +174,7 @@ describe("hardRestartGateway", () => {
     const main = readFileSync(path.join(__dirname, "main.ts"), "utf8");
     const restart = main.slice(
       main.indexOf("async function restartManagedGateway("),
-      main.indexOf("async function restartManagedGatewayAndRequireReady("),
+      main.indexOf("function isManagedGatewayProcessAlive("),
     );
     const notification = restart.indexOf(
       'sendToWindow(mainWindow, "gateway:ws-disconnected", reason)',

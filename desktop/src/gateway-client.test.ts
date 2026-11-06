@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   extractMainSessionKey,
   buildSessionTitlePrompt,
@@ -9,8 +9,15 @@ import {
   normalizeGatewayChannelsStatus,
   shouldHandleGatewayDisconnect,
   type GatewayEventFrame,
+  type GatewayResponseFrame,
 } from "./gateway-client";
-import { AGENT_WARMUP_SESSION_KEY, WS_REQUEST_TIMEOUT_MS } from "./constants";
+import {
+  AGENT_WARMUP_SESSION_KEY,
+  WS_RECONNECT_INITIAL_MS,
+  WS_RECONNECT_MAX_MS,
+  WS_RECONNECT_MULTIPLIER,
+  WS_REQUEST_TIMEOUT_MS,
+} from "./constants";
 import { GatewaySessionObserver } from "./gateway-session-observer";
 
 describe("GatewayClient agent roster", () => {
@@ -248,6 +255,162 @@ describe("GatewayClient approval capability", () => {
       );
     },
   );
+});
+
+describe("GatewayClient handshake recovery", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function createHandshakeClient() {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const send = vi.fn();
+    const connect = vi.fn();
+    const close = vi.fn(() => client["scheduleReconnect"]());
+    const onAuthError = vi.fn();
+    Object.assign(client, {
+      opts: { port: 18789, token: "test-token", onAuthError },
+      sessionObserver: new GatewaySessionObserver(vi.fn()),
+      pending: new Map(),
+      sessionTitleWaiters: new Map(),
+      closed: false,
+      backoffMs: WS_RECONNECT_INITIAL_MS,
+      connectSent: false,
+      connectTimer: null,
+      connectNonce: "test-nonce",
+      connect,
+      deviceIdentity: {
+        deviceId: "test-device",
+        publicKey: "test-public-key",
+        privateKey: Buffer.alloc(32, 1).toString("base64url"),
+      },
+      ws: { readyState: 1, send, close },
+    });
+    const rejectHandshake = async (error: NonNullable<GatewayResponseFrame["error"]>) => {
+      client["sendConnect"]();
+      const request = JSON.parse(send.mock.calls[0][0]);
+      client["handleMessage"](JSON.stringify({ type: "res", id: request.id, ok: false, error }));
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    return { client, connect, close, onAuthError, send, rejectHandshake };
+  }
+
+  it.each([
+    {
+      code: "INVALID_REQUEST",
+      message: "unauthorized: too many failed authentication attempts (retry later)",
+      details: { code: "AUTH_RATE_LIMITED", authReason: "rate_limited" },
+    },
+    { code: "INVALID_REQUEST", message: "Try later", details: { code: "AUTH_RATE_LIMITED" } },
+    { code: "INVALID_REQUEST", message: "Try later", details: { authReason: "rate_limited" } },
+    { code: "AUTH_RATE_LIMITED", message: "Try later" },
+    { code: "INVALID_REQUEST", message: "unauthorized: rate limited" },
+    {
+      code: "INVALID_REQUEST",
+      message: "unauthorized: too many failed authentication attempts (retry later)",
+    },
+  ])("honors the auth cooldown without requesting a Gateway restart: %j", async (error) => {
+    const { client, connect, close, onAuthError, rejectHandshake } = createHandshakeClient();
+
+    await rejectHandshake({ ...error, retryAfterMs: 60_000 });
+
+    expect(onAuthError).not.toHaveBeenCalled();
+    expect(client["closed"]).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(connect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("caps excessive cooldowns without overflowing the reconnect timer", async () => {
+    const { connect, onAuthError, rejectHandshake } = createHandshakeClient();
+    await rejectHandshake({
+      code: "AUTH_RATE_LIMITED",
+      message: "Try later",
+      retryAfterMs: 2_147_483_648,
+    });
+
+    expect(onAuthError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_147_483_646);
+    expect(connect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("resets the reconnect backoff after a successful retry", async () => {
+    const { client, connect, send, rejectHandshake } = createHandshakeClient();
+    await rejectHandshake({
+      code: "AUTH_RATE_LIMITED",
+      message: "Try later",
+      retryAfterMs: 60_000,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(connect).toHaveBeenCalledOnce();
+
+    client["connectSent"] = false;
+    client["sendConnect"]();
+    const request = JSON.parse(send.mock.calls[1][0]);
+    client["handleMessage"](JSON.stringify({ type: "res", id: request.id, ok: true, payload: {} }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.connected).toBe(true);
+    expect(client["backoffMs"]).toBe(WS_RECONNECT_INITIAL_MS);
+  });
+
+  it.each([undefined, 0, -1, Number.POSITIVE_INFINITY])(
+    "uses a conservative delay when the auth cooldown is absent or invalid: %s",
+    async (retryAfterMs) => {
+      const { connect, onAuthError, rejectHandshake } = createHandshakeClient();
+      await rejectHandshake({
+        code: "INVALID_REQUEST",
+        message: "unauthorized: rate limited",
+        retryAfterMs,
+      });
+
+      expect(onAuthError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(WS_RECONNECT_MAX_MS - 1);
+      expect(connect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(connect).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["unauthorized: gateway token missing", "gateway token mismatch"])(
+    "still reports persistent authentication failures instead of reconnecting: %s",
+    async (message) => {
+      const { client, connect, close, onAuthError, rejectHandshake } = createHandshakeClient();
+      await rejectHandshake({ code: "INVALID_REQUEST", message });
+
+      expect(onAuthError).toHaveBeenCalledExactlyOnceWith(message);
+      expect(client["closed"]).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps exponential reconnect backoff for other transient handshake failures", async () => {
+    const { client, connect, onAuthError, rejectHandshake } = createHandshakeClient();
+    await rejectHandshake({ code: "UNAVAILABLE", message: "Gateway temporarily unavailable" });
+
+    expect(onAuthError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(WS_RECONNECT_INITIAL_MS - 1);
+    expect(connect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connect).toHaveBeenCalledOnce();
+    client["scheduleReconnect"]();
+    await vi.advanceTimersByTimeAsync(WS_RECONNECT_INITIAL_MS * WS_RECONNECT_MULTIPLIER - 1);
+    expect(connect).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("normalizeGatewayChannelsStatus", () => {

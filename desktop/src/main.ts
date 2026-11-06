@@ -43,7 +43,6 @@ import { resolveGatewayRestartReason } from "./gateway-restart-reason";
 import { registerSessionModelHandlers } from "./session-model-ipc";
 import type { LocalModelReceipt } from "./local-model-types";
 import {
-  applyAgentRosterReload,
   getGatewayProcessStdio,
   getGatewayStartupFailure,
   hardRestartGateway,
@@ -79,6 +78,12 @@ import {
 } from "./skill-integrity";
 import { migrateMxcOnlySecuritySettings } from "./mxc-only-settings";
 import { readAgentRoster } from "./agent-roster";
+import {
+  AgentRosterRollbackError,
+  applyAgentRosterConfig,
+  assertAgentRosterHotReloadAvailable,
+  waitForAgentRuntimeApplied,
+} from "./agent-roster-application";
 import {
   ensureWorkspaceParent,
   getWorkspaceParent,
@@ -142,7 +147,6 @@ import {
   MIN_WINDOW_WIDTH,
   MIN_WINDOW_HEIGHT,
   WEIXIN_LOGIN_TIMEOUT_MS,
-  WS_REQUEST_TIMEOUT_MS,
   SKILLS_STATUS_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
   UPDATE_MANIFEST_URL,
@@ -201,7 +205,6 @@ import {
   disableUnreferencedAgentOwnedSkills,
   installAgentOwnedSkills,
   inspectConfiguredAgentOwnedSkills,
-  prepareUnusedAgentOwnedSkillRemoval,
   reconcileConfiguredAgentOwnedSkills,
   resolveAgentOwnedSkillBundleRoot,
   rollbackAgentOwnedSkillInstalls,
@@ -4551,33 +4554,26 @@ function restoreAgentWorkspaces(snapshots: readonly WorkspaceSnapshot[]): void {
 
 async function applyGatewayAgentRoster(
   agentId: string,
-  shouldExist: boolean,
-  restartGateway?: () => Promise<void>,
+  originalText: string,
+  config: AgentRosterConfig,
 ) {
-  if (!gwClient?.connected) throw new Error("Gateway not connected");
-  return await applyAgentRosterReload({
-    listAgentIds: async (timeoutMs) => {
-      const result = await gwClient!.listAgents(Math.min(timeoutMs, WS_REQUEST_TIMEOUT_MS));
-      if (!Array.isArray(result.agents))
-        throw new Error("OpenClaw returned an invalid agent roster");
-      return new Set(
-        result.agents.flatMap((candidate) => {
-          if (
-            typeof candidate !== "object" ||
-            candidate === null ||
-            typeof (candidate as { id?: unknown }).id !== "string"
-          ) {
-            return [];
-          }
-          return [(candidate as { id: string }).id];
-        }),
-      );
-    },
-    isApplied: (agentIds) => agentIds.has(agentId) === shouldExist,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    timeoutMs: 45_000,
-    pollMs: 100,
-    restartGateway,
+  const client = gwClient;
+  assertAgentRosterHotReloadAvailable(config, client);
+  if (!client) throw new Error("Gateway not connected");
+  await applyAgentRosterConfig({
+    originalText,
+    config,
+    readText: () => fs.readFileSync(getConfigPath(), "utf-8"),
+    writeText: writeConfigTextAtomically,
+    waitForApplied: (expected) =>
+      waitForAgentRuntimeApplied({
+        gateway: client,
+        isCurrent: () => gwClient === client,
+        config: expected,
+        agentId,
+        stateDir: getOpenClawStateDir(),
+        verifyOwnedSkills: expected === config,
+      }),
   });
 }
 
@@ -4594,6 +4590,7 @@ async function addCatalogAgent(
   const originalConfigText = fs.readFileSync(configPath, "utf-8");
   let config = readConfig();
   if (!config) throw new Error("OpenClaw configuration is unavailable");
+  assertAgentRosterHotReloadAvailable(config, gwClient);
 
   const result = ensureAgentPersonasConfig(
     config,
@@ -4650,7 +4647,6 @@ async function addCatalogAgent(
     process.resourcesPath,
   );
   let skillInstalls: ReturnType<typeof installAgentOwnedSkills> = [];
-  let restartAttempted = false;
 
   try {
     skillInstalls = installAgentOwnedSkills(agentId, stateDir, agentSkillBundleRoot, {
@@ -4671,31 +4667,11 @@ async function addCatalogAgent(
       path.dirname(entryPath),
       DECLARE_ACCESS_SECTION,
     );
-    persistAgentPersonas(config);
-    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
-    if (skillRuntimeChanged) {
-      restartAttempted = true;
-      await restartManagedGatewayAndRequireReady(`Installing agent-owned skills for ${agentId}`);
-      applyResult = await applyGatewayAgentRoster(agentId, true);
-    } else {
-      applyResult = await applyGatewayAgentRoster(
-        agentId,
-        true,
-        managedGateway
-          ? async () => {
-              restartAttempted = true;
-              await restartManagedGatewayAndRequireReady(
-                `Adding agent ${agentId} after hot-reload timeout`,
-              );
-            }
-          : undefined,
-      );
-    }
-    if (applyResult === "timed-out") {
-      throw new Error(
-        `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
-      );
-    }
+    assertAgentRosterHotReloadAvailable(
+      config,
+      gwClient,
+      skillInstalls.some(agentOwnedSkillInstallChanged) && !skillConfigChanged,
+    );
     if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
       acceptManagedSkillIntegrityChanges(
         skillInstalls.filter(agentOwnedSkillInstallChanged).map((install) => ({
@@ -4704,21 +4680,18 @@ async function addCatalogAgent(
         })),
       );
     }
+    await applyGatewayAgentRoster(agentId, originalConfigText, config);
     const deferredCleanup = commitAgentOwnedSkillInstalls(skillInstalls);
     if (deferredCleanup.length > 0) {
       console.warn(
         `[agents] Deferred cleanup for agent-owned skill upgrade: ${deferredCleanup.join(", ")}`,
       );
     }
-    console.log(`[agents] Added ${agentId} via ${applyResult}`);
+    console.log(`[agents] Added ${agentId} via hot-reload`);
     return { agents: listConfiguredAgents(config) };
   } catch (error) {
+    if (error instanceof AgentRosterRollbackError) throw error;
     const rollbackErrors: unknown[] = [];
-    try {
-      writeConfigTextAtomically(originalConfigText);
-    } catch (rollbackError) {
-      rollbackErrors.push(rollbackError);
-    }
     try {
       restoreAgentWorkspace(workspaceSnapshot);
     } catch (rollbackError) {
@@ -4732,13 +4705,6 @@ async function addCatalogAgent(
     if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
       try {
         restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (restartAttempted && managedGateway) {
-      try {
-        await restartManagedGatewayAndRequireReady(`Rolling back failed agent addition ${agentId}`);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
@@ -4768,6 +4734,8 @@ async function removeCatalogAgent(
   const config = readConfig();
   if (!config) throw new Error("OpenClaw configuration is unavailable");
 
+  assertAgentRosterHotReloadAvailable(config, gwClient);
+
   ensureAgentPersonasConfig(config, stateDir);
   const result = removeConfiguredAgent(config, agentId);
   const skillConfigChanged = disableUnreferencedAgentOwnedSkills(config, agentId);
@@ -4776,97 +4744,12 @@ async function removeCatalogAgent(
     throw new Error(`Cannot remove agent "${agentId}" with an externally managed Gateway`);
   }
 
-  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
-  let skillRemovals: ReturnType<typeof prepareUnusedAgentOwnedSkillRemoval> = [];
-  let restartAttempted = false;
-  try {
-    skillRemovals = prepareUnusedAgentOwnedSkillRemoval(
-      config,
-      agentId,
-      stateDir,
-      resolveAgentOwnedSkillBundleRoot(app.isPackaged, process.resourcesPath),
-      { isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot },
-    );
-    const skillRuntimeChanged = skillConfigChanged || skillRemovals.length > 0;
-    if (!result.changed && !skillRuntimeChanged) {
-      return { agents: listConfiguredAgents(config) };
-    }
-    persistAgentPersonas(config);
-    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
-    if (skillRuntimeChanged) {
-      restartAttempted = true;
-      await restartManagedGatewayAndRequireReady(`Removing agent-owned skills for ${agentId}`);
-      applyResult = await applyGatewayAgentRoster(agentId, false);
-    } else {
-      applyResult = await applyGatewayAgentRoster(
-        agentId,
-        false,
-        managedGateway
-          ? async () => {
-              restartAttempted = true;
-              await restartManagedGatewayAndRequireReady(
-                `Removing agent ${agentId} after hot-reload timeout`,
-              );
-            }
-          : undefined,
-      );
-    }
-    if (applyResult === "timed-out") {
-      throw new Error(
-        `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
-      );
-    }
-    if (skillRemovals.length > 0) {
-      acceptManagedSkillIntegrityChanges(
-        skillRemovals.map((removal) => ({
-          skillName: removal.skillId,
-          expectedDirectory: null,
-        })),
-      );
-    }
-    const deferredCleanup = commitAgentOwnedSkillRemovals(skillRemovals);
-    if (deferredCleanup.length > 0) {
-      console.warn(
-        `[agents] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
-      );
-    }
-    console.log(`[agents] Removed ${agentId} via ${applyResult}`);
-    return { agents: listConfiguredAgents(config) };
-  } catch (error) {
-    const rollbackErrors: unknown[] = [];
-    try {
-      writeConfigTextAtomically(originalConfigText);
-    } catch (rollbackError) {
-      rollbackErrors.push(rollbackError);
-    }
-    try {
-      rollbackAgentOwnedSkillRemovals(skillRemovals);
-    } catch (rollbackError) {
-      rollbackErrors.push(rollbackError);
-    }
-    if (skillRemovals.length > 0) {
-      try {
-        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (restartAttempted && managedGateway) {
-      try {
-        await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (rollbackErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...rollbackErrors],
-        `Failed to remove agent "${agentId}" and fully restore the previous state`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
+  if (!result.changed && !skillConfigChanged) return { agents: listConfiguredAgents(config) };
+  await applyGatewayAgentRoster(agentId, originalConfigText, config);
+  console.log(
+    `[agents] Removed ${agentId} via hot-reload; unused skill cleanup deferred until cold startup`,
+  );
+  return { agents: listConfiguredAgents(config) };
 }
 
 // ---------------------------------------------------------------------------
@@ -5549,13 +5432,6 @@ async function restartManagedGateway(
   }
 }
 
-async function restartManagedGatewayAndRequireReady(reason: string): Promise<void> {
-  await restartManagedGateway(reason);
-  if (gatewayStatus !== "running") {
-    throw new Error(`Gateway did not become ready after restart (status: ${gatewayStatus})`);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Health monitor — auto-restart gateway if it goes down
 // ---------------------------------------------------------------------------
@@ -6105,6 +5981,7 @@ async function startGatewayInner(
           stateDir,
           agentSkillBundleRoot,
           ownedSkillTrust,
+          { deferRemovals: alreadyRunning },
         )
       : { installs: [], removals: [], configChanged: false, runtimeChanged: false };
   const agentConfigurationChanged =

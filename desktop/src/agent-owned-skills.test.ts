@@ -40,6 +40,53 @@ afterEach(() => {
 });
 
 describe("agent-owned skills", () => {
+  it("keeps disabled skills available to in-flight work until a cold startup", () => {
+    const root = tempDirectory();
+    const bundle = path.join(root, "bundle");
+    const state = path.join(root, "state");
+    seedBundle(bundle);
+    installAgentOwnedSkills("creative-muse", state, bundle);
+    const destination = path.join(state, "skills", "rednote-publisher");
+    const config = {
+      agents: { entries: { main: { skills: [] } } },
+      skills: { entries: { "rednote-publisher": { enabled: false } } },
+    };
+
+    const live = reconcileConfiguredAgentOwnedSkills(
+      config,
+      state,
+      bundle,
+      {},
+      { deferRemovals: true },
+    );
+    expect(live.removals).toEqual([]);
+    expect(live.runtimeChanged).toBe(false);
+    expect(fs.existsSync(path.join(destination, "scripts", "render.ps1"))).toBe(true);
+
+    const cold = reconcileConfiguredAgentOwnedSkills(config, state, bundle);
+    expect(cold.removals).toHaveLength(1);
+    expect(fs.existsSync(destination)).toBe(false);
+    expect(commitAgentOwnedSkillRemovals(cold.removals)).toEqual([]);
+  });
+
+  it("reuses retained skill files when an agent is added again before cold startup", () => {
+    const root = tempDirectory();
+    const bundle = path.join(root, "bundle");
+    const state = path.join(root, "state");
+    seedBundle(bundle);
+    installAgentOwnedSkills("creative-muse", state, bundle);
+    const config = {
+      agents: { entries: { main: { skills: [] } } },
+      skills: { entries: { "rednote-publisher": { enabled: false } } },
+    };
+    reconcileConfiguredAgentOwnedSkills(config, state, bundle, {}, { deferRemovals: true });
+
+    expect(setAgentOwnedSkillsEnabled(config, "creative-muse", true)).toBe(true);
+    const installs = installAgentOwnedSkills("creative-muse", state, bundle);
+    expect(installs[0]).toMatchObject({ created: false, upgraded: false, markerCreated: false });
+    expect(fs.existsSync(path.join(installs[0].destination, "SKILL.md"))).toBe(true);
+  });
+
   it("reconciles keyed roster skills without treating configured owners as removed", () => {
     const root = tempDirectory();
     const bundle = path.join(root, "bundle");
