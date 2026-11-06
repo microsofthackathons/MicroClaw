@@ -100,9 +100,10 @@ export function attachmentExtensionForMimeType(mimeType: string): string | undef
 }
 
 export function sanitizeAttachmentFileName(fileName: string, mimeType: string): string {
-  const baseName = path
-    .basename(fileName)
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+  const baseName = Array.from(path.basename(fileName), (character) =>
+    character.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(character) ? "_" : character,
+  )
+    .join("")
     .trim();
   const usableBaseName =
     baseName && baseName !== "." && baseName !== ".." ? baseName : "attachment";

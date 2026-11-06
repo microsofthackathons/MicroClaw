@@ -6,6 +6,7 @@ import {
   inferAttachmentMimeType,
   prepareChatAttachments,
   prepareClipboardImageAttachments,
+  sanitizeAttachmentFileName,
   validateChatAttachments,
 } from "./chat-attachments";
 
@@ -27,6 +28,31 @@ describe("inferAttachmentMimeType", () => {
     expect(inferAttachmentMimeType("report.pdf")).toBe("application/pdf");
     expect(inferAttachmentMimeType("notes.txt")).toBe("text/plain");
     expect(inferAttachmentMimeType("data.unknown")).toBe("application/octet-stream");
+  });
+});
+
+describe("sanitizeAttachmentFileName", () => {
+  it.each(Array.from({ length: 32 }, (_value, codePoint) => codePoint))(
+    "replaces ASCII control character %i without dropping adjacent text",
+    (codePoint) => {
+      expect(
+        sanitizeAttachmentFileName(
+          `before${String.fromCharCode(codePoint)}after.txt`,
+          "text/plain",
+        ),
+      ).toBe("before_after.txt");
+    },
+  );
+
+  it.each([
+    ['a<b>c:d"e|f?g*h.txt', "a_b_c_d_e_f_g_h.txt"],
+    ["  report name.txt  ", "report name.txt"],
+    ["报告📎.txt", "报告📎.txt"],
+    ["before\u007fafter.txt", "before\u007fafter.txt"],
+    ["", "attachment.txt"],
+    ["..", "attachment.txt"],
+  ])("sanitizes %j as %j", (fileName, expected) => {
+    expect(sanitizeAttachmentFileName(fileName, "text/plain")).toBe(expected);
   });
 });
 

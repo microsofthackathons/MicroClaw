@@ -207,11 +207,8 @@ function onSuggestionsScroll() {
 }
 
 .fan-card:hover {
-  transform:
-    translateX(calc(var(--dx, 0px) + var(--hover-dx, 0px)))
-    rotate(var(--rot))
-    translateY(var(--hover-dy, -36px))
-    translateZ(0);
+  transform: translateX(calc(var(--dx, 0px) + var(--hover-dx, 0px))) rotate(var(--rot))
+    translateY(var(--hover-dy, -36px)) translateZ(0);
   z-index: 4;
   box-shadow: var(--card-shadow-hover);
 }

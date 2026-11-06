@@ -234,17 +234,6 @@ function restoreManagedState(manifest: UpgradeManifest, failedRoot: string): voi
   }
 }
 
-function readJsonObject(filePath: string): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 function readLockObject(lockPath: string): Record<string, unknown> | null {
   let descriptor: number | null = null;
   try {

@@ -10,6 +10,7 @@ desktop/dist/
 build/
 
 # Generated/vendored content
+third_party/openclaw-windows-node/source/
 **/*.min.js
 **/*.min.css
 **/package-lock.json
