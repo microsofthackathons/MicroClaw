@@ -159,7 +159,7 @@ import {
 } from "./model-connection";
 import { assertModelConfigUnchanged, getPrimaryModel, hasConfiguredModel } from "./model-setup";
 import { parseDefaultModelSelection, selectDefaultModel } from "./default-model-selection";
-import { discoverProviderModels } from "./provider-model-catalog";
+import { createProviderModelCatalog } from "./provider-model-catalog";
 import {
   registerProviderCatalogModel,
   parseProviderCatalogSelection,
@@ -689,6 +689,12 @@ function applyModelConfiguration(input: unknown): Promise<void> {
   );
 }
 
+const providerModelCatalog = createProviderModelCatalog();
+
+function discoverModelCatalog(input: unknown) {
+  return providerModelCatalog(input, { ...process.env, ...loadStateDirEnv() });
+}
+
 function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown): Promise<unknown> {
   assertModelConfigUnchanged(expectedConfig, readConfig());
   return withWindowsNodeMxcModelUpdate(
@@ -698,8 +704,7 @@ function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown):
           gateway: () => gwClient,
           readConfig,
           assertMutable: assertCloudModelMutable,
-          discover: (input) =>
-            discoverProviderModels(input, { ...process.env, ...loadStateDirEnv() }),
+          discover: discoverModelCatalog,
         },
         modelRef,
         expectedConfig,
@@ -8478,7 +8483,7 @@ function registerIpcHandlers(): void {
 
   // --- Model connection test (runs in main process to avoid CORS) ---
   ipcMain.handle("model:discover-models", (_event, params: unknown) =>
-    discoverProviderModels(params, { ...process.env, ...loadStateDirEnv() }),
+    discoverModelCatalog(params),
   );
   ipcMain.handle("model:register-catalog-model", (event, input: unknown) => {
     assertTrustedRendererIpc(event);
@@ -8667,7 +8672,7 @@ function registerIpcHandlers(): void {
                 gateway: () => gwClient,
                 readConfig,
                 assertMutable: assertCloudModelMutable,
-                prepareModel: prepareProviderCatalogModel,
+                discover: discoverModelCatalog,
               },
               selection,
             ),

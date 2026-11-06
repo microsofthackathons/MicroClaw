@@ -51,6 +51,37 @@ function contains(config: unknown, providerId: string, modelId: string): boolean
   return Array.isArray(models) && models.some((model) => object(model).id === modelId);
 }
 
+export async function prepareProviderCatalogModelPatch(
+  deps: Pick<Dependencies, "readConfig" | "assertMutable" | "discover">,
+  modelRef: string,
+  expectedConfig: unknown,
+): Promise<JsonObject | undefined> {
+  const match = /^(qwen|minimax)\/([^\s\\*]+)$/.exec(modelRef);
+  if (!match) return;
+  const [, providerId, modelId] = match;
+  assertChatModelSupported(modelRef);
+  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
+  if (contains(expectedConfig, providerId, modelId)) return;
+  deps.assertMutable();
+  const saved = provider(expectedConfig, providerId);
+  if (typeof saved.baseUrl !== "string" || typeof saved.apiKey !== "string")
+    throw new Error("Configure this provider's endpoint and API key before selecting a model");
+  const result = await deps.discover({ baseUrl: saved.baseUrl, apiKey: saved.apiKey });
+  deps.assertMutable();
+  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
+  if (!result.ok) throw new Error(`Could not load the provider model catalog (${result.error})`);
+  if (!result.models.includes(modelId))
+    throw new Error("The selected model is not in the authenticated provider catalog");
+  const existing = Array.isArray(saved.models) ? saved.models : [];
+  return {
+    models: {
+      providers: {
+        [providerId]: { models: [...existing, { id: modelId, name: modelId, input: ["text"] }] },
+      },
+    },
+  };
+}
+
 /** Register live catalog definitions without changing defaults, agent policies or sessions. */
 export async function registerProviderCatalogModel(
   deps: Dependencies,
@@ -65,8 +96,6 @@ export async function registerProviderCatalogModel(
   if (contains(expectedConfig, providerId, modelId)) return expectedConfig;
   deps.assertMutable();
   const saved = provider(expectedConfig, providerId);
-  if (typeof saved.baseUrl !== "string" || typeof saved.apiKey !== "string")
-    throw new Error("Configure this provider's endpoint and API key before selecting a model");
   const gateway = deps.gateway();
   if (!gateway?.connected || !supportsLocalModelGatewayVersion(gateway.serverVersion))
     throw new Error("Model registration requires a connected, supported OpenClaw Gateway");
@@ -82,24 +111,18 @@ export async function registerProviderCatalogModel(
     )
       throw new Error("Gateway connection changed; reload the model catalog");
   };
-  const result = await deps.discover({ baseUrl: saved.baseUrl, apiKey: saved.apiKey });
+  const patch = await prepareProviderCatalogModelPatch(deps, modelRef, expectedConfig);
   assertCurrent();
-  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
-  if (!result.ok) throw new Error(`Could not load the provider model catalog (${result.error})`);
-  if (!result.models.includes(modelId))
-    throw new Error("The selected model is not in the authenticated provider catalog");
   const snapshot = object(await gateway.request("config.get", {}));
   assertCurrent();
   assertModelConfigUnchanged(expectedConfig, deps.readConfig());
   if (snapshot.valid !== true || typeof snapshot.hash !== "string" || !snapshot.hash)
     throw new Error("The Gateway configuration is unavailable or invalid");
-  const existing = Array.isArray(saved.models) ? saved.models : [];
-  const models = [...existing, { id: modelId, name: modelId, input: ["text"] }];
   try {
     const patched = object(
       await gateway.request("config.patch", {
         baseHash: snapshot.hash,
-        raw: JSON.stringify({ models: { providers: { [providerId]: { models } } } }),
+        raw: JSON.stringify(patch),
       }),
     );
     assertCurrent();
