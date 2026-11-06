@@ -45,7 +45,7 @@ export const MANAGED_MODEL_PROVIDERS: ManagedModelProvider[] = [
     id: "minimax",
     label: "MiniMax",
     logo: minimaxLogo,
-    baseUrl: "https://api.minimaxi.com/v1",
+    baseUrl: "https://api.minimax.cn/v1",
     apiFormat: "openai-chat",
     models: [
       { id: "MiniMax-M3", name: "MiniMax-M3", input: ["text", "image"] },

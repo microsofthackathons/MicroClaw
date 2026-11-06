@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   getCredentialReferenceName,
+  getDefaultAgentModelOverride,
   isValidHttpUrl,
   mergeModelProviderConfig,
+  mergeModelProviderConnectionConfig,
   normalizeModelInput,
   removeModelProviderConfig,
+  removeProviderConnectionConfig,
   resolveApiValue,
-  retainOnlyProvider,
   selectPrimaryModelConfig,
   updateModelProviderConfig,
   validateModelProviderInput,
+  validateModelProviderConnectionInput,
   type ModelProviderInput,
 } from "./model-provider";
 
@@ -20,6 +23,50 @@ const validInput: ModelProviderInput = {
   apiFormat: "openai-chat",
   modelName: "gpt-4o",
 };
+
+describe("default-agent model override notice", () => {
+  it("uses the explicitly marked default agent without changing entries", () => {
+    const config = {
+      agents: {
+        list: [
+          { id: "first", model: "cloud/first" },
+          { id: "default", default: true, model: { primary: "llama-cpp/overridden" } },
+        ],
+      },
+    };
+    const original = structuredClone(config);
+    expect(getDefaultAgentModelOverride(config)).toEqual({
+      agentId: "default",
+      modelRef: "llama-cpp/overridden",
+    });
+    expect(config).toEqual(original);
+  });
+
+  it("uses the first configured agent when no explicit default is marked", () => {
+    expect(
+      getDefaultAgentModelOverride({
+        agents: {
+          list: [
+            { id: "first", model: "cloud/first" },
+            { id: "other", model: "cloud/other" },
+          ],
+        },
+      }),
+    ).toEqual({ agentId: "first", modelRef: "cloud/first" });
+  });
+
+  it("does not invent a primary override from global defaults or a fallback-only agent setting", () => {
+    expect(getDefaultAgentModelOverride(null)).toBeNull();
+    expect(
+      getDefaultAgentModelOverride({
+        agents: {
+          defaults: { model: "cloud/global" },
+          list: [{ id: "main", model: { fallbacks: ["cloud/other"] } }],
+        },
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("model provider validation", () => {
   it("accepts an HTTP endpoint and credential reference", () => {
@@ -51,6 +98,71 @@ describe("model provider validation", () => {
 });
 
 describe("model provider config", () => {
+  it("validates and saves a connection without selecting or registering a model", () => {
+    const { modelName: _modelName, ...connection } = validInput;
+    expect(validateModelProviderConnectionInput(connection)).toBeNull();
+    expect(validateModelProviderConnectionInput({ ...connection, apiKey: "" })).toBe(
+      "apiKeyRequired",
+    );
+    expect(validateModelProviderConnectionInput({ ...connection, baseUrl: "file:///model" })).toBe(
+      "invalidBaseUrl",
+    );
+    const config = mergeModelProviderConnectionConfig({}, connection);
+    expect(config.models).toEqual({
+      mode: "merge",
+      providers: {
+        "azure-openai": {
+          baseUrl: "https://example.openai.azure.com/v1",
+          apiKey: connection.apiKey,
+          api: "openai-completions",
+          models: [],
+        },
+      },
+    });
+    expect(config).not.toHaveProperty("agents");
+  });
+
+  it("preserves model definitions, agent policies and sessions when updating only a connection", () => {
+    const existing = {
+      models: {
+        mode: "replace",
+        providers: {
+          "azure-openai": {
+            baseUrl: "https://old.example/v1",
+            apiKey: "old-key",
+            headers: { "X-Custom": "keep" },
+            models: [
+              { id: "model", name: "Custom", input: ["text", "image"], contextWindow: 12345 },
+            ],
+          },
+          other: { models: [{ id: "other" }] },
+        },
+      },
+      agents: {
+        defaults: { model: "other/other", modelPolicy: { allow: ["other/other"] } },
+        list: [{ id: "main", model: "azure-openai/model" }],
+      },
+      sessions: { keep: true },
+    };
+    const original = structuredClone(existing);
+    const config = mergeModelProviderConnectionConfig(existing, validInput);
+    expect(config.agents).toEqual(original.agents);
+    expect(config.sessions).toEqual(original.sessions);
+    expect(config.models).toEqual({
+      ...original.models,
+      providers: {
+        ...original.models.providers,
+        "azure-openai": {
+          ...original.models.providers["azure-openai"],
+          baseUrl: "https://example.openai.azure.com/v1",
+          apiKey: validInput.apiKey,
+          api: "openai-completions",
+        },
+      },
+    });
+    expect(existing).toEqual(original);
+  });
+
   it("defaults unknown capabilities to text-only", () => {
     expect(normalizeModelInput(undefined)).toEqual(["text"]);
     expect(normalizeModelInput(["image", "audio", "text"])).toEqual(["image", "text"]);
@@ -345,12 +457,7 @@ describe("model provider config", () => {
       hooks: { mappings: [{ model: "custom/model-a" }] },
     };
 
-    const result = removeModelProviderConfig(
-      existing,
-      "custom",
-      "model-a",
-      "custom/model-b",
-    );
+    const result = removeModelProviderConfig(existing, "custom", "model-a", "custom/model-b");
     expect(result).toMatchObject({
       models: {
         providers: {
@@ -375,8 +482,158 @@ describe("model provider config", () => {
   });
 });
 
-describe("retainOnlyProvider", () => {
-  it("keeps only the active model's provider", () => {
+describe("removing a provider connection", () => {
+  it("disconnects local models and disables only their plugin without deleting install metadata", () => {
+    const existing = {
+      models: {
+        providers: {
+          "llama-cpp": { models: [{ id: "local" }], localService: { command: "llama-server" } },
+          qwen: { apiKey: "keep", models: [{ id: "remote" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen/remote", fallbacks: ["llama-cpp/local", "qwen/backup"] },
+          models: { "llama-cpp/local": {}, "qwen/remote": {} },
+        },
+        list: [{ id: "local-agent", model: "llama-cpp/local", workspace: "keep" }],
+        entries: { worker: { model: { primary: "llama-cpp/local" } } },
+      },
+      plugins: {
+        allow: ["llama-cpp", "other"],
+        entries: {
+          "llama-cpp": { enabled: true, config: { keep: true } },
+          other: { enabled: true },
+        },
+        installs: { "llama-cpp": { installPath: "keep-plugin-files" } },
+      },
+      memory: { provider: "keep" },
+    };
+    const original = structuredClone(existing);
+    const result = removeProviderConnectionConfig(existing, "llama-cpp");
+    expect(result.models).toEqual({ providers: { qwen: existing.models.providers.qwen } });
+    expect(result.agents).toEqual({
+      defaults: {
+        model: { primary: "qwen/remote", fallbacks: ["qwen/backup"] },
+        models: { "qwen/remote": {} },
+      },
+      list: [{ id: "local-agent", workspace: "keep" }],
+      entries: { worker: {} },
+    });
+    expect(result.plugins).toEqual({
+      ...existing.plugins,
+      entries: {
+        ...existing.plugins.entries,
+        "llama-cpp": { enabled: false, config: { keep: true } },
+      },
+    });
+    expect(result.memory).toEqual(existing.memory);
+    expect(existing).toEqual(original);
+  });
+
+  it("can disable the local plugin before any model connection has been prepared", () => {
+    const existing = {
+      plugins: { entries: { "llama-cpp": { enabled: true } } },
+      agents: { defaults: { model: "llama-cpp/stale" } },
+    };
+    const original = structuredClone(existing);
+    const result = removeProviderConnectionConfig(existing, "llama-cpp");
+    expect(result.models).toEqual({ providers: {} });
+    expect(result.agents).toEqual({ defaults: {} });
+    expect(result.plugins).toEqual({ entries: { "llama-cpp": { enabled: false } } });
+    expect(existing).toEqual(original);
+  });
+
+  it("removes the last provider and clears its default without choosing a replacement", () => {
+    const existing = {
+      models: {
+        mode: "merge",
+        providers: {
+          qwen: { apiKey: "saved-key", models: [{ id: "one" }, { id: "two" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen/one", fallbacks: ["qwen/two"] },
+          models: { "qwen/one": {}, "qwen/two": {} },
+          workspace: "keep",
+        },
+      },
+      memory: { provider: "keep" },
+    };
+    const original = structuredClone(existing);
+    const result = removeProviderConnectionConfig(existing, "qwen");
+    expect(result).toEqual({
+      models: { mode: "merge", providers: {} },
+      agents: { defaults: { workspace: "keep" } },
+      memory: { provider: "keep" },
+    });
+    expect(existing).toEqual(original);
+  });
+
+  it("clears only the provider's model references in both agent layouts", () => {
+    const policy = { allow: ["qwen/one", "other/keep"] };
+    const existing = {
+      models: {
+        providers: {
+          qwen: { apiKey: "${QWEN_API_KEY}", models: [{ id: "one" }] },
+          "qwen-extra": { apiKey: "keep", models: [{ id: "keep" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen-extra/keep", fallbacks: ["qwen/one", "other/keep"] },
+          models: { "qwen/one": {}, "qwen-extra/keep": { alias: "keep" } },
+          modelPolicy: policy,
+        },
+        list: [
+          { id: "first", model: "qwen/one" },
+          { id: "second", model: "other/keep" },
+        ],
+        entries: {
+          main: { model: { primary: "qwen/one", fallbacks: ["other/keep"] } },
+          other: { model: "other/keep" },
+        },
+      },
+      auth: { profiles: { external: { provider: "qwen", mode: "api_key" } } },
+      hooks: { mappings: [{ model: "qwen/one" }] },
+    };
+    const result = removeProviderConnectionConfig(existing, "qwen");
+    expect(result).toEqual({
+      ...existing,
+      models: { providers: { "qwen-extra": existing.models.providers["qwen-extra"] } },
+      agents: {
+        defaults: {
+          model: { primary: "qwen-extra/keep", fallbacks: ["other/keep"] },
+          models: { "qwen-extra/keep": { alias: "keep" } },
+          modelPolicy: policy,
+        },
+        list: [{ id: "first" }, { id: "second", model: "other/keep" }],
+        entries: {
+          main: { model: { fallbacks: ["other/keep"] } },
+          other: { model: "other/keep" },
+        },
+      },
+    });
+  });
+
+  it("removes credentials even if no models have been saved", () => {
+    const result = removeProviderConnectionConfig(
+      { models: { providers: { qwen: { apiKey: "saved-key", models: [] } } } },
+      "qwen",
+    );
+    expect(result.models).toEqual({ providers: {} });
+  });
+
+  it("rejects removal of a provider that is no longer configured", () => {
+    expect(() => removeProviderConnectionConfig({}, "qwen")).toThrow(
+      'Provider "qwen" is not configured',
+    );
+  });
+});
+
+describe("provider retention when selecting a default", () => {
+  it("keeps all providers and changes only the default", () => {
     const existing = {
       models: {
         mode: "merge",
@@ -388,16 +645,14 @@ describe("retainOnlyProvider", () => {
       agents: { defaults: { model: { primary: "custom/model-a" } } },
     };
 
-    const result = retainOnlyProvider(existing, "custom");
-    expect(result.models).toEqual({
-      mode: "merge",
-      providers: { custom: { models: [{ id: "model-a" }] } },
-    });
-    expect(result.agents).toBe(existing.agents);
+    const result = selectPrimaryModelConfig(existing, "stale/old");
+    expect(result.models).toBe(existing.models);
+    expect(result.agents).toEqual({ defaults: { model: { primary: "stale/old" } } });
   });
 
-  it("clears all providers when the active model is auth-managed", () => {
+  it("preserves providers and profiles when switching to an auth-managed model", () => {
     const existing = {
+      auth: { profiles: { "github-copilot:github": { provider: "github-copilot" } } },
       models: {
         mode: "merge",
         providers: { custom: { models: [{ id: "model-a" }] } },
@@ -405,19 +660,10 @@ describe("retainOnlyProvider", () => {
       agents: { defaults: { model: { primary: "github-copilot/gpt-5.4" } } },
     };
 
-    const result = retainOnlyProvider(existing, "github-copilot");
-    expect(result.models).toEqual({ mode: "merge" });
-  });
-
-  it("returns the config unchanged when only the active provider exists", () => {
-    const existing = {
-      models: { providers: { custom: { models: [{ id: "model-a" }] } } },
-    };
-    expect(retainOnlyProvider(existing, "custom")).toBe(existing);
-  });
-
-  it("returns the config unchanged when no providers are configured", () => {
-    const existing = { models: { mode: "merge" } };
-    expect(retainOnlyProvider(existing, "custom")).toBe(existing);
+    const result = selectPrimaryModelConfig(existing, "github-copilot/gpt-5.4", {
+      ensureAllowed: true,
+    });
+    expect(result.models).toBe(existing.models);
+    expect(result.auth).toBe(existing.auth);
   });
 });

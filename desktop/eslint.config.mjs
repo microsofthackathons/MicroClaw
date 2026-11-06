@@ -17,6 +17,17 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ["integration/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        Buffer: "readonly",
+        setImmediate: "readonly",
+        AbortController: "readonly",
+      },
+    },
+  },
+  {
     files: ["src/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "warn",

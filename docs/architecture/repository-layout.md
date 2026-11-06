@@ -6,7 +6,7 @@ This repository now uses a conservative, production-friendly layout rule: keep e
 
 ```text
 repo/
-|- appcontainer/                # Windows AppContainer launcher and preload hooks
+|- windows-node-host/           # Native MXC tool execution and exact approvals
 |- deployer/                    # Installer Python package and supporting modules
 |- desktop/                     # Electron desktop application
 |- docs/

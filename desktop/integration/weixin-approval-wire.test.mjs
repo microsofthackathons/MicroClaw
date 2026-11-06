@@ -1,0 +1,1968 @@
+import { createHash, randomUUID, randomBytes } from "node:crypto";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  renameSync,
+} from "node:fs";
+import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  readAuthenticatedWeixinWireOwner,
+  readWeixinAccountStatus,
+} from "../src/weixin-account-status";
+import { createWindowsNodeMxcApprovalProofMinter } from "../src/openclaw-approval-replay-compat.mjs";
+import { explicitPowerShellCommand } from "./fixtures/explicit-powershell-command.mjs";
+import { normalizeWindowsNodeMxcGatewayApproval } from "../src/windows-node-mxc";
+import {
+  normalizeWeixinRemoteApprovalOwner,
+  WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE,
+  weixinRemoteApprovalAuthorityHash,
+  weixinRemoteApprovalConsentHash,
+  weixinRemoteApprovalWireSourceRejection,
+  WindowsNodeMxcWeixinRemoteApprovalBroker,
+} from "../src/windows-node-mxc-weixin-remote-approval";
+import {
+  bindWeixinApprovalRun,
+  deliverWeixinRemoteApproval,
+  WeixinRemoteDeliveryCoordinator,
+  exactWeixinApprovalSource,
+  findWeixinApprovalSource,
+  remoteApprovalDiagnosticBinding,
+} from "../src/windows-node-mxc-weixin-remote-approval-delivery";
+import {
+  describeWeixinSessionBinding,
+  resolveWeixinSessionRoute,
+} from "../src/weixin-session-routing";
+import { WindowsNodeMxcWeixinRemoteApprovalServer } from "../src/windows-node-mxc-weixin-remote-approval-transport";
+import { BundledWindowsNodeHost } from "../src/bundled-windows-node-host";
+import {
+  commitMxcApprovalDecision,
+  WindowsNodeMxcApprovalLifecycle,
+} from "../src/windows-node-mxc-approval-lifecycle";
+import { createPowerShellFilesystemInitialization } from "../src/windows-node-mxc-powershell-scope";
+import { WeixinRemoteApprovalTransport } from "../../plugins/openclaw-weixin/src/security/remote-approval.js";
+import {
+  interceptWeixinRemoteApprovalMessage,
+  processOneMessage,
+} from "../../plugins/openclaw-weixin/src/messaging/process-message.js";
+import { registerUserInFrameworkStore } from "../../plugins/openclaw-weixin/src/auth/pairing.js";
+import {
+  clearContextTokensForAccount,
+  getContextToken,
+  setContextToken,
+} from "../../plugins/openclaw-weixin/src/messaging/inbound.js";
+import { runPinnedApprovalRequests } from "./pinned-approval-fixture.mjs";
+import { createPinnedAgentRunStartNotifier } from "./pinned-session-fixture.mjs";
+import {
+  createMainFunctionFixture,
+  createMainWeixinInboundFixture,
+} from "./main-weixin-inbound-fixture.mjs";
+import { projectWindowsNodeMxcApprovalForRenderer } from "../src/windows-node-mxc";
+import { classifyLiteralFilesystemCommand } from "../src/windows-node-mxc-literal-filesystem-command";
+import { windowsCommand } from "./windows-command-fixture.mjs";
+import { logger } from "../../plugins/openclaw-weixin/src/util/logger.js";
+import {
+  describeWeixinApprovalDecision,
+  isSafeMxcApprovalMetadataFrame,
+} from "../src/mxc-approval-context-diagnostics";
+
+vi.mock("../../plugins/openclaw-weixin/src/util/logger.js", () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+vi.mock("electron", () => ({ app: { isPackaged: false } }));
+
+const rawPeer = "AbCdEfCaseSensitive@im.wechat";
+const key = "agent:main:main";
+const security = {
+  gatewayGeneration: "test-generation",
+  policyFingerprint: "b".repeat(64),
+  nodeId: "test-node",
+  activationLeaseHash: "d".repeat(64),
+  requestedMode: "limited-dacl",
+  effectiveMode: "appcontainer-dacl",
+};
+const root = String.raw`C:\Users\sunt\Desktop`;
+const target = `${root}\\wire_fixture_folder`;
+const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
+let captured;
+function displayedCommand(text) {
+  const lines = text.split("\n\n")[1].split("\n").slice(1);
+  const escaped = !lines[0].startsWith("  | ");
+  return lines
+    .slice(escaped ? 1 : 0)
+    .map((line) => {
+      expect(line.endsWith(" |")).toBe(true);
+      const value = line.slice(4, -2);
+      return escaped ? JSON.parse(value) : value;
+    })
+    .join("");
+}
+
+function approvalFor(
+  script = `New-Item -ItemType Directory -Path '${target}' -Force`,
+  access = "rw",
+  declaredAccess = [{ access, path: root }],
+  initialized = false,
+) {
+  const command = `powershell -NoProfile -Command "${script}"`;
+  const preview = declaredAccess.length
+    ? `# [declare-access]${declaredAccess.map((entry) => `${entry.access}:${entry.path}`).join("; ")}[/declare-access]\n${command}`
+    : command;
+  const argv = explicitPowerShellCommand(preview, { SystemRoot: "C:\\Windows" }).map((argument) =>
+    argument === preview ? command : argument,
+  );
+  const initialization = initialized
+    ? createPowerShellFilesystemInitialization(argv, executable, declaredAccess)
+    : null;
+  if (initialized && !initialization)
+    throw new Error("Actual scoped creation preparation rejected");
+  const finalArgv = initialization?.finalArgv ?? argv;
+  const plan = {
+    argv: finalArgv,
+    commandText: windowsCommand(finalArgv),
+    commandPreview: initialization
+      ? `# [declare-access]rw:${root}[/declare-access]\n${finalArgv.at(-1)}`
+      : preview,
+    cwd: null,
+    cwdBinding: "isolated-scratch:v1",
+    agentId: "main",
+    sessionKey: key,
+    executablePath: executable,
+    executableSha256: createHash("sha256")
+      .update(
+        process.platform === "win32" ? readFileSync(executable) : Buffer.from("test-interpreter"),
+      )
+      .digest("hex"),
+    declaredAccess,
+    commandConsent: { required: true, allowAlwaysAvailable: false },
+    ...(initialization ? { providerInitialization: initialization } : {}),
+  };
+  captured ??= runPinnedApprovalRequests(plan, rawPeer, security.nodeId).find(
+    (entry) => entry.kind === "trusted",
+  ).request;
+  const request = {
+    ...captured,
+    systemRunPlan: plan,
+    command: plan.commandText,
+    commandPreview: plan.commandPreview,
+  };
+  const result = normalizeWindowsNodeMxcGatewayApproval(
+    { id: randomUUID(), request },
+    security.nodeId,
+    security.gatewayGeneration,
+    initialized ? security.requestedMode : undefined,
+  );
+  if (!result) throw new Error("Actual pinned Gateway request/normalized folder plan rejected");
+  return result;
+}
+
+describe("exact authenticated provider peer through real cache, sender, HTTP adapter and approval pipe", () => {
+  let stateDir;
+  let server;
+  let transport;
+  let fetch;
+  let records;
+  let sources;
+  let decisions;
+  let configuration;
+  let broker;
+  let approval;
+  let states;
+  let pending;
+  let deliveredChallengeId;
+  let inboundDiagnostics;
+  let main;
+  let mainDiagnostics;
+  let gateway;
+  let renewalClock;
+  const leaseWorkers = [];
+  const credentialPath = () => path.join(stateDir, "openclaw-weixin", "accounts", "bot.json");
+  function credential(userId = rawPeer) {
+    writeFileSync(credentialPath(), JSON.stringify({ token: "synthetic-account-token", userId }));
+  }
+  function message(extra = {}) {
+    return {
+      from_user_id: rawPeer,
+      to_user_id: "bot",
+      message_type: 1,
+      message_id: 1001,
+      seq: 42,
+      context_token: "synthetic-exact-context",
+      item_list: [{ type: 1, text_item: { text: "Create the fixture folder" } }],
+      ...extra,
+    };
+  }
+  beforeEach(async () => {
+    stateDir = mkdtempSync(path.join(os.tmpdir(), "microclaw-wire-authority-"));
+    mkdirSync(path.join(stateDir, "openclaw-weixin", "accounts"), { recursive: true });
+    writeFileSync(path.join(stateDir, "openclaw-weixin", "accounts.json"), '["bot"]');
+    writeFileSync(path.join(stateDir, "openclaw.json"), "{}");
+    credential();
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
+    const pipe =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\microclaw-wire-test-${randomUUID()}`
+        : path.join(stateDir, "wire.sock");
+    vi.stubEnv("MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE", pipe);
+    vi.stubEnv("MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN", "synthetic-pipe-secret");
+    fetch = vi
+      .fn()
+      .mockImplementation(async () => new globalThis.Response('{"ret":0}', { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    setContextToken("bot", rawPeer, "synthetic-exact-context");
+    records = [];
+    states = [];
+    inboundDiagnostics = [];
+    decisions = [];
+    sources = new Map();
+    pending = true;
+    deliveredChallengeId = null;
+    const owner = normalizeWeixinRemoteApprovalOwner("bot", rawPeer, "2026-10-20T00:00:00Z");
+    configuration = {
+      enabled: true,
+      owner,
+    };
+    broker = new WindowsNodeMxcWeixinRemoteApprovalBroker(undefined, () =>
+      readAuthenticatedWeixinWireOwner(stateDir),
+    );
+    broker.configure(configuration);
+    approval = approvalFor();
+    mainDiagnostics = [];
+    gateway = {
+      connected: true,
+      request: vi.fn().mockResolvedValue({ ok: true, key, agentId: "main" }),
+    };
+    main = createMainWeixinInboundFixture({
+      windowsNodeMxcWeixinRemoteApprovalSources: sources,
+      bindWeixinApprovalRun,
+      gatewayGenerationId: security.gatewayGeneration,
+      describeWeixinApprovalDecision,
+      allPendingWindowsNodeMxcGatewayApprovals: () => [],
+      exactWeixinApprovalSource,
+      getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      readAuthenticatedWeixinWireOwner,
+      getOpenClawStateDir: () => stateDir,
+      windowsNodeMxcWeixinRemoteApprovalBroker: broker,
+      pendingWindowsNodeMxcGatewayApproval: {
+        get request() {
+          return approval;
+        },
+      },
+      requireEffectiveWindowsNodeMxc: vi.fn().mockResolvedValue(undefined),
+      currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => security,
+      resolvePendingWindowsNodeMxcGatewayApproval: async (id, decision) => {
+        decisions.push({ approvalIds: [id], decision });
+      },
+      gwClient: gateway,
+      resolveWeixinSessionRoute,
+      describeWeixinSessionBinding,
+      remoteApprovalDiagnosticBinding,
+      weixinRemoteApprovalWireSourceRejection,
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      console: {
+        info: (marker, record) => {
+          if (marker === "[weixin-remote-approval-context]")
+            mainDiagnostics.push(JSON.parse(record));
+        },
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    });
+    server = new WindowsNodeMxcWeixinRemoteApprovalServer(
+      pipe,
+      "synthetic-pipe-secret",
+      main.handle,
+    );
+    await server.start();
+    transport = new WeixinRemoteApprovalTransport({
+      accountId: "bot",
+      baseUrl: "https://weixin.invalid",
+      token: "synthetic-account-token",
+      diagnostic: (record) => inboundDiagnostics.push(record),
+      deliveryDiagnostic: (record) => records.push(record),
+    });
+    await transport.start();
+    await source();
+  }, 30_000);
+  afterEach(() => {
+    transport?.close();
+    server?.close();
+    clearContextTokensForAccount("bot");
+    renewalClock?.mockRestore();
+    renewalClock = undefined;
+    for (const child of leaseWorkers.splice(0)) child.kill();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+  async function source(extra = {}, runExtra = {}) {
+    const resolveAgentRoute = vi.fn().mockReturnValue({ agentId: "main", sessionKey: key });
+    await interceptWeixinRemoteApprovalMessage(
+      message(extra),
+      {
+        accountId: "bot",
+        token: "synthetic-account-token",
+        config: {},
+        channelRuntime: { routing: { resolveAgentRoute } },
+        remoteApprovalTransport: transport,
+      },
+      "start",
+    );
+    expect(resolveAgentRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "openclaw-weixin",
+        peer: { kind: "direct", id: message(extra).from_user_id },
+      }),
+    );
+    let registration;
+    const notify = createPinnedAgentRunStartNotifier((actualRunId) => {
+      registration = transport.intercept({
+        message: message({ ...extra, ...runExtra }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "run",
+        runId: actualRunId,
+      });
+    }, approval.origin.runId);
+    notify();
+    await registration;
+  }
+  async function deliver(expiresAtUnixMs = Date.now() + 60_000, approvalSecurity = security) {
+    return deliverWeixinRemoteApproval({
+      approval,
+      configuration,
+      source: findWeixinApprovalSource(sources, approval),
+      security: approvalSecurity,
+      server,
+      broker,
+      readWireOwner: () => readAuthenticatedWeixinWireOwner(stateDir),
+      expiresAtUnixMs,
+      locale: "en-US",
+      isPending: () => pending,
+      challenge: (delivery) => {
+        deliveredChallengeId = delivery.challengeId;
+      },
+      state: (state) => states.push(state),
+      diagnostic: () => {},
+      deliveryDiagnostic: (record) => records.push(record),
+    });
+  }
+  async function useRenewableMainSecurity(ttlMs = 120_000, keyByte = 7) {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      windowsHide: true,
+      stdio: "pipe",
+    });
+    leaseWorkers.push(child);
+    const proofContext = { ...security, readinessTransitionId: randomUUID() };
+    const host = Object.create(BundledWindowsNodeHost.prototype);
+    Object.assign(host, {
+      process: child,
+      activationLeaseSecret: Buffer.alloc(32, keyByte),
+      activationLeasePath: path.join(stateDir, "test-only-activation-lease.json"),
+      activationLease: null,
+      activationLeaseEpoch: 0,
+      activationLeaseAuthorityRevision: 0,
+      activationLeaseWriteQueue: Promise.resolve(),
+      gatewayGeneration: security.gatewayGeneration,
+      policyFingerprint: security.policyFingerprint,
+      identityNodeId: security.nodeId,
+      startOptions: {
+        requestedStrength: security.requestedMode,
+        effectiveTier: security.effectiveMode,
+        approvalProof: proofContext,
+      },
+      ensureIdentityNodeId: () => security.nodeId,
+    });
+    await host.setActivationLease("active", ttlMs);
+    const current = createMainFunctionFixture("currentWindowsNodeMxcWeixinRemoteApprovalSecurity", {
+      bundledWindowsNodeHost: host,
+      windowsNodeMxcApprovalProofContext: proofContext,
+      getWindowsNodeMxcRequestedMode: () => security.requestedMode,
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcCurrentEffectiveTier: security.effectiveMode,
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      createHash,
+    });
+    const readiness = createMainFunctionFixture("requireEffectiveWindowsNodeMxc", {
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      commandConsentUpdating: false,
+      isWindowsNodeMxcDesired: () => true,
+      isWindowsNodeMxcIngressReleased: () => true,
+      captureGatewayReadinessCheckpoint: () => () => true,
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcIngressGeneration: security.gatewayGeneration,
+      windowsNodeMxcActivationInProgress: false,
+      bundledWindowsNodeHost: host,
+      isApplicationIngressReady: () => true,
+      getWindowsNodeMxcStatus: async () => ({
+        effectiveEnabled:
+          host.status().processRunning && host.status().activationLease?.mode === "active",
+        blockers: ["Test-only activation authority unavailable"],
+      }),
+      failClosedWindowsNodeMxc: vi.fn().mockResolvedValue(undefined),
+      console: { error: vi.fn() },
+    });
+    main.replace("currentWindowsNodeMxcWeixinRemoteApprovalSecurity", current.handle);
+    main.replace("requireEffectiveWindowsNodeMxc", readiness.handle);
+    return { host, current, readiness, proofContext };
+  }
+  it.each([true, false])(
+    "requires one combined folder prompt even when command consent is required=%s",
+    async (required) => {
+      const request = {
+        ...approval,
+        commandConsent: { required, allowAlwaysAvailable: required },
+        allowedDecisions: ["allow-once", "allow-always", "deny"],
+        policyFingerprint: security.policyFingerprint,
+        planSha256: "d".repeat(64),
+      };
+      const proof = { policyFingerprint: security.policyFingerprint };
+      const send = vi.fn();
+      const resolve = vi.fn().mockResolvedValue({});
+      const client = { connected: true, request: resolve };
+      let pending;
+      const handler = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", {
+        windowsNodeMxcApprovalResolutionCompletion: null,
+        windowsNodeMxcApprovalProofContext: proof,
+        isWindowsNodeMxcDesired: () => true,
+        getWindowsNodeMxcMissingFolders: () => [{ path: root, access: "rw" }],
+        getBundledWindowsNodeFolders: () => [],
+        windowsNodeMxcWeixinContext: null,
+        validateWindowsNodeMxcUserDir: async (folder) => ({ ok: true, canonicalPath: folder }),
+        gatewayGenerationId: security.gatewayGeneration,
+        isApplicationIngressReady: () => true,
+        gwClient: client,
+        findPendingWindowsNodeMxcGatewayApproval: () => null,
+        mxcApprovalDeadline: (now) => now + 60_000,
+        findWeixinApprovalSource: () => null,
+        windowsNodeMxcWeixinRemoteApprovalSources: sources,
+        currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => null,
+        windowsNodeMxcWeixinRemoteApprovalServer: null,
+        resolveSupportedLocale: () => "en-US",
+        settingsStore: { get: () => "en-US" },
+        WindowsNodeMxcApprovalLifecycle: class {
+          pending = true;
+          start() {}
+        },
+        WeixinRemoteDeliveryCoordinator,
+        pendingWindowsNodeMxcGatewayApproval: null,
+        queuedWindowsNodeMxcGatewayApprovals: [],
+        beginPendingWindowsNodeMxcRemoteDelivery: (entry) => {
+          pending = entry;
+        },
+        sendToWindow: send,
+        mainWindow: {},
+        projectWindowsNodeMxcApprovalForRenderer,
+        getWindowsNodeMxcRequestedMode: () => "full",
+        console: { info: vi.fn() },
+      });
+      await handler.handle(request, security.gatewayGeneration);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(pending.request.folderChanges).toEqual([{ path: root, access: "rw" }]);
+      expect(pending.request.allowedDecisions).toEqual(["deny", "allow-once"]);
+
+      const applyFolders = vi.fn().mockResolvedValue({});
+      const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
+        withWindowsNodeMxcApprovalResolution: (operation) => operation(),
+        gatewayGenerationId: security.gatewayGeneration,
+        windowsNodeMxcApprovalProofContext: proof,
+        gwClient: client,
+        sendToWindow: vi.fn(),
+        mainWindow: {},
+        windowsNodeMxcSecurityTransitionInProgress: false,
+        findPendingWindowsNodeMxcGatewayApproval: () => pending,
+        isApplicationIngressReady: () => true,
+        getWindowsNodeMxcFolderPolicy: () => ({ ro: [], rw: [] }),
+        validateWindowsNodeMxcUserDir: async (folder) => ({ ok: true, canonicalPath: folder }),
+        planWindowsNodeMxcFolderUpsert: (_policy, folder, access) => ({
+          ok: true,
+          dirs: { ro: [], rw: access === "rw" ? [folder] : [] },
+        }),
+        applyRunningWindowsNodeMxcFolders: applyFolders,
+        commitMxcApprovalDecision,
+        windowsNodeMxcGatewayApprovalResolutionTarget: null,
+        console: { info: vi.fn(), error: vi.fn() },
+      });
+      const outcome = await commit.handle(pending, "allow-once", "desktop", null);
+      expect(outcome).toMatchObject({ status: "accepted", decision: "allow-once" });
+      expect(applyFolders).toHaveBeenCalledExactlyOnceWith(
+        { ro: [], rw: [root] },
+        pending,
+        expect.any(Function),
+        undefined,
+      );
+      expect(resolve).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
+        id: request.id,
+        decision: "allow-once",
+      });
+    },
+  );
+  function useActualMainCommit(authority, expiresAtUnixMs, remoteSecurity, beforeResolve) {
+    const outcomes = [];
+    const entry = {
+      request: approval,
+      gatewayGeneration: security.gatewayGeneration,
+      receivedAtUnixMs: Date.now(),
+      expiresAtUnixMs,
+      remoteSecurity,
+      remoteSource: findWeixinApprovalSource(sources, approval),
+      remoteAuthorityHash: weixinRemoteApprovalAuthorityHash(configuration),
+      remoteChallengeId: deliveredChallengeId,
+    };
+    const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
+      exactWeixinApprovalSource,
+      getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      weixinRemoteApprovalAuthorityHash,
+      windowsNodeMxcWeixinRemoteApprovalBroker: broker,
+      readAuthenticatedWeixinWireOwner,
+      getOpenClawStateDir: () => stateDir,
+      withWindowsNodeMxcApprovalResolution: (operation) => operation(),
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcApprovalProofContext: authority.proofContext,
+      gwClient: gateway,
+      requireEffectiveWindowsNodeMxc: (...args) => authority.readiness.handle(...args),
+      windowsNodeMxcSecurityTransitionInProgress: false,
+      findPendingWindowsNodeMxcGatewayApproval: () => entry,
+      sendToWindow: vi.fn(),
+      mainWindow: {},
+      isApplicationIngressReady: () => true,
+      isWindowsNodeMxcIngressReleased: () => true,
+      windowsNodeMxcIngressGeneration: security.gatewayGeneration,
+      windowsNodeMxcActivationInProgress: false,
+      currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => authority.current.handle(),
+      commitMxcApprovalDecision,
+      windowsNodeMxcGatewayApprovalResolutionTarget: null,
+      console: { info: vi.fn(), error: vi.fn() },
+    });
+    entry.lifecycle = new WindowsNodeMxcApprovalLifecycle(expiresAtUnixMs, {
+      resolve: (decision, origin) => commit.handle(entry, decision, origin, remoteSecurity),
+      terminal: async (outcome) => {
+        outcomes.push(outcome);
+      },
+      error: vi.fn(),
+      now: Date.now,
+    });
+    const resolver = createMainFunctionFixture("resolvePendingWindowsNodeMxcGatewayApproval", {
+      findPendingWindowsNodeMxcGatewayApproval: () => (entry.lifecycle.pending ? entry : null),
+      getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+      weixinRemoteApprovalAuthorityHash,
+      windowsNodeMxcWeixinRemoteApprovalBroker: broker,
+    });
+    main.replace("pendingWindowsNodeMxcGatewayApproval", entry);
+    main.replace("resolvePendingWindowsNodeMxcGatewayApproval", async (...args) => {
+      await beforeResolve?.();
+      await resolver.handle(...args);
+    });
+    gateway.request.mockImplementation(async (method, params) => {
+      if (method === "exec.approval.resolve") {
+        decisions.push({ approvalIds: [params.id], decision: params.decision });
+        return {};
+      }
+      return { ok: true, key, agentId: "main" };
+    });
+    return { entry, commit, outcomes };
+  }
+  it("projects the authenticated canonical origin through actual Main initial, delivery-update and snapshot producers, without exposing peer authority", async () => {
+    const executionSessionKey = "agent:main:sandbox:execution-policy";
+    const request = {
+      ...approval,
+      sessionKey: executionSessionKey,
+      origin: { ...approval.origin, executionSessionKey, runSessionKey: key },
+    };
+    const before = JSON.stringify(request);
+    const send = vi.fn();
+    const dependencies = {
+      windowsNodeMxcApprovalResolutionCompletion: null,
+      windowsNodeMxcApprovalProofContext: null,
+      canUseWindowsNodeMxcDurableApproval: () => false,
+      isWindowsNodeMxcDesired: () => true,
+      getWindowsNodeMxcMissingFolders: () => [],
+      getBundledWindowsNodeFolders: () => [],
+      windowsNodeMxcWeixinContext: null,
+      isApplicationIngressReady: () => true,
+      getWindowsNodeMxcRequestedMode: () => "limited-dacl",
+      gatewayGenerationId: security.gatewayGeneration,
+      windowsNodeMxcIngressGeneration: security.gatewayGeneration,
+      windowsNodeMxcActivationInProgress: false,
+      isWindowsNodeMxcIngressReleased: () => true,
+      findPendingWindowsNodeMxcGatewayApproval: () => null,
+      mxcApprovalDeadline: (now, expiry) => Math.min(now + 60_000, expiry ?? Infinity),
+      findWeixinApprovalSource: () => null,
+      windowsNodeMxcWeixinRemoteApprovalSources: sources,
+      currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => security,
+      windowsNodeMxcWeixinRemoteApprovalServer: null,
+      resolveSupportedLocale: () => "en-US",
+      settingsStore: { get: () => "en-US" },
+      WindowsNodeMxcApprovalLifecycle: class {
+        pending = true;
+        start() {}
+      },
+      WeixinRemoteDeliveryCoordinator,
+      pendingWindowsNodeMxcGatewayApproval: null,
+      queuedWindowsNodeMxcGatewayApprovals: [],
+      beginPendingWindowsNodeMxcRemoteDelivery: () => undefined,
+      sendToWindow: send,
+      mainWindow: {},
+      projectWindowsNodeMxcApprovalForRenderer,
+      console: { info: vi.fn() },
+    };
+    const initial = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", dependencies);
+    await initial.handle(request, security.gatewayGeneration);
+    expect(send).toHaveBeenCalledTimes(1);
+    const pending = {
+      request,
+      gatewayGeneration: security.gatewayGeneration,
+      lifecycle: { pending: true },
+      expiresAtUnixMs: send.mock.calls[0][2].expiresAtUnixMs,
+      remoteDelivery: null,
+    };
+    const publication = createMainFunctionFixture("publishPendingWeixinRemoteDelivery", {
+      sendToWindow: send,
+      mainWindow: {},
+      projectWindowsNodeMxcApprovalForRenderer,
+      getWindowsNodeMxcRequestedMode: () => "limited-dacl",
+    });
+    publication.handle(pending, {
+      state: "sent",
+      reason: null,
+      replyMode: "simple-current-prompt",
+      revision: 0,
+    });
+    const snapshot = createMainFunctionFixture("getPendingWindowsNodeMxcApprovalForRenderer", {
+      allPendingWindowsNodeMxcGatewayApprovals: () => [pending],
+      projectWindowsNodeMxcApprovalForRenderer,
+      getWindowsNodeMxcRequestedMode: () => "limited-dacl",
+    });
+    for (const value of [...send.mock.calls.map((call) => call[2]), snapshot.handle()]) {
+      expect(value.activity).toEqual({
+        gatewayGeneration: security.gatewayGeneration,
+        sessionKey: key,
+        runId: request.origin.runId,
+        toolCallId: request.origin.toolCallId,
+      });
+      expect(value.origin).toBeUndefined();
+      expect(value.activity).not.toHaveProperty("accountId");
+      expect(value.activity).not.toHaveProperty("to");
+      expect(value.commandText).toBe(request.command);
+      expect(value.arguments).toEqual(request.arguments);
+      expect(value.canonicalCwd).toBe(request.canonicalCwd);
+      expect(value.declaredAccess).toEqual(request.declaredAccess);
+      expect(value.sessionKey).toBe(executionSessionKey);
+    }
+    expect(JSON.stringify(request)).toBe(before);
+    initial.replace("findPendingWindowsNodeMxcGatewayApproval", () => pending);
+    await initial.handle(request, security.gatewayGeneration);
+    expect(send).toHaveBeenCalledTimes(2); // An already pending replay creates no new popup/activity.
+    for (const invalid of [
+      { ...request, origin: undefined },
+      { ...request, origin: { ...request.origin, gatewayGeneration: "old" } },
+      { ...request, origin: { ...request.origin, executionSessionKey: "other-policy" } },
+      { ...request, origin: { ...request.origin, agentId: "other" } },
+    ])
+      expect(
+        projectWindowsNodeMxcApprovalForRenderer(invalid, security.gatewayGeneration).activity,
+      ).toBeUndefined();
+    const native = createMainFunctionFixture("getPendingWindowsNodeMxcApprovalForRenderer", {
+      allPendingWindowsNodeMxcGatewayApprovals: () => [],
+      bundledWindowsNodeHost: { status: () => ({ pendingApproval: { id: "native", executable } }) },
+    }).handle();
+    expect(native.approvalLayer).toBe("node");
+    expect(native.activity).toBeUndefined();
+
+    const resolve = vi.fn().mockResolvedValue({});
+    const proofContext = { policyFingerprint: security.policyFingerprint };
+    const policyApproved = createMainFunctionFixture("handleWindowsNodeMxcGatewayApproval", {
+      ...dependencies,
+      windowsNodeMxcApprovalProofContext: proofContext,
+      withWindowsNodeMxcApprovalResolution: (run) => run(),
+      requireEffectiveWindowsNodeMxc: async () => undefined,
+      gwClient: { connected: true, request: resolve },
+    });
+    await policyApproved.handle(
+      { ...request, commandConsent: { required: false, allowAlwaysAvailable: false } },
+      security.gatewayGeneration,
+    );
+    expect(resolve).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
+      id: request.id,
+      decision: "allow-once",
+    });
+    expect(send).toHaveBeenCalledTimes(2); // Policy approval creates no pending display activity.
+  });
+
+  it.each([
+    ["no covering grant", `Test-Path '${target}'`, []],
+    [
+      "outside covering grant",
+      `Test-Path '${target}'`,
+      [{ access: "ro", path: String.raw`C:\Elsewhere` }],
+    ],
+    [
+      "mutating command under RO",
+      `Remove-Item -Path '${target}' -Recurse -Force`,
+      [{ access: "ro", path: root }],
+    ],
+    [
+      "extra operation",
+      `Test-Path '${target}'; Remove-Item '${target}'`,
+      [{ access: "ro", path: root }],
+    ],
+    ["extra switch", `Test-Path '${target}' -Force`, [{ access: "ro", path: root }]],
+  ])(
+    "displays the exact normalized exec without inferring access from its syntax: %s",
+    async (_name, script, grants) => {
+      approval = approvalFor(script, "ro", grants);
+      const before = JSON.stringify(approval);
+      const delivery = await deliver();
+      expect(delivery).not.toBeNull();
+      const text = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
+      expect(displayedCommand(text)).toBe(approval.command);
+      for (const grant of grants) expect(text).toContain(grant.path);
+      if (!grants.length) expect(text).toContain("None");
+      expect(JSON.stringify(approval)).toBe(before);
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([{ approvalIds: [approval.id], decision: "allow-once" }]);
+    },
+  );
+
+  it("keeps a recognizable sensitive path local without including its contents in the fallback", async () => {
+    approval = approvalFor(`Test-Path '${root}\\password_cache'`, "ro", [
+      { access: "ro", path: root },
+    ]);
+    expect(await deliver()).toBeNull();
+    const notice = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
+    expect(notice).toContain("cannot be safely displayed or approved on WeChat");
+    expect(notice).not.toContain("password_cache");
+  });
+
+  it.each(["create", "exists-ro"])(
+    "delivers the actual normalized %s plan with exact context, coded backward compatibility and correlated provider receipt",
+    async (operation) => {
+      if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
+      expect(approval.origin.to).toBe(rawPeer);
+      expect(gateway.request).toHaveBeenCalledWith(
+        "sessions.resolve",
+        {
+          key,
+          agentId: "main",
+          includeGlobal: false,
+          includeUnknown: false,
+        },
+        3_000,
+      );
+      expect(sources.get(key)).toBeDefined();
+      expect(sources.get(key).senderId).toBe(rawPeer);
+      expect(sources.get(key).conversationId).toBe(rawPeer);
+      expect(mainDiagnostics).toContainEqual(
+        expect.objectContaining({
+          stage: "weixin-source-cached",
+          reason: "source-cached",
+        }),
+      );
+      expect(mainDiagnostics).toContainEqual(
+        expect.objectContaining({
+          stage: "weixin-run-registration",
+          reason: "source-run-bound",
+        }),
+      );
+      for (const record of mainDiagnostics)
+        expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
+      expect(readWeixinAccountStatus(stateDir).currentAccount.userId).toBe(rawPeer.toLowerCase());
+      expect(getContextToken("bot", rawPeer.toLowerCase())).toBeUndefined();
+      const delivery = await deliver();
+      expect(delivery).not.toBeNull();
+      expect(delivery.senderId).toBe(rawPeer);
+      expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(fetch.mock.calls[0][1].body);
+      expect(body.msg.to_user_id).toBe(rawPeer);
+      expect(body.msg.context_token).toBe("synthetic-exact-context");
+      expect(body.msg.item_list[0].text_item.text).toContain("Reply 1:");
+      expect(body.msg.item_list[0].text_item.text).toContain(target);
+      expect(body.msg.item_list[0].text_item.text).toContain(executable);
+      expect(body.msg.item_list[0].text_item.text).not.toContain("Args:");
+      expect(approval.command).toBe(windowsCommand([approval.executable, ...approval.arguments]));
+      expect(approval.command).toContain(target);
+      const receipt = records.find(
+        (record) => record.stage === "provider" && record.code === "provider-accepted",
+      );
+      expect(receipt.providerClientHash).toBe(
+        createHash("sha256").update(body.msg.client_id).digest("hex").slice(0, 16),
+      );
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          stage: "pipe",
+          kind: "prompt",
+          code: "delivery-dispatched",
+          deliveryHash: receipt.deliveryHash,
+        }),
+      );
+      for (const record of records)
+        expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
+      const code = delivery.replyCode;
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0].decision).toBe("allow-once");
+      expect(JSON.stringify(records)).not.toContain(rawPeer);
+      expect(JSON.stringify(records)).not.toContain("synthetic-exact-context");
+    },
+  );
+  it.each([
+    ["create", "1", "allow-once"],
+    ["create", "3", "deny"],
+    ["exists-ro", "1", "allow-once"],
+    ["exists-ro", "3", "deny"],
+    ["exists-rw", "1", "allow-once"],
+    ["exists-rw", "3", "deny"],
+    ["create-renew-before", "1", "allow-once"],
+    ["create-renew-route", "1", "allow-once"],
+    ["create-renew-commit", "1", "allow-once"],
+    ["create-renew-concurrent", "1", "allow-once"],
+  ])(
+    "runs actual %s plugin dispatch and pinned SDK callback through Main and bare %s before a second agent dispatch",
+    async (operation, digit, decision) => {
+      let authority;
+      let approvalSecurity = security;
+      let logicalNow;
+      if (operation.startsWith("create-renew")) {
+        logicalNow = Date.now();
+        renewalClock = vi.spyOn(Date, "now").mockImplementation(() => logicalNow);
+        approval = approvalFor(undefined, "rw", [{ access: "rw", path: root }], true);
+        expect(approval.providerInitialization).toBeDefined();
+        authority = await useRenewableMainSecurity();
+        approvalSecurity = authority.current.handle();
+        expect(approvalSecurity).not.toBeNull();
+      }
+      if (operation.startsWith("exists")) {
+        approval = approvalFor(`Test-Path '${target}'`, operation === "exists-ro" ? "ro" : "rw");
+        expect(classifyLiteralFilesystemCommand(approval)).toMatchObject({
+          kind: "exists-path",
+          path: target,
+          force: false,
+          recursive: false,
+        });
+      }
+      const original = JSON.stringify(approval);
+      sources.clear();
+      mainDiagnostics.length = 0;
+      await registerUserInFrameworkStore({ accountId: "bot", userId: rawPeer });
+      const order = [];
+      const originalDeadline = Date.now() + 45_000;
+      const intercept = transport.intercept.bind(transport);
+      vi.spyOn(transport, "intercept").mockImplementation(async (params) => {
+        order.push(params.sourcePhase);
+        return intercept(params);
+      });
+      const dispatch = vi.fn(async ({ replyOptions }) => {
+        order.push("dispatch");
+        const notify = createPinnedAgentRunStartNotifier(
+          replyOptions.onAgentRunStart,
+          approval.origin.runId,
+        );
+        notify();
+        await vi.waitFor(() => expect(sources.get(key)?.runIds).toEqual([approval.origin.runId]));
+        const delivered = await deliver(originalDeadline, approvalSecurity);
+        expect(delivered).not.toBeNull();
+        expect(delivered.expiresAtUnixMs).toBe(originalDeadline);
+        order.push("delivery");
+      });
+      const deps = {
+        accountId: "bot",
+        token: "synthetic-account-token",
+        config: { channels: { "openclaw-weixin": { replyProgressMessages: false } } },
+        remoteApprovalTransport: transport,
+        log: vi.fn(),
+        errLog: vi.fn(),
+        channelRuntime: {
+          routing: { resolveAgentRoute: () => ({ agentId: "main", sessionKey: key }) },
+          session: {
+            resolveStorePath: () => path.join(stateDir, "test-only-store"),
+            recordInboundSession: async () => order.push("record"),
+          },
+          reply: {
+            finalizeInboundContext: (ctx) => ctx,
+            resolveHumanDelayConfig: () => undefined,
+            createReplyDispatcherWithTyping: () => ({
+              dispatcher: {},
+              replyOptions: {},
+              markDispatchIdle: vi.fn(),
+            }),
+            withReplyDispatcher: ({ run }) => run(),
+            dispatchReplyFromConfig: dispatch,
+          },
+        },
+      };
+      await processOneMessage(message(), deps);
+      expect(deps.errLog).not.toHaveBeenCalled();
+      expect(order).toEqual(["start", "record", "dispatch", "run", "delivery"]);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(fetch.mock.calls[0][1].body).msg;
+      expect(sent.to_user_id).toBe(rawPeer);
+      expect(sent.context_token).toBe("synthetic-exact-context");
+      expect(sent.item_list[0].text_item.text).toContain("Reply 1:");
+      if (operation.startsWith("exists")) {
+        expect(displayedCommand(sent.item_list[0].text_item.text)).toBe(approval.command);
+        expect(sent.item_list[0].text_item.text).toContain(
+          operation === "exists-ro" ? "Read-only" : "Read/write",
+        );
+        expect(approval.arguments.at(-1)).toBe(
+          `powershell -NoProfile -Command "Test-Path '${target}'"`,
+        );
+        expect(approval.providerInitialization).toBeUndefined();
+      }
+      expect(JSON.stringify(approval)).toBe(original);
+      if (authority) {
+        const renew = async () => {
+          logicalNow += 35_000;
+          await Promise.all([
+            authority.host.setActivationLease("active", 120_000),
+            ...(operation === "create-renew-concurrent"
+              ? [authority.host.setActivationLease("active", 120_000)]
+              : []),
+          ]);
+          expect(authority.host.status().activationLease.expiresAtUnixMs).toBe(
+            logicalNow + 120_000,
+          );
+        };
+        const actualCommit = useActualMainCommit(
+          authority,
+          originalDeadline,
+          approvalSecurity,
+          operation === "create-renew-commit" ? renew : undefined,
+        );
+        authority.outcomes = actualCommit.outcomes;
+        authority.commitEntry = actualCommit.entry;
+        if (operation === "create-renew-before" || operation === "create-renew-concurrent")
+          await renew();
+        else if (operation === "create-renew-route")
+          gateway.request.mockImplementationOnce(async () => {
+            await renew();
+            return { ok: true, key, agentId: "main" };
+          });
+      }
+      await processOneMessage(
+        message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: digit } }],
+        }),
+        deps,
+      );
+      expect(deps.errLog).not.toHaveBeenCalled();
+      expect(decisions).toEqual([{ approvalIds: [approval.id], decision }]);
+      if (authority)
+        expect(authority.outcomes).toEqual([
+          {
+            status: "accepted",
+            decision: "allow-once",
+            origin: "wechat",
+          },
+        ]);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      await processOneMessage(
+        message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: digit } }],
+        }),
+        deps,
+      );
+      expect(decisions).toHaveLength(1);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(approval)).toBe(original);
+      if (authority) expect(authority.commitEntry.expiresAtUnixMs).toBe(originalDeadline);
+      expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+    },
+  );
+
+  it.each(
+    [false, true].flatMap((nativeConsent) =>
+      ["whoami", "exists-ro"].map((operation) => [nativeConsent, operation]),
+    ),
+  )(
+    "never offers a phone Always for Windows Node consent, even with native durable consent=%s (%s)",
+    async (nativeConsent, operation) => {
+      const executable = String.raw`C:\Windows\System32\whoami.exe`;
+      const argv = [executable, "/all"];
+      const systemRunPlan = {
+        argv,
+        commandText: windowsCommand(argv),
+        commandPreview: windowsCommand(argv),
+        cwd: null,
+        cwdBinding: "isolated-scratch:v1",
+        agentId: "main",
+        sessionKey: key,
+        executablePath: executable,
+        executableSha256: createHash("sha256")
+          .update(
+            process.platform === "win32"
+              ? readFileSync(executable)
+              : Buffer.from("synthetic-whoami"),
+          )
+          .digest("hex"),
+        declaredAccess: [],
+        commandConsent: { required: true, allowAlwaysAvailable: true },
+      };
+      approval = normalizeWindowsNodeMxcGatewayApproval(
+        {
+          id: randomUUID(),
+          request: { ...captured, systemRunPlan, command: systemRunPlan.commandText },
+        },
+        security.nodeId,
+        security.gatewayGeneration,
+      );
+      if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
+      expect(approval).not.toBeNull();
+      expect(approval.hasMutableFileOperand).toBe(false);
+      expect(approval.allowedDecisions.includes("allow-always")).toBe(operation === "whoami");
+      if (nativeConsent) {
+        configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+        broker.configure(configuration);
+      }
+      const before = JSON.stringify(configuration);
+      const delivery = await deliver();
+      expect(delivery).not.toBeNull();
+      expect(delivery.text).not.toContain("2: remember");
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: "2" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([]);
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1003,
+            seq: 44,
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([{ approvalIds: [approval.id], decision: "allow-once" }]);
+      expect(JSON.stringify(configuration)).toBe(before);
+    },
+  );
+
+  it.each(
+    [
+      ["no prompt", {}, "none"],
+      ["wrong authenticated peer", { from_user_id: rawPeer.toLowerCase() }, "sent"],
+      [
+        "quoted",
+        {
+          item_list: [{ type: 1, text_item: { text: "1" }, ref_msg: { title: "synthetic quote" } }],
+        },
+        "sent",
+      ],
+      ["forwarded", { message_type: 2 }, "sent"],
+      [
+        "mixed text and attachment",
+        { item_list: [{ type: 1, text_item: { text: "1" } }, { type: 2 }] },
+        "sent",
+      ],
+      ["missing cursor", { seq: undefined }, "sent"],
+      ["missing message ID", { message_id: undefined }, "sent"],
+      [
+        "malformed coded reply",
+        { item_list: [{ type: 1, text_item: { text: "1 WRONG123" } }] },
+        "sent",
+      ],
+      ["wrong canonical route", {}, "route"],
+      ["generation drift", {}, "generation"],
+      ["local resolution", {}, "local"],
+      ["expired prompt", {}, "expired"],
+    ].flatMap((entry) => ["create", "exists-ro"].map((operation) => [operation, ...entry])),
+  )(
+    "keeps actual %s plugin→Main bare reply fail-closed: %s",
+    async (operation, _name, extra, state) => {
+      if (operation === "exists-ro") approval = approvalFor(`Test-Path '${target}'`, "ro");
+      if (state !== "none") await deliver();
+      if (state === "route")
+        gateway.request.mockResolvedValue({ ok: true, key: "agent:main:other", agentId: "main" });
+      if (state === "generation") main.replace("gatewayGenerationId", "generation-changed");
+      if (state === "local") broker.markLocallyResolved(approval.id, "approved");
+      if (state === "expired") {
+        const now = Date.now();
+        vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+      }
+      try {
+        expect(
+          await transport.intercept({
+            message: message({
+              message_id: 1002,
+              seq: 43,
+              item_list: [{ type: 1, text_item: { text: "1" } }],
+              ...extra,
+            }),
+            agentId: "main",
+            sessionKey: key,
+            sourcePhase: "candidate",
+          }),
+        ).toBe(true);
+        expect(decisions).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    },
+  );
+
+  it.each(["authenticated-owner-replaced", "enrollment-disabled", "durable-capability-removed"])(
+    "keeps the delivered read-only existence approval fail-closed after %s",
+    async (change) => {
+      approval = approvalFor(`Test-Path '${target}'`, "ro");
+      configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+      broker.configure(configuration);
+      const delivered = await deliver();
+      expect(delivered.text).not.toContain("2: remember");
+      if (change === "authenticated-owner-replaced") credential(rawPeer.toLowerCase());
+      else {
+        configuration =
+          change === "enrollment-disabled"
+            ? { ...configuration, enabled: false }
+            : { ...configuration, consentScope: undefined };
+        broker.configure(configuration);
+      }
+      expect(
+        await transport.intercept({
+          message: message({
+            message_id: 1002,
+            seq: 43,
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+          }),
+          agentId: "main",
+          sessionKey: key,
+          sourcePhase: "candidate",
+        }),
+      ).toBe(true);
+      expect(decisions).toEqual([]);
+    },
+  );
+
+  it("pins acknowledgement eligibility at arrival, not after awaited effective-mode validation", async () => {
+    let acknowledge;
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const deliveryPromise = deliver();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    main.replace("requireEffectiveWindowsNodeMxc", async () => {
+      acknowledge(new globalThis.Response('{"ret":0}', { status: 200 }));
+      await deliveryPromise;
+    });
+    const reply = () =>
+      transport.intercept({
+        message: message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: "1" } }],
+        }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "candidate",
+      });
+    expect(await reply()).toBe(true);
+    expect(await deliveryPromise).not.toBeNull();
+    expect(decisions).toEqual([]);
+    expect(await reply()).toBe(true);
+    expect(decisions).toEqual([]);
+    const promptReceipts = records.filter(
+      (entry) => entry.kind === "prompt" && entry.code === "provider-accepted",
+    );
+    expect(
+      new Set(promptReceipts.map((entry) => `${entry.deliveryHash}:${entry.providerClientHash}`))
+        .size,
+    ).toBe(1);
+    expect(
+      fetch.mock.calls.filter(([, params]) =>
+        JSON.parse(params.body).msg.item_list[0].text_item.text.includes("Command (exact;"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each(
+    ["before arrival", "during route", "before commit"].flatMap((when) =>
+      [
+        "expired lease",
+        "expired then reissued",
+        "revoked lease",
+        "reissued lease",
+        "diagnostic lease",
+        "mode roundtrip",
+        "host lease key replacement",
+        "host object replacement",
+        "host process exited",
+        "missing lease key",
+        "proof context replacement",
+        "policy drift",
+        "generation drift",
+        "node drift",
+        "requested mode drift",
+        "effective tier drift",
+        "deactivated",
+        "deactivated then reactivated",
+        "security transition",
+      ].map((change) => [when, change]),
+    ),
+  )("keeps actual Main closed for renewable authority drift %s: %s", async (when, change) => {
+    let logicalNow = Date.now();
+    renewalClock = vi.spyOn(Date, "now").mockImplementation(() => logicalNow);
+    approval = approvalFor(undefined, "rw", [{ access: "rw", path: root }], true);
+    const authority = await useRenewableMainSecurity(
+      change.startsWith("expired") ? 5_000 : 120_000,
+    );
+    const initial = authority.current.handle();
+    const deadline = logicalNow + 60_000;
+    const delivery = await deliver(deadline, initial);
+    expect(delivery).not.toBeNull();
+    const changeAuthority = async () => {
+      logicalNow += change.startsWith("expired") ? 5_001 : 1_000;
+      if (change === "revoked lease" || change === "reissued lease")
+        authority.host.revokeActivationLease();
+      if (change === "reissued lease" || change === "expired then reissued")
+        await authority.host.setActivationLease("active", 120_000);
+      if (change === "diagnostic lease" || change === "mode roundtrip")
+        await authority.host.setActivationLease("diagnostic", 120_000);
+      if (change === "mode roundtrip") await authority.host.setActivationLease("active", 120_000);
+      if (change === "host lease key replacement")
+        Object.assign(authority.host, { activationLeaseSecret: Buffer.alloc(32, 8) });
+      if (change === "host process exited")
+        Object.assign(authority.host, { process: { exitCode: 0 } });
+      if (change === "missing lease key")
+        Object.assign(authority.host, { activationLeaseSecret: null });
+      if (change === "host object replacement") {
+        const replacement = await useRenewableMainSecurity(120_000, 8);
+        Object.assign(authority, replacement);
+        authority.commit?.replace("windowsNodeMxcApprovalProofContext", replacement.proofContext);
+      }
+      if (change === "proof context replacement") {
+        const replacement = { ...authority.proofContext };
+        authority.current.replace("windowsNodeMxcApprovalProofContext", replacement);
+        authority.commit?.replace("windowsNodeMxcApprovalProofContext", replacement);
+      }
+      if (change === "policy drift") {
+        Object.assign(authority.host, { policyFingerprint: "e".repeat(64) });
+        await authority.host.setActivationLease("active", 120_000);
+      }
+      if (change === "generation drift") {
+        Object.assign(authority.host, { gatewayGeneration: "replacement-generation" });
+        await authority.host.setActivationLease("active", 120_000);
+      }
+      if (change === "node drift") authority.host.identityNodeId = "replacement-node";
+      if (change === "requested mode drift" || change === "deactivated")
+        authority.current.replace("getWindowsNodeMxcRequestedMode", () =>
+          change === "deactivated" ? "off" : "full",
+        );
+      if (change === "deactivated then reactivated") {
+        authority.current.replace("getWindowsNodeMxcRequestedMode", () => "off");
+        authority.host.revokeActivationLease();
+        authority.current.replace("getWindowsNodeMxcRequestedMode", () => security.requestedMode);
+        await authority.host.setActivationLease("active", 120_000);
+      }
+      if (change === "effective tier drift")
+        authority.current.replace("windowsNodeMxcCurrentEffectiveTier", "base-container");
+      if (change === "security transition")
+        for (const fixture of [
+          main,
+          authority.current,
+          authority.readiness,
+          authority.commit,
+        ].filter(Boolean))
+          fixture.replace("windowsNodeMxcSecurityTransitionInProgress", true);
+    };
+    if (when === "before arrival") await changeAuthority();
+    else if (when === "before commit") {
+      const actualCommit = useActualMainCommit(authority, deadline, initial, changeAuthority);
+      authority.commit = actualCommit.commit;
+    } else
+      gateway.request.mockImplementationOnce(async () => {
+        await changeAuthority();
+        return { ok: true, key, agentId: "main" };
+      });
+    expect(
+      await transport.intercept({
+        message: message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: "1" } }],
+        }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "candidate",
+      }),
+    ).toBe(true);
+    expect(decisions).toEqual([]);
+    expect(delivery.expiresAtUnixMs).toBe(deadline);
+    const receipts = records.filter(
+      (record) => record.kind === "prompt" && record.code === "provider-accepted",
+    );
+    expect(
+      new Set(receipts.map((record) => `${record.deliveryHash}:${record.providerClientHash}`)).size,
+    ).toBe(1);
+    expect(
+      fetch.mock.calls.filter(([, params]) =>
+        JSON.parse(params.body).msg.item_list[0].text_item.text.includes("Command (exact;"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    "client replacement",
+    "client disconnect",
+    "generation change",
+    "pending replacement",
+    "feature disabled",
+    "owner binding epoch",
+    "consent scope",
+    "raw owner replacement",
+    "security transition",
+  ])("revalidates actual Main authority after its awaited reply route: %s", async (change) => {
+    await deliver();
+    let finishRoute;
+    gateway.request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRoute = resolve;
+        }),
+    );
+    const reply = transport.intercept({
+      message: message({
+        message_id: 1002,
+        seq: 43,
+        item_list: [{ type: 1, text_item: { text: "1" } }],
+      }),
+      agentId: "main",
+      sessionKey: key,
+      sourcePhase: "candidate",
+    });
+    await vi.waitFor(() => expect(finishRoute).toBeTypeOf("function"));
+    if (change === "client replacement") main.replace("gwClient", { ...gateway });
+    if (change === "client disconnect") gateway.connected = false;
+    if (change === "generation change") main.replace("gatewayGenerationId", "changed-generation");
+    if (change === "pending replacement")
+      main.replace("pendingWindowsNodeMxcGatewayApproval", { request: approval });
+    if (change === "feature disabled") configuration = { ...configuration, enabled: false };
+    if (change === "owner binding epoch")
+      configuration = {
+        ...configuration,
+        owner: { ...configuration.owner, boundAt: "2026-10-22T00:00:00Z" },
+      };
+    if (change === "consent scope")
+      configuration = { ...configuration, consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE };
+    if (change === "raw owner replacement") credential(rawPeer.toLowerCase());
+    if (change === "security transition")
+      main.replace("windowsNodeMxcSecurityTransitionInProgress", true);
+    finishRoute({ ok: true, key, agentId: "main" });
+    expect(await reply).toBe(true);
+    expect(decisions).toEqual([]);
+    for (const record of mainDiagnostics)
+      expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
+  });
+  it("rejects a same-fold byte-distinct source and a same-fold origin target without looking up aliases", async () => {
+    sources.clear();
+    await source({ from_user_id: rawPeer.toLowerCase() });
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).reason).toBe("source-unavailable");
+    expect(mainDiagnostics).toContainEqual(
+      expect.objectContaining({
+        stage: "weixin-source-validation",
+        reason: "source-identity-mismatch",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    await source();
+    approval = { ...approval, origin: { ...approval.origin, to: rawPeer.toLowerCase() } };
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).reason).toBe("source-provider-mismatch");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each([
+    [
+      "raw credential replaced with a same-fold peer",
+      () => credential(rawPeer.toLowerCase()),
+      "source-identity-mismatch",
+    ],
+    [
+      "bound owner replaced",
+      () => {
+        configuration = {
+          ...configuration,
+          owner: { ...configuration.owner, boundAt: "2026-10-22T00:00:00Z" },
+        };
+      },
+      "security-binding-invalid",
+    ],
+    [
+      "enrollment disabled",
+      () => {
+        configuration = { ...configuration, enabled: false };
+      },
+      "source-owner-unavailable",
+    ],
+    [
+      "Gateway generation changed",
+      () => main.replace("gatewayGenerationId", "replacement-generation"),
+      "security-binding-invalid",
+    ],
+    [
+      "Gateway client replaced",
+      () => main.replace("gwClient", { ...gateway }),
+      "security-binding-invalid",
+    ],
+    [
+      "Gateway disconnected",
+      () => {
+        gateway.connected = false;
+      },
+      "security-binding-invalid",
+    ],
+    [
+      "security transition began",
+      () => main.replace("windowsNodeMxcSecurityTransitionInProgress", true),
+      "security-binding-invalid",
+    ],
+  ])(
+    "revalidates %s after the awaited authoritative route lookup",
+    async (_name, mutate, reason) => {
+      sources.clear();
+      gateway.request.mockImplementationOnce(async () => {
+        mutate();
+        return { ok: true, key, agentId: "main" };
+      });
+      await source();
+      expect(sources.size).toBe(0);
+      expect(await deliver()).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mainDiagnostics).toContainEqual(
+        expect.objectContaining({
+          stage: "weixin-source-validation",
+          reason,
+        }),
+      );
+    },
+  );
+  it.each([
+    ["missing route", { ok: false }],
+    ["different route agent", { ok: true, key, agentId: "other-agent" }],
+  ])("rejects %s without guessing an alias", async (_name, result) => {
+    sources.clear();
+    gateway.request.mockResolvedValueOnce(result);
+    await source();
+    expect(sources.size).toBe(0);
+    expect(await deliver()).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mainDiagnostics).toContainEqual(
+      expect.objectContaining({
+        stage: "weixin-source-validation",
+        reason: "source-route-unresolved",
+      }),
+    );
+  });
+  it("does not substitute a newly resolved route for the actual approved originating route", async () => {
+    sources.clear();
+    const replacementRoute = "agent:main:other-conversation";
+    gateway.request.mockResolvedValueOnce({ ok: true, key: replacementRoute, agentId: "main" });
+    await source();
+    expect(sources.has(key)).toBe(false);
+    expect(sources.get(replacementRoute).senderId).toBe(rawPeer);
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).reason).toBe("source-unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("removes the exact raw source when actual plugin completion arrives", async () => {
+    expect(sources.get(key).senderId).toBe(rawPeer);
+    await interceptWeixinRemoteApprovalMessage(
+      message(),
+      {
+        accountId: "bot",
+        token: "synthetic-account-token",
+        config: {},
+        channelRuntime: {
+          routing: { resolveAgentRoute: () => ({ agentId: "main", sessionKey: key }) },
+        },
+        remoteApprovalTransport: transport,
+      },
+      "complete",
+    );
+    expect(sources.size).toBe(0);
+    expect(await deliver()).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["missing seq", { seq: undefined }, "provider-cursor-unavailable"],
+    ["unsafe numeric seq", { seq: 9007199254740992 }, "provider-cursor-unavailable"],
+    ["missing message ID", { message_id: undefined }, "provider-message-id-unavailable"],
+  ])("keeps %s fail-closed with typed normalization diagnostics", async (_name, extra, reason) => {
+    sources.clear();
+    await source(extra);
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).reason).toBe("source-unavailable");
+    expect(inboundDiagnostics).toContainEqual(expect.objectContaining({ code: reason }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("does not bind an unrelated provider message to the real SDK run", async () => {
+    await source({}, { message_id: 2002, seq: 44 });
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).reason).toBe("source-run-mismatch");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("keeps current owner replacement fail-closed even when canonical lowercase identity is unchanged", async () => {
+    const delivery = await deliver();
+    const code = delivery.replyCode;
+    credential(rawPeer.toLowerCase());
+    await transport.intercept({
+      message: message({
+        message_id: 1002,
+        seq: 43,
+        item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+      }),
+      agentId: "main",
+      sessionKey: key,
+      sourcePhase: "candidate",
+    });
+    expect(decisions).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("reports provider rejection with exact client/delivery hashes and no response body or retry", async () => {
+    fetch.mockResolvedValue(
+      new globalThis.Response('{"ret":-3,"errmsg":"synthetic-sensitive-provider-body"}', {
+        status: 200,
+      }),
+    );
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).state).toBe("unconfirmed");
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        stage: "provider",
+        code: "provider-rejected",
+        providerRet: -3,
+        providerClientHash: createHash("sha256")
+          .update(body.msg.client_id)
+          .digest("hex")
+          .slice(0, 16),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(records)).not.toContain("synthetic-sensitive-provider-body");
+    expect(JSON.stringify(records)).not.toContain("synthetic-account-token");
+  });
+  it.each([null, false, "", "0", 0.5, 9007199254740992, "synthetic-private-return-code"])(
+    "rejects present malformed provider ret=%j without authority, raw diagnostics or retry",
+    async (ret) => {
+      vi.clearAllMocks();
+      fetch.mockResolvedValue(
+        new globalThis.Response(
+          JSON.stringify({
+            ret,
+            errmsg: "synthetic-sensitive-provider-body",
+          }),
+          { status: 200 },
+        ),
+      );
+      expect(await deliver()).toBeNull();
+      expect(states.at(-1).state).toBe("unconfirmed");
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          stage: "provider",
+          kind: "prompt",
+          code: "provider-response-invalid",
+        }),
+      );
+      expect(records.some((record) => record.code === "provider-accepted")).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const result = broker.resolveCandidate({
+        ...sources.get(key),
+        text: "1",
+        messageId: "1002",
+        cursor: "43",
+        receivedAtUnixMs: Date.now(),
+        ambiguous: false,
+        requests: [{ approval }],
+        security,
+      });
+      expect(result.status).not.toBe("approved");
+      expect(decisions).toEqual([]);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const diagnostics = JSON.stringify({
+        records,
+        logs: Object.values(logger).flatMap((log) => log.mock.calls),
+      });
+      expect(diagnostics).not.toContain("synthetic-sensitive-provider-body");
+      expect(diagnostics).not.toContain("synthetic-private-return-code");
+      expect(diagnostics).not.toContain("synthetic-account-token");
+    },
+  );
+  it("accepts omitted protobuf-default ret without changing exact owner or legacy consent", async () => {
+    fetch.mockResolvedValue(new globalThis.Response("{}", { status: 200 }));
+    expect(await deliver()).not.toBeNull();
+    expect(states.at(-1).state).toBe("sent");
+    expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  function assertProviderSend(index, kind) {
+    const body = JSON.parse(fetch.mock.calls[index][1].body);
+    expect(body.msg.to_user_id).toBe(rawPeer);
+    expect(body.msg.context_token).toBe("synthetic-exact-context");
+    const providerClientHash = createHash("sha256")
+      .update(body.msg.client_id)
+      .digest("hex")
+      .slice(0, 16);
+    const record = records.find(
+      (entry) =>
+        entry.kind === kind &&
+        entry.code === "provider-accepted" &&
+        entry.providerClientHash === providerClientHash,
+    );
+    expect(record).toBeDefined();
+    expect(isSafeMxcApprovalMetadataFrame(JSON.stringify(record))).toBe(true);
+    return { body, record };
+  }
+  it("sends rejected-reply acknowledgement via the exact raw peer/cache and a real provider client receipt", async () => {
+    await deliver();
+    expect(
+      await transport.intercept({
+        message: message({
+          message_id: 1002,
+          seq: 43,
+          item_list: [{ type: 1, text_item: { text: "1 AAAAAAAA" } }],
+        }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "candidate",
+      }),
+    ).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const { record } = assertProviderSend(1, "acknowledgement");
+    expect(record.inboundHash).toMatch(/^[a-f0-9]{16}$/);
+    expect(record.challengeHash).toBeUndefined();
+    expect(decisions).toEqual([]);
+  });
+  it("sends a no-decision reminder through the same exact sender and binds the current challenge", async () => {
+    const delivery = await deliver();
+    expect(
+      await transport.intercept({
+        message: message({
+          seq: undefined,
+          item_list: [{ type: 1, text_item: { text: "uncoded follow-up" } }],
+        }),
+        agentId: "main",
+        sessionKey: key,
+        sourcePhase: "candidate",
+      }),
+    ).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const { body, record } = assertProviderSend(1, "reminder");
+    expect(record.challengeHash).toBe(
+      createHash("sha256").update(delivery.challengeId).digest("hex").slice(0, 16),
+    );
+    expect(body.msg.item_list[0].text_item.text).toContain(
+      "one available digit from the current prompt",
+    );
+    expect(body.msg.item_list[0].text_item.text).not.toContain("exact always");
+    expect(decisions).toEqual([]);
+  });
+  it("sends terminal notices through exact raw identity and revalidates replacement before the next send", async () => {
+    const delivery = await deliver();
+    await server.deliver({
+      accountId: "bot",
+      to: rawPeer,
+      kind: "terminal",
+      terminalChallengeId: delivery.challengeId,
+      text: "MicroClaw Security Approval: closed.",
+      onDiagnostic: (record) => records.push(record),
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const { record } = assertProviderSend(1, "terminal");
+    expect(record.challengeHash).toBe(
+      createHash("sha256").update(delivery.challengeId).digest("hex").slice(0, 16),
+    );
+    credential(rawPeer.toLowerCase());
+    await expect(
+      server.deliver({
+        accountId: "bot",
+        to: rawPeer,
+        kind: "terminal",
+        terminalChallengeId: delivery.challengeId,
+        text: "MicroClaw Security Approval: closed.",
+        onDiagnostic: (entry) => records.push(entry),
+      }),
+    ).rejects.toThrow("unconfirmed");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: "terminal",
+        code: "owner-changed",
+        stage: "provider",
+      }),
+    );
+  });
+  it("reports missing exact context without trying a same-fold cache entry or contacting the provider", async () => {
+    clearContextTokensForAccount("bot");
+    setContextToken("bot", rawPeer.toLowerCase(), "synthetic-wrong-context");
+    expect(await deliver()).toBeNull();
+    expect(records).toContainEqual(
+      expect.objectContaining({ code: "context-unavailable", stage: "provider" }),
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("sends only a safe local-only notice for secret-bearing arbitrary script", async () => {
+    approval = approvalFor("$apiKey='synthetic-inline-secret'; Invoke-Expression $apiKey");
+    expect(await deliver()).toBeNull();
+    expect(states.at(-1).state).toBe("local-only");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body.msg.to_user_id).toBe(rawPeer);
+    expect(body.msg.item_list[0].text_item.text).toContain("Desktop");
+    expect(JSON.stringify(body)).not.toContain("synthetic-inline-secret");
+    expect(JSON.stringify(body)).not.toContain("Invoke-Expression");
+  });
+  it.skipIf(!process.env.MICROCLAW_NATIVE_APPROVAL_BRIDGE_TEST)(
+    "binds actual builder/closed consent/phone/proof to native create-delete with exact canonical CWD and error semantics",
+    async () => {
+      const bridge = mkdtempSync(path.join(os.tmpdir(), "microclaw-native-scope-"));
+      const secretBase64 = randomBytes(32).toString("base64");
+      const repository = path.resolve("..");
+      const nodeIdBefore = security.nodeId;
+      let exited = false;
+      let output = "";
+      let testError;
+      const child = spawn(
+        "dotnet",
+        [
+          "test",
+          path.join(
+            repository,
+            "windows-node-host.Tests",
+            "MicroClaw.WindowsNodeHost.Tests.csproj",
+          ),
+          "--no-build",
+          "--no-restore",
+          "-m:1",
+          "-p:BuildInParallel=false",
+          "-nodeReuse:false",
+          "--filter",
+          "FullyQualifiedName~PowerShellFilesystemScopeNativeApprovalBridge",
+          "--logger",
+          "trx;LogFileName=result.trx",
+          "--results-directory",
+          bridge,
+          "--verbosity",
+          "quiet",
+        ],
+        {
+          cwd: repository,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            MICROCLAW_NATIVE_APPROVAL_BRIDGE: bridge,
+            MICROCLAW_NATIVE_APPROVAL_BRIDGE_SECRET: secretBase64,
+            MICROCLAW_MXC_NATIVE_TEST_SCRATCH: bridge,
+          },
+        },
+      );
+      child.stdout.on("data", (value) => {
+        output = (output + value).slice(-20000);
+      });
+      child.stderr.on("data", (value) => {
+        output = (output + value).slice(-20000);
+      });
+      const completion = new Promise((resolve, reject) => {
+        child.once("error", () =>
+          reject(new Error("Native approval bridge process failed to start")),
+        );
+        child.once("exit", (code) => {
+          exited = true;
+          resolve(code);
+        });
+      });
+      async function read(file) {
+        const target = path.join(bridge, file);
+        const deadline = Date.now() + 60_000;
+        while (!existsSync(target) && !exited && Date.now() < deadline) await delay(25);
+        if (!existsSync(target))
+          throw new Error(`Native bridge failed before ${file}; see isolated test log`);
+        return JSON.parse(readFileSync(target, "utf8"));
+      }
+      function write(file, value) {
+        const target = path.join(bridge, file);
+        writeFileSync(target + ".pending", JSON.stringify(value));
+        renameSync(target + ".pending", target);
+      }
+      try {
+        const info = await read("ready.json");
+        security.nodeId = info.nodeId;
+        const minter = createWindowsNodeMxcApprovalProofMinter({
+          secretBase64,
+          gatewayGeneration: info.generation,
+          policyFingerprint: info.fingerprint,
+          nodeId: info.nodeId,
+        });
+        const evidence = [];
+        for (let step = 0; step < 8; step++) {
+          const target = path.win32.join(info.grant, step < 4 ? "direct-child" : "nested-child");
+          const operation =
+            step % 4 < 2
+              ? `New-Item -ItemType Directory -Path '${target}'${step % 4 === 0 ? " -Force" : ""}`
+              : `Remove-Item -Path '${target}' -Recurse -Force`;
+          const script = step < 4 ? operation : `powershell -NoProfile -Command "${operation}"`;
+          const rawCommand = `# [declare-access]rw:${info.grant}[/declare-access]\n${script}`;
+          const command = explicitPowerShellCommand(rawCommand);
+          write(`${step}.input.json`, {
+            command,
+            rawCommand,
+            cwd: info.cwd,
+            agentId: "main",
+            sessionKey: key,
+            timeoutMs: 30_000,
+          });
+          const prepared = await read(`${step}.prepared.json`);
+          const nativePlan = prepared.plan;
+          const captured = runPinnedApprovalRequests(nativePlan, rawPeer, info.nodeId).find(
+            (entry) => entry.kind === "trusted",
+          );
+          expect(captured.request.systemRunPlan.providerInitialization).toEqual(
+            nativePlan.providerInitialization,
+          );
+          approval = normalizeWindowsNodeMxcGatewayApproval(
+            {
+              id: randomUUID(),
+              request: captured.request,
+            },
+            info.nodeId,
+            security.gatewayGeneration,
+            "limited-dacl",
+          );
+          expect(approval).not.toBeNull();
+          expect(approval.canonicalCwd.toLowerCase()).not.toBe(info.grant.toLowerCase());
+          sources.clear();
+          await source({ message_id: 1001 + step * 4, seq: 42 + step * 4 });
+          const delivery = await deliver();
+          expect(delivery).not.toBeNull();
+          expect(delivery.text).toContain("Verified folder initialization");
+          const code = delivery.replyCode;
+          expect(
+            await transport.intercept({
+              message: message({
+                message_id: 1002 + step * 4,
+                seq: 43 + step * 4,
+                item_list: [{ type: 1, text_item: { text: `1 ${code}` } }],
+              }),
+              agentId: "main",
+              sessionKey: key,
+              sourcePhase: "candidate",
+            }),
+          ).toBe(true);
+          expect(decisions.at(-1).decision).toBe("allow-once");
+          expect(weixinRemoteApprovalConsentHash(configuration)).toBeNull();
+          const approvedPlan = captured.request.systemRunPlan;
+          const proof = minter.mint({
+            approvalId: approval.id,
+            nodeId: info.nodeId,
+            plan: approvedPlan,
+          });
+          write(`${step}.approved.json`, {
+            command: approvedPlan.argv,
+            rawCommand: approvedPlan.commandText,
+            cwd: approvedPlan.cwd,
+            agentId: approvedPlan.agentId,
+            sessionKey: approvedPlan.sessionKey,
+            systemRunPlan: approvedPlan,
+            microclawApprovalProof: proof,
+          });
+          const result = await read(`${step}.result.json`);
+          expect(result.exitCode).toBe(step % 4 === 1 || step % 4 === 3 ? 1 : 0);
+          expect(result.success).toBe(result.exitCode === 0);
+          await server.deliver({
+            accountId: "bot",
+            to: rawPeer,
+            kind: "terminal",
+            terminalChallengeId: delivery.challengeId,
+            text: "MicroClaw Security Approval: completed.",
+          });
+          evidence.push({
+            step,
+            planSha256: proof.planSha256,
+            exitCode: result.exitCode,
+            success: result.success,
+            exactPhoneScope: true,
+            legacyOnceOnly: true,
+            noRealPhoneSend: true,
+          });
+        }
+        expect(await completion).toBe(0);
+        const native = await read("evidence.json");
+        expect(native.results).toHaveLength(8);
+        expect(native.privateStateEmpty).toBe(true);
+        expect(native.ancestors.every((entry) => entry.unchanged)).toBe(true);
+        if (process.env.MICROCLAW_NATIVE_APPROVAL_EVIDENCE)
+          writeFileSync(
+            process.env.MICROCLAW_NATIVE_APPROVAL_EVIDENCE,
+            JSON.stringify({ evidence, native }, null, 2),
+          );
+      } catch (error) {
+        testError = error;
+      } finally {
+        security.nodeId = nodeIdBefore;
+        if (!exited) writeFileSync(path.join(bridge, "abort"), "abort");
+        await Promise.race([completion, delay(40_000)]);
+        const logs = process.env.MICROCLAW_NATIVE_APPROVAL_EVIDENCE;
+        if (logs) {
+          writeFileSync(logs + ".test.log", output);
+          if (existsSync(path.join(bridge, "result.trx")))
+            writeFileSync(logs + ".trx", readFileSync(path.join(bridge, "result.trx")));
+        }
+        if (exited) rmSync(bridge, { recursive: true, force: true });
+      }
+      if (!exited)
+        throw new AggregateError(
+          testError ? [testError] : [],
+          `Native bridge process ${child.pid} did not stop after bounded abort`,
+        );
+      if (testError) throw testError;
+    },
+    240_000,
+  );
+});

@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
+import json
 import re
+import sys
+from pathlib import Path
 
-OPENCLAW_TARGET_VERSION = "2026.7.1-1"
-NODE_FALLBACK_VERSION = "22.22.3"
+OPENCLAW_TARGET_VERSION = "2026.10.5"
 
-_NODE_VERSION_RE = re.compile(r"^v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
+
+def packaged_openclaw_version(manifest_path: Path) -> str:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    version = manifest["openClawVersion"]
+    if not isinstance(version, str) or re.fullmatch(r"[0-9]{4}\.[0-9]+\.[0-9]+", version) is None:
+        raise ValueError("Invalid packaged OpenClaw target version")
+    return version
+
+
+if getattr(sys, "frozen", False):
+    OPENCLAW_TARGET_VERSION = packaged_openclaw_version(
+        Path(sys._MEIPASS) / "install-manifest.json"
+    )
+
+NODE_DEFAULT_MAJOR = "26"
+NODE_ENGINE_RANGE = ">=24.16.0 <25 || >=26.1.0"
+NODE_FALLBACK_VERSION = "26.1.0"
+
+_NODE_VERSION_RE = re.compile(
+    r"v?(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
+)
 _OPENCLAW_VERSION_RE = re.compile(r"openclaw@(?P<version>\S+)")
 
 
@@ -25,10 +47,9 @@ def is_supported_node_version(value: str) -> bool:
 
     major, minor, patch = version
     return (
-        (major == 22 and (minor, patch) >= (22, 3))
-        or (major == 24 and (minor, patch) >= (15, 0))
-        or (major == 25 and (minor, patch) >= (9, 0))
-        or major > 25
+        (major == 24 and (minor, patch) >= (16, 0))
+        or (major == 26 and (minor, patch) >= (1, 0))
+        or major > 26
     )
 
 

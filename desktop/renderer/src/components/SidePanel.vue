@@ -107,23 +107,34 @@
               ><IconPin :size="12"
             /></span>
             <span
-              class="sp-chat-item-action sp-chat-item-delete"
-              :title="t('sidebar.delete')"
-              :aria-label="t('sidebar.delete')"
-              @click.stop="deleteSession(s.key)"
-              ><IconClose :size="12" :stroke-width="2.5"
-            /></span>
+              class="sp-chat-item-action"
+              :class="chatStore.isMainSession(s.key) ? 'sp-chat-item-reset' : 'sp-chat-item-delete'"
+              :title="chatStore.isMainSession(s.key) ? t('sidebar.reset') : t('sidebar.delete')"
+              :aria-label="
+                chatStore.isMainSession(s.key) ? t('sidebar.reset') : t('sidebar.delete')
+              "
+              @click.stop="clearSession(s.key)"
+            >
+              <IconReset v-if="chatStore.isMainSession(s.key)" :size="12" :stroke-width="2" />
+              <IconClose v-else :size="12" :stroke-width="2.5" />
+            </span>
           </button>
           <div v-if="visibleSessions.length === 0" class="sp-empty-hint">
             {{ t("sidebar.noChats") }}
           </div>
         </div>
       </div>
+    </nav>
 
-      <!-- Settings -->
+    <footer class="sp-footer">
       <button
-        class="sp-menu-item"
+        type="button"
+        class="sp-footer-action"
         :class="{ active: route.path.startsWith('/settings') }"
+        data-testid="settings-shortcut"
+        :title="t('sidebar.settings')"
+        :aria-label="t('sidebar.settings')"
+        :aria-current="route.path.startsWith('/settings') ? 'page' : undefined"
         @click="router.push('/settings')"
       >
         <svg
@@ -135,72 +146,17 @@
           stroke-width="1.8"
           stroke-linecap="round"
           stroke-linejoin="round"
+          aria-hidden="true"
+          focusable="false"
         >
           <circle cx="12" cy="12" r="3" />
           <path
             d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
           />
         </svg>
-        <span>{{ t("sidebar.settings") }}</span>
       </button>
-    </nav>
-
-    <section class="sp-usage-snapshot" aria-live="polite">
-      <div class="sp-usage-head">
-        <span class="sp-usage-title">{{ t("sidebar.usageSnapshotTitle") }}</span>
-        <button
-          class="sp-usage-toggle"
-          :title="
-            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
-          "
-          :aria-label="
-            usageCollapsed ? t('sidebar.usageSnapshotExpand') : t('sidebar.usageSnapshotCollapse')
-          "
-          @click="toggleUsageCollapsed"
-        >
-          <svg
-            class="sp-usage-toggle-icon"
-            :class="{ collapsed: usageCollapsed }"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
-      </div>
-
-      <template v-if="!usageCollapsed">
-        <div v-if="usageLoading" class="sp-usage-state">{{ t("settings.usageLoading") }}</div>
-        <div v-else-if="usageSnapshot" class="sp-usage-grid">
-          <div class="sp-usage-card">
-            <span class="sp-usage-label">{{ t("sidebar.usageSnapshotSpend") }}</span>
-            <span class="sp-usage-value">{{ formatCny(usageSnapshot.totalSpend) }}</span>
-          </div>
-          <div class="sp-usage-card">
-            <span class="sp-usage-label">{{ t("sidebar.usageSnapshotTokens") }}</span>
-            <span class="sp-usage-value">{{ formatCompact(usageSnapshot.totalTokens) }}</span>
-          </div>
-        </div>
-        <div v-else-if="!gatewayOnline" class="sp-usage-state">
-          {{ t("sidebar.usageSnapshotOffline") }}
-        </div>
-        <div v-else class="sp-usage-state">{{ t("sidebar.usageSnapshotNoData") }}</div>
-
-        <div class="sp-usage-foot">
-          <span>{{ t("sidebar.usageSnapshotPeriod") }}</span>
-          <span v-if="lastUpdatedLabel">{{
-            t("sidebar.usageSnapshotUpdated", { time: lastUpdatedLabel })
-          }}</span>
-        </div>
-      </template>
-    </section>
+      <WeixinConnectionShortcut />
+    </footer>
   </aside>
 </template>
 
@@ -216,7 +172,9 @@ import { t } from "@/i18n";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconChevronDown from "@/components/icons/IconChevronDown.vue";
 import IconClose from "@/components/icons/IconClose.vue";
+import IconReset from "@/components/icons/IconReset.vue";
 import IconPin from "@/components/icons/IconPin.vue";
+import WeixinConnectionShortcut from "@/components/WeixinConnectionShortcut.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -225,20 +183,6 @@ const chatStore = useChatStore();
 const sessionStore = useSessionStore();
 const agentStore = useAgentStore();
 
-interface UsageSnapshot {
-  totalSpend: number;
-  totalTokens: number;
-  exchangeRate: number | null;
-}
-
-// Fallback mirrors USD_TO_CNY_FALLBACK_RATE in SettingsView.vue / the main process.
-const USD_TO_CNY_FALLBACK_RATE = 7.2;
-
-const usageSnapshot = ref<UsageSnapshot | null>(null);
-const usageLoading = ref(false);
-const usageLastUpdated = ref<Date | null>(null);
-const usageCollapsed = ref(false);
-let usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let titleRequestGeneration = 0;
 
 const chatExpanded = ref(true);
@@ -254,10 +198,6 @@ const flyoutStyle = computed(() => ({
 }));
 
 const gatewayOnline = computed(() => gateway.ready && gateway.status === "running");
-const lastUpdatedLabel = computed(() => {
-  if (!usageLastUpdated.value) return "";
-  return usageLastUpdated.value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-});
 
 const currentAgent = computed(() => {
   return (
@@ -267,18 +207,10 @@ const currentAgent = computed(() => {
 });
 
 onMounted(() => {
-  gateway.refreshWeixinStatus();
-  try {
-    usageCollapsed.value = localStorage.getItem("microclaw:usageSnapshotCollapsed") === "1";
-  } catch {}
   document.addEventListener("mousedown", handleDocumentPointerDown);
   document.addEventListener("keydown", handleDocumentKeyDown);
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("scroll", handleWindowScroll, true);
-  void loadUsageSnapshot();
-  usageRefreshTimer = setInterval(() => {
-    void loadUsageSnapshot();
-  }, 60_000);
 });
 
 onUnmounted(() => {
@@ -286,71 +218,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleDocumentKeyDown);
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("scroll", handleWindowScroll, true);
-  if (usageRefreshTimer) {
-    clearInterval(usageRefreshTimer);
-    usageRefreshTimer = null;
-  }
 });
-
-async function loadUsageSnapshot() {
-  if (usageLoading.value) return;
-  usageLoading.value = true;
-  try {
-    const usageApi = window.openclaw?.usage?.getStats;
-    if (!gatewayOnline.value || typeof usageApi !== "function") {
-      if (import.meta.env.DEV) {
-        applyMockSnapshot();
-      } else {
-        usageSnapshot.value = null;
-      }
-      return;
-    }
-
-    const stats = await usageApi();
-    usageSnapshot.value = {
-      totalSpend: Number(stats?.totalSpend || 0),
-      totalTokens: Number(stats?.totalTokens || 0),
-      exchangeRate: Number(stats?.exchangeRate) || null,
-    };
-    usageLastUpdated.value = new Date();
-  } catch {
-    if (import.meta.env.DEV) {
-      applyMockSnapshot();
-    } else {
-      usageSnapshot.value = null;
-    }
-  } finally {
-    usageLoading.value = false;
-  }
-}
-
-function applyMockSnapshot() {
-  usageSnapshot.value = {
-    totalSpend: 42.35,
-    totalTokens: 128400,
-    exchangeRate: null,
-  };
-  usageLastUpdated.value = new Date();
-}
-
-function toggleUsageCollapsed() {
-  usageCollapsed.value = !usageCollapsed.value;
-  try {
-    localStorage.setItem("microclaw:usageSnapshotCollapsed", usageCollapsed.value ? "1" : "0");
-  } catch {}
-}
-
-function formatCompact(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value || 0);
-}
-
-function formatCny(value: number) {
-  const rate = usageSnapshot.value?.exchangeRate ?? USD_TO_CNY_FALLBACK_RATE;
-  return `${t("settings.currencySymbol")}${((value || 0) * rate).toFixed(2)}`;
-}
 
 /**
  * Ensure the active chat is a fresh session bound to the currently-selected agent.
@@ -474,12 +342,16 @@ function createNewChat() {
   router.push(`/chat/${agentStore.currentAgentId}`);
 }
 
-async function deleteSession(key: string) {
+async function clearSession(key: string) {
+  const reset = chatStore.isMainSession(key);
   try {
-    await chatStore.deleteSession(key);
+    if (reset) await chatStore.resetSession(key);
+    else await chatStore.deleteSession(key);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    ElMessage.error(t("sidebar.chatDeleteFailed", { error: message }));
+    ElMessage.error(
+      t(reset ? "sidebar.chatResetFailed" : "sidebar.chatDeleteFailed", { error: message }),
+    );
   }
 }
 
@@ -750,107 +622,13 @@ html.dark .sp-create-btn:hover {
   min-height: 0;
 }
 
-.sp-usage-snapshot {
-  padding: 10px clamp(8px, 1.5vw, 16px) 12px;
-  background: #fbfbf9;
-}
-
-html.dark .sp-usage-snapshot {
-  background: var(--bg-secondary);
-}
-
-.sp-usage-head {
+.sp-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.sp-usage-title {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-.sp-usage-toggle {
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  line-height: 1;
-  display: grid;
-  place-items: center;
-  border-radius: 4px;
-  font-size: 11px;
-}
-
-.sp-usage-toggle-icon {
-  transition: transform 0.2s ease;
-}
-
-.sp-usage-toggle-icon.collapsed {
-  transform: rotate(-90deg);
-}
-
-.sp-usage-toggle:hover {
-  background: #f0ece7;
-  color: var(--text-primary);
-}
-
-html.dark .sp-usage-toggle:hover {
-  background: var(--bg-tertiary);
-}
-
-.sp-usage-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.sp-usage-card {
-  border: 1px solid #ece7e2;
-  border-radius: 8px;
-  padding: 6px;
-  background: #fff;
-  display: flex;
-  flex-direction: column;
   gap: 4px;
-}
-
-html.dark .sp-usage-card {
-  border-color: var(--border);
-  background: var(--bg-primary);
-}
-
-.sp-usage-label {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.sp-usage-value {
-  font-size: 12px;
-  color: var(--text-primary);
-  font-weight: 600;
-  line-height: 1.2;
-}
-
-.sp-usage-state {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 4px 0;
-}
-
-.sp-usage-foot {
-  margin-top: 8px;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 10px;
-  color: var(--text-muted);
+  flex-shrink: 0;
+  padding: 8px clamp(8px, 1.5vw, 16px) 12px;
+  border-top: 1px solid var(--border);
 }
 
 /* ── Chat section ── */
@@ -977,6 +755,10 @@ html.dark .sp-chat-item.selected {
   color: var(--danger);
 }
 
+.sp-chat-item-reset:hover {
+  color: var(--text-primary);
+}
+
 .sp-chat-item:hover .sp-chat-item-action {
   display: block;
 }
@@ -989,47 +771,33 @@ html.dark .sp-chat-item.selected {
 }
 
 /* ── Menu items ── */
-.sp-menu-item {
-  width: 100%;
-  min-height: 36px;
+.sp-footer-action {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  justify-content: center;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   border-radius: 8px;
-  font-size: 14px;
-  line-height: 20px;
   cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s;
-  margin-bottom: 2px;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 
-.sp-menu-item > span {
-  flex: 1;
-  text-align: left;
-}
-
-.sp-menu-item:hover {
-  background: #f9f5f2;
-  color: var(--text-primary);
-}
-
-.sp-menu-item.active {
-  background: #f0ece7;
-  color: var(--text-primary);
-}
-
-html.dark .sp-menu-item:hover {
-  background: var(--bg-tertiary);
-}
-
-html.dark .sp-menu-item.active {
+.sp-footer-action:hover,
+.sp-footer-action.active {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.sp-footer-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
 }
 
 /* ── Agent section ── */

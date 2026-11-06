@@ -70,37 +70,42 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
 
       # GitHub-hosted windows-latest ships older/other toolchain versions than
       # build.ps1 expects, so pin them explicitly with the setup-* actions
       # (reliable on hosted runners, unlike on the self-hosted NetworkService
       # account). build.ps1 then installs its own npm/pip deps and locates NSIS
       # from electron-builder's cache.
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 26
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
 
-      - name: Setup .NET 9 SDK
-        uses: actions/setup-dotnet@v4
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
       - name: Verify toolchain
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.10.5 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
-          $dotnet = & dotnet --version
-          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
-          Write-Host "dotnet $dotnet"
+          $sdks = & dotnet --list-sdks
+          if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
+          Write-Host $sdks
           Write-Host "python $(& python --version)"
 
       - name: Install Python build dependencies
@@ -124,7 +129,7 @@ jobs:
           }
 
       - name: Run build.ps1 (builds + signs MicroClawSetup.exe)
-        run: .\build.ps1
+        run: .\build.ps1 -IncludeInstallerZip
 
       - name: Build unsigned MSIX
         env:
@@ -181,14 +186,14 @@ jobs:
           }
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: MicroClawSetup
           path: dist\MicroClawSetup.exe
           if-no-files-found: error
 
       - name: Upload MSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: MicroClawDesktop-MSIX
           path: desktop\release\MicroClawDesktop-*-x64.msix
@@ -197,7 +202,7 @@ jobs:
       # Publish a GitHub Release with the signed exe when built from a tag.
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist\MicroClawSetup.exe
           fail_on_unmatched_files: true
@@ -205,7 +210,7 @@ jobs:
 
       - name: Publish production-identity MSIX
         if: startsWith(github.ref, 'refs/tags/v') && env.MSIX_PRODUCTION_IDENTITY_CONFIGURED == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: desktop\release\MicroClawDesktop-*-x64.msix
           fail_on_unmatched_files: true

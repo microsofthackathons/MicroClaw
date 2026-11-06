@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { MANAGED_MODEL_PROVIDERS } from "./managed-model-providers";
 
 describe("MANAGED_MODEL_PROVIDERS", () => {
+  it("uses the Qwen campaign link for API key signup", () => {
+    const provider = MANAGED_MODEL_PROVIDERS.find((entry) => entry.id === "qwen");
+    expect(provider?.signupUrl).toBe("https://click.qianwenai.com/m/20000000741/");
+  });
+
+  it("keeps MiniMax campaign signup separate from its API endpoint", () => {
+    const provider = MANAGED_MODEL_PROVIDERS.find((entry) => entry.id === "minimax");
+    expect(provider?.signupUrl).toBe("https://platform.minimaxi.com/byok-trial?source=microclaw");
+    expect(provider?.baseUrl).toBe("https://api.minimax.cn/v1");
+  });
+
   it("contains valid, unique provider and model definitions", () => {
     const providerIds = new Set<string>();
     const modelRefs = new Set<string>();

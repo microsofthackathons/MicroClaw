@@ -13,6 +13,7 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "commands",
   "permissions",
   "hooks",
+  "cron",
   "mcp",
   "channels",
   "telemetry",

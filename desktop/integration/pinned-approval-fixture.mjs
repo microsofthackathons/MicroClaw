@@ -1,0 +1,275 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { URL, pathToFileURL } from "node:url";
+import ts from "typescript";
+
+export function resolvePinnedBaseExecApprovalDecision(params) {
+  const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
+  if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
+  const filename = path.join(packageDir, "dist", "bash-tools-BpD5km6h.mjs");
+  const ast = ts.createSourceFile(
+    filename,
+    readFileSync(filename, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const name = "resolveBaseExecApprovalDecision";
+  const declaration = ast.statements.find(
+    (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  if (!declaration) throw new Error("Pinned exec decision contract missing");
+  return new Function(`${declaration.getText(ast)}; return ${name};`)()(params);
+}
+
+export function runPinnedApprovalRequests(
+  plan,
+  recipient = "owner@im.wechat",
+  nodeId = "test-node",
+) {
+  const packageDir = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
+  if (!packageDir) throw new Error("MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR is required");
+  const filename = path.join(packageDir, "dist", "bash-tools.exec-approval-request-IQeW1aI0.mjs");
+  const source = readFileSync(filename, "utf8");
+  const ast = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
+  function declaration(name) {
+    const node = ast.statements.find(
+      (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+    );
+    if (!node) throw new Error(`Pinned approval builder missing: ${name}`);
+    return node.getText(ast);
+  }
+  const builder = [
+    declaration("buildExecApprovalTurnSourceContext"),
+    declaration("buildHostApprovalDecisionParams"),
+  ].join("\n");
+  function sdkFunction(module, name) {
+    const filename = path.join(packageDir, "dist", module);
+    const ast = ts.createSourceFile(
+      filename,
+      readFileSync(filename, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const node = ast.statements.find(
+      (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+    );
+    if (!node) throw new Error(`Pinned producer missing: ${module}:${name}`);
+    return node.getText(ast);
+  }
+  const producers = {
+    attempt: sdkFunction("embedded-agent-w-EKmRVf.mjs", "withPreparedEmbeddedGatewayTools"),
+    caller: sdkFunction(
+      "gateway-caller-context-C-_kezG_.mjs",
+      "createAdmittedGatewayToolCallerIdentity",
+    ),
+    receipt: [
+      sdkFunction("gateway-caller-context-C-_kezG_.mjs", "composeReceiptAuthority"),
+      sdkFunction("gateway-caller-context-C-_kezG_.mjs", "captureGatewayToolReceiptAssertion"),
+    ].join("\n"),
+    assertion: sdkFunction(
+      "admitted-run-context-BWkQpJz9.mjs",
+      "captureAdmittedRunActiveAssertion",
+    ),
+    runtime: sdkFunction("gateway-RgmK3f47.mjs", "resolveAgentRuntimeIdentityForGatewayTool"),
+    client: sdkFunction(
+      "server-plugin-runtime-client-CN_qrc-x.mjs",
+      "projectPluginRuntimeClientExecution",
+    ),
+  };
+  const identityModuleUrl = pathToFileURL(
+    path.join(packageDir, "dist", "agent-runtime-identity-token-n9vMsjav.mjs"),
+  ).href;
+  const sourceAuthorityModuleUrl = pathToFileURL(
+    path.join(packageDir, "dist", "session-source-authority-h1UO3u0I.mjs"),
+  ).href;
+  const modulePath = path.join(packageDir, "dist", "exec-approval-DbnOAIQO.mjs");
+  const handlerSource = readFileSync(modulePath, "utf8");
+  const alias =
+    /createExecApprovalHandlers as (\w+)/.exec(handlerSource)?.[1] ??
+    (/export \{ createExecApprovalHandlers \}/.test(handlerSource)
+      ? "createExecApprovalHandlers"
+      : undefined);
+  if (!alias) throw new Error("Pinned approval handler export missing");
+  const preload = new URL("../src/openclaw-approval-replay-compat.mjs", import.meta.url).href;
+  const script = `
+    import assert from "node:assert/strict";
+    const DEFAULT_APPROVAL_TIMEOUT_MS = 120000;
+    ${builder}
+    const plan = ${JSON.stringify(plan)};
+    const recipient = ${JSON.stringify(recipient)};
+    const nodeId = ${JSON.stringify(nodeId)};
+    const module = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
+    const producer = ${JSON.stringify(producers)};
+    const vm = await import("node:vm");
+    const fs = await import("node:fs/promises");
+    const { a: composeSessionSourceAssertion } = await import(${JSON.stringify(sourceAuthorityModuleUrl)});
+    const authority = { kind: "local",
+      operationalRunInstance: { runId: "actual-run", instanceId: "actual-instance" },
+      lifecycleGeneration: "test-only-lifecycle", claimId: "test-only-admission-claim" };
+    const delegatedAuthorityLeases = new WeakMap();
+    // Admission lease/source lookup is fixture-owned; assertions, schemas and projections are genuine SDK source.
+    const identityModule = new vm.SourceTextModule(await fs.readFile(new URL(${JSON.stringify(identityModuleUrl)}), "utf8"), {
+      identifier: ${JSON.stringify(identityModuleUrl)},
+    });
+    await identityModule.link(async (specifier) => {
+      const url = specifier.startsWith(".") ? new URL(specifier, identityModule.identifier).href : specifier;
+      const imported = await import(url);
+      const values = { ...imported, ...(specifier.includes("agent-run-registry-") ? {
+        l: () => authority,
+        j: value => value.kind === authority.kind &&
+          value.claimId === authority.claimId &&
+          value.lifecycleGeneration === authority.lifecycleGeneration &&
+          value.operationalRunInstance.runId === authority.operationalRunInstance.runId &&
+          value.operationalRunInstance.instanceId === authority.operationalRunInstance.instanceId,
+      } : {}) };
+      return new vm.SyntheticModule(Object.keys(values), function() {
+        for (const [key, value] of Object.entries(values)) this.setExport(key, value);
+      });
+    });
+    await identityModule.evaluate();
+    const evaluate = (source, name, deps) =>
+      new Function(...Object.keys(deps), source + "; return " + name)(...Object.values(deps));
+    async function produceIdentity(source = {}) {
+      let caller;
+      const admittedRunContext = { operationalRunInstance: authority.operationalRunInstance };
+      delegatedAuthorityLeases.set(admittedRunContext, { authority, foregroundClosed: false });
+      const captureAdmittedRunActiveAssertion = evaluate(producer.assertion,
+        "captureAdmittedRunActiveAssertion", {
+          delegatedAuthorityLeases,
+          composeSessionSourceAssertion,
+          readAgentRunDelegatedAuthorityFailure: () => undefined,
+          captureAgentRunDelegatedSourceAssertion: (value, refuse) => {
+            if (value !== authority) return;
+            const assertCurrent = () => {
+              if (value !== authority) refuse();
+            };
+            return { assertCurrent, assertBinding: assertCurrent };
+          },
+        });
+      const admitted = evaluate(producer.receipt + "\\n" + producer.caller,
+        "createAdmittedGatewayToolCallerIdentity", {
+          getAdmittedRunDelegatedAuthority: context => delegatedAuthorityLeases.get(context)?.authority,
+          readAdmittedRunOperatorAuthority: () => undefined,
+          getGatewayContextResolver: () => undefined,
+          bindGatewayToolContextResolver: value => value,
+          captureAdmittedRunActiveAssertion,
+          composeSessionSourceAssertion,
+        });
+      const run = evaluate(producer.attempt, "withPreparedEmbeddedGatewayTools", {
+        createAdmittedGatewayToolCallerIdentity: admitted,
+        withGatewayToolCallerIdentity: async (identity, run) => { caller = identity; return run(); },
+        getGatewayContextResolver: () => undefined,
+      });
+      await run({
+        disableTools: true, agentId: "main", sessionKey: "agent:main:main",
+        admittedRunContext,
+        messageProvider: "openclaw-weixin", agentAccountId: "bot", currentChannelId: recipient,
+        ...source,
+      }, () => true, async () => undefined);
+      const resolve = evaluate(producer.runtime, "resolveAgentRuntimeIdentityForGatewayTool", {
+        OPTIONAL_LOCAL_AGENT_RUNTIME_IDENTITY_METHODS: new Set(),
+        AGENT_RUNTIME_IDENTITY_METHODS: new Set(["exec.approval.request"]),
+        getGatewayToolCallerIdentity: () => caller,
+        trimToUndefined: value => value?.trim() || undefined,
+        getGatewaySessionSpawnContext: () => undefined,
+        getGatewaySessionSpawnParentExecutionIdentityToken: () => undefined,
+        readAgentRuntimeExecutionLineage: () => undefined,
+        getActiveAgentRunDelegatedAuthority: () => authority,
+        createAgentRuntimeIdentity: identityModule.namespace.t,
+      });
+      const runtime = await resolve({ method: "exec.approval.request", opts: {}, target: "local", inProcess: true });
+      const project = evaluate(producer.client, "projectPluginRuntimeClientExecution", {});
+      return project({ identity: runtime, client: { internal: {}, connect: { scopes: [] } } })
+        .internal.agentRuntimeIdentity;
+    }
+    const identity = await produceIdentity();
+    assert.equal(identity.kind, "agentRuntime");
+    assert.equal(identity.turnSourceChannel, "openclaw-weixin");
+    assert.equal(identity.turnSourceAccountId, "bot");
+    assert.equal(identity.turnSourceTo, recipient);
+    const stop = new Error("test-record-captured");
+    let captured;
+    const manager = {
+      getSnapshot: async () => undefined,
+      create: request => { captured = request; throw stop; },
+    };
+    const handlers = module[${JSON.stringify(alias)}](manager);
+    const results = [];
+    for (const kind of ["trusted", "caller-forgery", "untrusted", "cross-agent", "cross-run",
+      "valid-other-run", "valid-other-channel", "valid-other-account", "valid-other-recipient",
+      "producer-without-channel", "producer-without-account", "producer-without-recipient"]) {
+      captured = undefined;
+      let response;
+      const params = await buildHostApprovalDecisionParams({
+        approvalId: "fixture-" + kind, host: "node", nodeId,
+        systemRunPlan: plan, sessionKey: plan.sessionKey, agentId: "main",
+        toolCallId: "actual-tool", runId: "caller-forged-run",
+        turnSourceChannel: "openclaw-weixin",
+      });
+      if (kind === "caller-forgery") params.remoteApprovalOrigin = {
+        contract: "microclaw.gateway-approval-origin.v1", runSessionKey: "agent:main:main",
+      };
+      const runtime = kind.startsWith("producer-without-") ? await produceIdentity({
+        ...(kind === "producer-without-channel" ? { messageProvider: undefined } : {}),
+        ...(kind === "producer-without-account" ? { agentAccountId: undefined } : {}),
+        ...(kind === "producer-without-recipient" ? { currentChannelId: undefined } : {}),
+      }) : kind === "untrusted" ? undefined : {
+        ...identity,
+        ...(kind === "cross-agent" ? { agentId: "other" } : {}),
+        ...(kind === "cross-run" ? { operationalRunInstance: {
+          runId: "stale-run", instanceId: "stale-instance",
+        } } : {}),
+        ...(kind === "valid-other-run" ? { operationalRunInstance: {
+          runId: "independent-desktop-run", instanceId: "independent-instance",
+        } } : {}),
+        ...(kind === "valid-other-channel" ? { turnSourceChannel: "webchat" } : {}),
+        ...(kind === "valid-other-account" ? { turnSourceAccountId: "other-bot" } : {}),
+        ...(kind === "valid-other-recipient" ? { turnSourceTo: "other@im.wechat" } : {}),
+      };
+      const authorizedIdentity = kind.startsWith("valid-other-") ? runtime : identity;
+      try {
+        await handlers["exec.approval.request"]({
+          params,
+          client: runtime ? { internal: { agentRuntimeIdentity: runtime } } : {},
+          context: {
+            validateAgentRuntimeApprovalAuthority: value =>
+              value.agentId === authorizedIdentity.agentId &&
+              value.operationalRunInstance.runId === authorizedIdentity.operationalRunInstance.runId &&
+              value.operationalRunInstance.instanceId === authorizedIdentity.operationalRunInstance.instanceId,
+            chatRunState: { hasAbortMarker: () => false },
+            getRuntimeConfig: () => ({}),
+          },
+          respond: (ok, payload, error) => { response = { ok, error }; },
+        });
+      } catch (error) { if (error !== stop) throw error; }
+      results.push({ kind, request: captured ?? null, response: response ?? null });
+    }
+    console.log("PINNED_APPROVAL_RESULT=" + JSON.stringify(results));
+  `;
+  const child = spawnSync(
+    process.execPath,
+    ["--experimental-vm-modules", "--import", preload, "--input-type=module", "-e", script],
+    {
+      env: {
+        ...process.env,
+        MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "1",
+        MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
+        MICROCLAW_OPENCLAW_PACKAGE_DIR: packageDir,
+        MICROCLAW_MXC_APPROVAL_PROOF_SECRET: Buffer.alloc(32, 1).toString("base64"),
+        MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION: "test-generation",
+        MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT: "b".repeat(64),
+        MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID: "a".repeat(64),
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+  if (child.error || child.status !== 0)
+    throw new Error(`Pinned approval execution failed: ${child.error ?? child.stderr}`);
+  const result = child.stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("PINNED_APPROVAL_RESULT="));
+  if (!result) throw new Error("Pinned approval execution returned no fixture");
+  return JSON.parse(result.slice("PINNED_APPROVAL_RESULT=".length));
+}

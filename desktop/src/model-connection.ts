@@ -13,8 +13,9 @@ const CREDENTIAL_REFERENCE_PATTERN = /^\$\{([A-Z][A-Z0-9_]*)\}$/;
 interface ModelRequestOptions {
   method: string;
   headers: Record<string, string>;
-  body: string;
+  body?: string;
   signal?: AbortSignal;
+  responseBodyLimit?: number;
 }
 
 interface PinnedRequestOptions extends HttpsRequestOptions {
@@ -26,6 +27,7 @@ export interface ModelConnectionResponse {
   ok: boolean;
   status: number;
   statusText: string;
+  body?: string;
 }
 
 function normalizeHostname(value: string): string {
@@ -218,16 +220,37 @@ export async function requestModelEndpoint(
     const handleResponse = (response: IncomingMessage) => {
       const status = response.statusCode ?? 0;
       const statusText = response.statusMessage ?? "";
-      response.resume();
       if (status >= 300 && status < 400) {
+        response.resume();
         reject(new Error("Redirect responses are not allowed for model endpoints"));
         return;
       }
-      resolve({
+      const result = {
         ok: status >= 200 && status < 300,
         status,
         statusText,
+      };
+      if (options.responseBodyLimit === undefined) {
+        response.resume();
+        resolve(result);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > options.responseBodyLimit!) {
+          reject(new Error("Model catalog response exceeds the size limit"));
+          response.destroy();
+          return;
+        }
+        chunks.push(chunk);
       });
+      response.on("error", reject);
+      response.on("aborted", () => reject(new Error("Model catalog response was interrupted")));
+      response.on("end", () =>
+        resolve({ ...result, body: Buffer.concat(chunks).toString("utf8") }),
+      );
     };
     const req =
       url.protocol === "https:"

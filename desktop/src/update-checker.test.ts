@@ -18,7 +18,7 @@ describe("checkForUpdates", () => {
     let fetched = false;
     const result = await checkForUpdates({
       currentVersion: "1.0.0",
-      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      manifestUrl: "https://microclaw.microsoft.com/releases/latest.json",
       storeManaged: true,
       fetchJson: async () => {
         fetched = true;
@@ -33,11 +33,11 @@ describe("checkForUpdates", () => {
   it("returns update-available when the manifest version is newer", async () => {
     const result = await checkForUpdates({
       currentVersion: "1.0.0",
-      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      manifestUrl: "https://microclaw.microsoft.com/releases/latest.json",
       fetchJson: async () => ({
         version: "1.0.1",
         releasedAt: "2026-07-14",
-        downloadUrl: "https://microclaw.microsoftol.com/downloads/MicroClawInstaller.zip",
+        downloadUrl: "https://microclaw.microsoft.com/downloads/MicroClawInstaller.zip",
         sha256: "abc123",
         openclawVersion: "2026.3.12",
         releaseNotes: ["Fix model setup config save issue"],
@@ -49,7 +49,7 @@ describe("checkForUpdates", () => {
       currentVersion: "1.0.0",
       latestVersion: "1.0.1",
       releasedAt: "2026-07-14",
-      downloadUrl: "https://microclaw.microsoftol.com/downloads/MicroClawInstaller.zip",
+      downloadUrl: "https://microclaw.microsoft.com/downloads/MicroClawInstaller.zip",
       sha256: "abc123",
       openclawVersion: "2026.3.12",
       releaseNotes: ["Fix model setup config save issue"],
@@ -59,10 +59,10 @@ describe("checkForUpdates", () => {
   it("returns up-to-date when the manifest version is not newer", async () => {
     const result = await checkForUpdates({
       currentVersion: "1.0.1",
-      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      manifestUrl: "https://microclaw.microsoft.com/releases/latest.json",
       fetchJson: async () => ({
         version: "1.0.1",
-        downloadUrl: "https://microclaw.microsoftol.com/downloads/MicroClawInstaller.zip",
+        downloadUrl: "https://microclaw.microsoft.com/downloads/MicroClawInstaller.zip",
       }),
     });
 
@@ -76,7 +76,7 @@ describe("checkForUpdates", () => {
   it("returns error for an invalid manifest instead of throwing", async () => {
     const result = await checkForUpdates({
       currentVersion: "1.0.0",
-      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      manifestUrl: "https://microclaw.microsoft.com/releases/latest.json",
       fetchJson: async () => ({ version: "1.0.1" }),
     });
 
@@ -90,10 +90,10 @@ describe("checkForUpdates", () => {
   it("rejects non-HTTPS download URLs", async () => {
     const result = await checkForUpdates({
       currentVersion: "1.0.0",
-      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      manifestUrl: "https://microclaw.microsoft.com/releases/latest.json",
       fetchJson: async () => ({
         version: "1.0.1",
-        downloadUrl: "http://microclaw.microsoftol.com/downloads/MicroClawInstaller.zip",
+        downloadUrl: "http://microclaw.microsoft.com/downloads/MicroClawInstaller.zip",
       }),
     });
 
@@ -106,10 +106,10 @@ describe("checkForUpdates", () => {
   it("rejects malformed manifest versions", async () => {
     const result = await checkForUpdates({
       currentVersion: "1.0.0",
-      manifestUrl: "https://microclaw.microsoftol.com/releases/latest.json",
+      manifestUrl: "https://microclaw.microsoft.com/releases/latest.json",
       fetchJson: async () => ({
         version: "2.x",
-        downloadUrl: "https://microclaw.microsoftol.com/downloads/MicroClawInstaller.zip",
+        downloadUrl: "https://microclaw.microsoft.com/downloads/MicroClawInstaller.zip",
       }),
     });
 

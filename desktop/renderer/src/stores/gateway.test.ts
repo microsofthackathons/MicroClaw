@@ -129,6 +129,18 @@ describe("useGatewayStore", () => {
     expect(store.warming).toBe(false);
   });
 
+  it("ignores stale readiness completion after a security transition starts", () => {
+    const store = useGatewayStore();
+    const staleEpoch = store.readinessEpoch;
+    store.resetReady();
+
+    store.markReady(staleEpoch);
+
+    expect(store.ready).toBe(false);
+    store.markReady(store.readinessEpoch);
+    expect(store.ready).toBe(true);
+  });
+
   it("markReady is idempotent", () => {
     const store = useGatewayStore();
     store.markReady();

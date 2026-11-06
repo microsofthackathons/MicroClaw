@@ -25,7 +25,7 @@
       <div v-if="activeSection === 'general'" class="section">
         <div class="section-label">{{ t("settings.application") }}</div>
         <div class="card-group">
-          <div class="card-row">
+          <div v-show="false" class="card-row">
             <label class="row-label" for="settings-language-select">
               {{ t("settings.language") }}
             </label>
@@ -226,7 +226,7 @@
               >
                 <div class="model-usage-info">
                   <span class="row-label">{{ m.name }}</span>
-                  <span class="row-sub" v-if="m.requests"
+                  <span v-if="m.requests" class="row-sub"
                     >{{ m.requests }} {{ t("settings.callsSuffix") }} ·
                     {{ m.promptTokens.toLocaleString() }} {{ t("settings.inputSuffix") }} ·
                     {{ m.completionTokens.toLocaleString() }} {{ t("settings.outputSuffix") }}</span
@@ -244,114 +244,237 @@
       </div>
 
       <!-- Models -->
-      <div v-if="activeSection === 'models'" class="section">
-        <!-- Model -->
+      <div v-if="activeSection === 'models'" class="section model-settings-section">
         <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.customModels") }}</span>
-          <div v-if="customModels.length" class="sub-label-actions">
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="
-                Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-              "
-              @click="showProviderSetup = true"
-            >
-              {{ t("settings.setUpProvider") }}
-            </el-button>
-            <el-button
-              v-if="selectedModelEntry?.source !== 'auth-managed' && selectedModelIndex >= 0"
-              size="small"
-              type="danger"
-              plain
-              :loading="removingModelRef === selectedModel"
-              :disabled="Boolean(switchingModelRef) || Boolean(removingModelRef)"
-              @click="removeCustomModel(selectedModelIndex)"
-            >
-              {{ t("settings.delete") }}
-            </el-button>
-            <el-button
-              v-else-if="selectedModelEntry?.providerKey === 'github-copilot'"
-              size="small"
-              type="danger"
-              plain
-              :loading="copilotDisconnecting"
-              :disabled="Boolean(switchingModelRef) || Boolean(removingModelRef)"
-              @click="disconnectGitHubCopilot"
-            >
-              {{ t("settings.disconnect") }}
-            </el-button>
-          </div>
+          <h2 class="model-section-title">{{ t("modelManager.providers") }}</h2>
         </div>
-        <div class="card-group">
-          <template v-if="customModels.length">
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.provider") }}</span>
-              <span class="row-value">{{ currentProviderName }}</span>
-            </div>
+        <p class="provider-description">{{ t("modelManager.providersHint") }}</p>
+        <p v-if="modelStatusError || providerCatalogError" class="provider-error" role="alert">
+          {{ [modelStatusError, providerCatalogError].filter(Boolean).join("; ") }}
+        </p>
+        <SessionModelRecoveryNotice
+          :disabled="chatStore.streaming || Boolean(switchingModelRef || localSelecting)"
+          @state="sessionRecovery = $event"
+          @busy="sessionRecovering = $event"
+          @recovered="refreshModelsConfig"
+        />
+        <div class="card-group default-model-card">
+          <template v-if="modelOptions.length">
             <div class="card-row no-border">
-              <span class="row-label">{{ t("settings.currentModel") }}</span>
+              <span class="row-label">{{ t("modelManager.defaultModel") }}</span>
               <div class="model-picker-actions">
-                <el-select
+                <DefaultModelPicker
                   class="model-picker-select"
                   :model-value="selectedModel"
-                  :loading="
-                    Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-                  "
-                  :disabled="
-                    Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-                  "
-                  filterable
+                  :models="modelOptions"
+                  :model-status="modelOptionStatus"
+                  :loading="copilotModelsLoading || providerCatalogLoading || modelActionBusy"
+                  :switching="Boolean(switchingModelRef) || localSelecting"
+                  :disabled="modelActionBusy || chatStore.streaming || Boolean(sessionRecovery)"
                   @change="selectModel"
-                >
-                  <el-option
-                    v-for="model in customModels"
-                    :key="getModelRef(model)"
-                    :label="model.name"
-                    :value="getModelRef(model)"
-                  />
-                </el-select>
+                />
               </div>
             </div>
           </template>
           <div v-else-if="!copilotModelsLoading" class="card-row no-border">
             <span class="placeholder-text">{{ t("settings.noProviderConfigured") }}</span>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="
-                Boolean(switchingModelRef) || Boolean(removingModelRef) || copilotDisconnecting
-              "
-              @click="showProviderSetup = true"
-            >
-              {{ t("settings.setUpModelProvider") }}
-            </el-button>
           </div>
+        </div>
+        <div class="provider-cards">
+          <section
+            v-for="provider in providerCards"
+            :key="provider.key"
+            class="provider-card"
+            :data-provider="provider.key"
+          >
+            <header class="provider-card-heading">
+              <div class="provider-card-title">
+                <strong>{{ provider.label }}</strong>
+                <span v-if="provider.key === 'llama-cpp'" class="provider-runtime">llama.cpp</span>
+                <p>
+                  {{
+                    provider.key === "llama-cpp"
+                      ? t("modelManager.localHint")
+                      : provider.key === "github-copilot"
+                        ? t("modelManager.copilotHint")
+                        : provider.signupUrl
+                          ? t("modelManager.apiKeyHint")
+                          : t("modelManager.apiHint")
+                  }}
+                </p>
+              </div>
+              <span class="provider-state" :class="{ warning: provider.missing }">
+                {{
+                  t(
+                    provider.key === "llama-cpp" && localProviderReady
+                      ? "settings.connected"
+                      : provider.missing
+                        ? "localModel.filesMissing"
+                        : provider.models.length || provider.removable
+                          ? "localModel.configured"
+                          : "modelManager.notConfigured",
+                  )
+                }}
+              </span>
+              <button
+                type="button"
+                class="provider-toggle"
+                :data-testid="
+                  provider.key === 'llama-cpp'
+                    ? 'add-local-model'
+                    : `manage-provider-${provider.key}`
+                "
+                :aria-expanded="isProviderExpanded(provider.key)"
+                :aria-controls="`provider-panel-${provider.key}`"
+                :aria-label="
+                  t(
+                    isProviderExpanded(provider.key)
+                      ? 'modelManager.collapseProvider'
+                      : 'modelManager.expandProvider',
+                    { provider: provider.label },
+                  )
+                "
+                :disabled="
+                  modelActionBusy ||
+                  (provider.key === 'llama-cpp' && showLocalSetup && localOperation?.busy)
+                "
+                @click="toggleProvider(provider.key)"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  aria-hidden="true"
+                  :class="{ 'provider-chevron-up': isProviderExpanded(provider.key) }"
+                >
+                  <path d="m4 6 4 4 4-4" />
+                </svg>
+              </button>
+            </header>
+            <LocalModelSetupDialog
+              v-if="provider.key === 'llama-cpp' && showLocalSetup"
+              :id="`provider-panel-${provider.key}`"
+              inline
+              :target-model-ref="localTargetModel"
+              :default-agent-override="defaultAgentOverride"
+              :streaming="chatStore.streaming"
+              :removable-connections="removableLocalConnections"
+              :removable-provider="provider.removable"
+              :connection-mutation-busy="modelMutationBlocked"
+              @close="showLocalSetup = false"
+              @configured="handleProviderConfigured"
+              @remove-connection="removeLocalConnection"
+              @remove-provider="removeProviderConnection(provider.key)"
+            />
+            <div
+              v-if="
+                provider.key === editingProviderKey &&
+                showProviderSetup &&
+                provider.key !== 'llama-cpp'
+              "
+              :id="`provider-panel-${provider.key}`"
+              class="provider-editor"
+            >
+              <div
+                v-for="model in provider.editableModels"
+                :key="getModelRef(model)"
+                class="provider-model-row"
+              >
+                <span>{{ model.name }}</span>
+                <span v-if="getModelRef(model) === selectedModel" class="provider-state">{{
+                  t("modelManager.defaultModel")
+                }}</span>
+                <el-button
+                  v-if="model.source !== 'auth-managed'"
+                  size="small"
+                  text
+                  :disabled="modelActionBusy"
+                  @click="openCloudSetup(provider.key, model)"
+                  >{{ t("modelManager.edit") }}</el-button
+                >
+                <el-button
+                  v-if="model.source !== 'auth-managed'"
+                  size="small"
+                  text
+                  type="danger"
+                  :disabled="modelMutationBlocked"
+                  @click="removeCustomModel(customModels.indexOf(model))"
+                  >{{ t("localModel.removeConnection") }}</el-button
+                >
+              </div>
+              <el-button
+                v-if="provider.key === 'github-copilot' && provider.models.length"
+                size="small"
+                text
+                type="danger"
+                :disabled="modelMutationBlocked"
+                @click="disconnectGitHubCopilot"
+                >{{ t("settings.disconnect") }}</el-button
+              >
+              <ModelSetupDialog
+                :key="editingModelRef"
+                v-model="showProviderSetup"
+                inline
+                manage-only
+                :initial-family="editingFamily"
+                :current-provider="providerPrefill"
+                :streaming="chatStore.streaming"
+                @busy="providerSaving = $event"
+                @configured="handleProviderConfigured"
+              />
+              <div v-if="provider.removable" class="provider-connection-actions">
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :data-testid="`remove-provider-${provider.key}`"
+                  :disabled="modelMutationBlocked"
+                  @click="removeProviderConnection(provider.key)"
+                  >{{ t("localModel.removeConnection") }}</el-button
+                >
+              </div>
+            </div>
+          </section>
+        </div>
+        <div v-if="localOperation?.busy" class="local-setup-status" role="status">
+          <span>{{ t("localModel.setupPending") }}</span>
+          <el-button size="small" text @click="openLocalModel()">
+            {{ t("localModel.viewSetup") }}
+          </el-button>
         </div>
 
         <!-- Web search -->
         <div class="sub-label-row">
-          <span class="sub-label">{{ t("settings.webSearch") }}</span>
+          <h2 class="model-section-title">{{ t("settings.webSearch") }}</h2>
           <div class="sub-label-actions">
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="!searchDirty"
-              :loading="searchSavingAll"
-              @click="saveSearchSettings"
-              >{{ t("settings.save") }}</el-button
+            <span
+              v-if="searchSaveStatus !== 'idle'"
+              class="status-indicator"
+              :class="searchSaveStatusClass"
             >
+              <span class="status-dot"></span>
+              {{ searchSaveStatusText }}
+            </span>
           </div>
         </div>
-        <div class="card-group">
-          <div class="card-row">
+        <div class="card-group" data-testid="web-search-settings">
+          <div class="card-row" :class="{ 'no-border': !activeSearchProvider.requiresKey }">
             <span class="row-label">{{ t("settings.provider") }}</span>
-            <el-select v-model="searchProvider" style="width: 130px">
-              <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
-            </el-select>
+            <div class="model-search-selector">
+              <span v-if="!activeSearchProvider.requiresKey" class="model-search-hint">
+                {{ t("settings.noApiKeyRequired") }}
+              </span>
+              <el-select
+                v-model="searchProvider"
+                style="width: 130px"
+                @change="handleSearchProviderChange"
+              >
+                <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
+              </el-select>
+            </div>
           </div>
           <div v-if="activeSearchProvider.requiresKey" class="card-row no-border api-key-row">
             <span class="row-label">{{ t("settings.apiKey") }}</span>
@@ -367,14 +490,21 @@
               show-password
               :placeholder="activeSearchProvider.placeholder"
               class="provider-key-input"
+              @blur="saveSearchKeyIfReady"
+              @keyup.enter="saveSearchKeyIfReady"
             />
-          </div>
-          <div v-else class="card-row no-border">
-            <span class="row-label">{{ t("settings.apiKey") }}</span>
-            <span class="placeholder-text">{{ t("settings.noApiKeyRequired") }}</span>
           </div>
         </div>
         <div class="section-footer">{{ t("settings.webSearchDesc") }}</div>
+        <LocalModelDownloadDialog
+          v-if="localSelection"
+          :key="localSelection"
+          :model-ref="localSelection"
+          :streaming="chatStore.streaming"
+          @close="localSelection = ''"
+          @busy="localSelecting = $event"
+          @selected="handleLocalModelSelected"
+        />
       </div>
 
       <!-- Channels -->
@@ -389,286 +519,297 @@
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
         <div class="section-label">{{ t("settings.security") }}</div>
-        <div class="card-group">
+        <div class="card-group mxc-card">
+          <div class="mxc-heading">
+            <span class="row-label">{{ t("settings.windowsNodeMxcSandboxing") }}</span>
+            <div class="mxc-subtitle">{{ t("settings.windowsNodeMxcAutomatic") }}</div>
+          </div>
+          <div
+            v-if="windowsNodeMxcStatusLoading || windowsNodeMxcFolderApplying"
+            class="mxc-alert"
+            role="status"
+            data-testid="mxc-status-loading"
+          >
+            {{
+              t(
+                windowsNodeMxcStatus
+                  ? "settings.windowsNodeMxcStatusRefreshing"
+                  : "settings.windowsNodeMxcStatusLoading",
+              )
+            }}
+          </div>
+          <div
+            v-if="windowsNodeMxcVerifiedAt"
+            class="mxc-subtitle"
+            data-testid="mxc-status-verified"
+          >
+            {{
+              t("settings.windowsNodeMxcStatusVerified", {
+                time: new Date(windowsNodeMxcVerifiedAt).toLocaleTimeString(),
+              })
+            }}
+          </div>
+          <div
+            v-if="windowsNodeMxcStatusError"
+            class="mxc-alert mxc-alert-error"
+            role="alert"
+            data-testid="mxc-status-error"
+          >
+            {{ windowsNodeMxcStatusError }}
+            <el-button
+              size="small"
+              data-testid="mxc-status-retry"
+              :disabled="windowsNodeMxcStatusLoading"
+              @click="loadWindowsNodeMxcStatus"
+            >
+              {{ t("settings.retry") }}
+            </el-button>
+          </div>
           <div class="card-row">
-            <span class="row-label">{{ t("settings.sandboxEnabled") }}</span>
-            <div style="display: flex; align-items: center; gap: 10px">
-              <span v-if="sandboxRestarting" class="restart-hint">{{
-                t("settings.sandboxCapsRestarting")
-              }}</span>
-              <el-switch
-                v-model="sandboxStatus.enabled"
-                :disabled="sandboxRestarting"
-                @change="toggleSandbox"
-              />
-            </div>
+            <span class="row-label">{{ t("settings.windowsNodeMxcSandboxing") }}</span>
+            <el-switch
+              data-testid="mxc-sandbox-toggle"
+              :model-value="windowsNodeMxcStatus?.desiredEnabled ?? false"
+              :loading="windowsNodeMxcApplying"
+              :disabled="windowsNodeMxcToggleDisabled"
+              :active-text="t('settings.windowsNodeMxcOn')"
+              :inactive-text="t('settings.windowsNodeMxcModeOff')"
+              :aria-label="t('settings.windowsNodeMxcSandboxing')"
+              :before-change="toggleWindowsNodeMxc"
+            />
           </div>
-        </div>
-
-        <div :class="{ 'sandbox-disabled': !sandboxStatus.enabled }">
-          <!-- Sandbox capabilities (network) -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row">
-              <span class="row-label">{{ t("settings.cap.internetClient") }}</span>
-              <div style="display: flex; align-items: center; gap: 10px">
-                <span v-if="capsRestarting" class="restart-hint">{{
-                  t("settings.sandboxCapsRestarting")
-                }}</span>
-                <el-switch
-                  :model-value="sandboxCapabilities.includes('internetClient')"
-                  :disabled="capsRestarting"
-                  @change="(v: boolean) => toggleCapability('internetClient', v)"
-                />
+          <p
+            v-if="windowsNodeMxcUnavailable"
+            class="mxc-primary-detail"
+            role="status"
+            data-testid="mxc-unavailable"
+          >
+            {{ t("settings.windowsNodeMxcToggleUnavailable") }}
+          </p>
+          <a
+            class="mxc-docs-link"
+            data-testid="mxc-official-link"
+            :href="mxcWebsiteUrl"
+            @click.prevent="openExternal(mxcWebsiteUrl)"
+          >
+            {{ t("settings.windowsNodeMxcLearnMore") }}
+          </a>
+          <div
+            v-if="windowsNodeMxcFullyOff"
+            class="mxc-primary-detail"
+            data-testid="mxc-off-disclosure"
+          >
+            {{ t("settings.windowsNodeMxcOffDisclosure") }}
+            <span
+              v-if="windowsNodeMxcStatus?.probe === null"
+              data-testid="mxc-availability-deferred"
+            >
+              {{ t("settings.windowsNodeMxcAvailabilityOnEnable") }}
+            </span>
+          </div>
+          <template v-if="windowsNodeMxcStatus && !windowsNodeMxcFullyOff">
+            <div
+              v-if="!windowsNodeMxcProtectionActive"
+              class="card-row mxc-status-summary"
+              data-testid="mxc-status-summary"
+            >
+              <span class="mxc-state" :class="windowsNodeMxcProtectionClass">
+                {{ windowsNodeMxcCompactStatus }}
+              </span>
+            </div>
+            <div v-if="windowsNodeMxcProtectionDetail" class="mxc-primary-detail">
+              {{ windowsNodeMxcProtectionDetail }}
+            </div>
+            <div
+              v-if="windowsNodeMxcHooksPausedSummary"
+              class="mxc-alert mxc-alert-warning"
+              data-testid="mxc-hooks-paused"
+            >
+              {{ windowsNodeMxcHooksPausedSummary }}
+            </div>
+            <div
+              v-if="windowsNodeMxcStatus.canvas.state === 'paused'"
+              class="mxc-alert mxc-alert-warning"
+              data-testid="mxc-canvas-status"
+            >
+              {{ t("settings.windowsNodeMxcCanvasPaused") }}
+            </div>
+            <div
+              v-if="windowsNodeMxcLimitedMode && windowsNodeMxcAmbientSummary"
+              class="card-row no-border mxc-ambient-compact"
+              :class="windowsNodeMxcAmbientSummaryClass"
+              data-testid="mxc-ambient-compact"
+            >
+              {{ windowsNodeMxcAmbientSummary }}
+            </div>
+            <div
+              class="card-row no-border mxc-folder-policy"
+              style="flex-direction: column; align-items: stretch"
+            >
+              <span class="row-label">{{ windowsNodeMxcFolderTitle }}</span>
+              <div class="mxc-folder-policy-hint">
+                {{ windowsNodeMxcFolderHint }}
               </div>
-            </div>
-          </div>
-          <div class="section-footer">{{ t("settings.sandboxCapsHint") }}</div>
-
-          <!-- External apps whitelist -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
               <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
+                v-if="windowsNodeMxcStatus.requestedMode !== 'off'"
+                class="mxc-alert mxc-alert-warning mxc-folder-policy-locked"
               >
-                <span class="row-label" style="margin: 0">{{ t("settings.externalApps") }}</span>
+                {{ t("settings.windowsNodeMxcFoldersStaged") }}
               </div>
-              <div class="external-apps-list">
-                <div v-for="(app, idx) in externalApps" :key="idx" class="app-tag">
-                  <span>{{ app }}</span>
-                  <button class="tag-remove" @click="removeExternalApp(idx)">&times;</button>
-                </div>
-                <div class="app-tag app-tag-add">
-                  <input
-                    v-model="newAppName"
-                    class="app-add-input"
-                    :placeholder="t('settings.addApp')"
-                    @keyup.enter="addExternalApp"
-                  />
-                  <button class="tag-add-btn" @click="addExternalApp">+</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="section-footer">{{ t("settings.externalAppsHint") }}</div>
-
-          <!-- Sandbox directory permissions -->
-          <div class="card-group" style="margin-top: 12px">
-            <div class="card-row no-border" style="flex-direction: column; align-items: stretch">
-              <div
-                style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: space-between;
-                  margin-bottom: 8px;
-                "
-              >
-                <span
-                  class="row-label"
-                  style="margin: 0; cursor: default; user-select: none"
-                  @click="onSandboxDirsLabelClick"
-                  >{{ t("settings.sandboxDirs") }}</span
-                >
-              </div>
-              <!-- Read-Write directories -->
               <div class="dir-section">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
+                <div class="mxc-folder-policy-heading">
                   <span class="dir-section-label">{{ t("settings.sandboxDirsRW") }}</span>
-                  <el-button size="small" type="primary" plain @click="addSandboxDir('rw')">
+                  <el-button
+                    data-testid="mxc-add-rw"
+                    size="small"
+                    type="primary"
+                    plain
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="addWindowsNodeMxcFolder('rw')"
+                  >
                     {{ t("settings.sandboxAddDir") }}
                   </el-button>
                 </div>
                 <div
-                  v-for="(dir, idx) in sandboxSystemDirs.rw"
-                  :key="'srw-' + idx"
-                  class="dir-item dir-item-system"
+                  v-for="dir in windowsNodeMxcFolderDraft.rw"
+                  :key="'mxc-rw-' + dir"
+                  class="dir-item"
                 >
                   <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
+                  <span class="dir-badge dir-badge-rw">{{
+                    t("settings.windowsNodeMxcGrantReadWrite")
                   }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.rw" :key="'rw-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-rw">RW</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'rw')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.rw.length === 0 && sandboxUserDirs.rw.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- Read-Only directories -->
-              <div class="dir-section" style="margin-top: 10px">
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 6px;
-                  "
-                >
-                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
-                  <el-button size="small" type="primary" plain @click="addSandboxDir('ro')">
-                    {{ t("settings.sandboxAddDir") }}
+                  <el-button
+                    data-testid="mxc-change-ro"
+                    text
+                    size="small"
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="changeWindowsNodeMxcFolderAccess(dir, 'ro')"
+                  >
+                    {{ t("settings.windowsNodeMxcChangeToRo") }}
                   </el-button>
-                </div>
-                <div
-                  v-for="(dir, idx) in sandboxSystemDirs.ro"
-                  :key="'sro-' + idx"
-                  class="dir-item dir-item-system"
-                >
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <span class="dir-badge dir-badge-system">{{
-                    t("settings.sandboxSystemDir")
-                  }}</span>
-                </div>
-                <div v-for="dir in sandboxUserDirs.ro" :key="'ro-' + dir" class="dir-item">
-                  <span class="dir-path" :title="dir">{{ dir }}</span>
-                  <span class="dir-badge dir-badge-ro">RO</span>
-                  <button class="tag-remove" @click="removeSandboxDir(dir, 'ro')">&times;</button>
-                </div>
-                <div
-                  v-if="sandboxSystemDirs.ro.length === 0 && sandboxUserDirs.ro.length === 0"
-                  class="dir-empty"
-                >
-                  {{ t("settings.sandboxNoDirs") }}
-                </div>
-              </div>
-
-              <!-- ACL Verify Button (dev/testing tool, triple-click to show) -->
-              <div
-                v-if="showAclVerify"
-                class="dir-section"
-                style="
-                  margin-top: 14px;
-                  border-top: 1px solid var(--border-color);
-                  padding-top: 12px;
-                "
-              >
-                <div
-                  style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    margin-bottom: 8px;
-                  "
-                >
-                  <span class="dir-section-label">🔍 ACL 验证</span>
-                  <button class="dir-add-btn" :disabled="aclVerifying" @click="verifyAcls">
-                    {{ aclVerifying ? "扫描中..." : "验证权限一致性" }}
+                  <button
+                    class="tag-remove"
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="removeWindowsNodeMxcFolder(dir, 'rw')"
+                  >
+                    &times;
                   </button>
                 </div>
-                <div v-if="aclVerifyResult" class="acl-verify-results">
-                  <!-- OK -->
-                  <div v-if="aclVerifyResult.ok.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-ok">
-                      ✓ 正常 ({{ aclVerifyResult.ok.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.ok"
-                      :key="'ok-' + item.dir"
-                      class="dir-item dir-item-system"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span
-                        class="dir-badge"
-                        :class="item.access === 'rw' ? 'dir-badge-rw' : 'dir-badge-ro'"
-                        >{{ item.access.toUpperCase() }}</span
-                      >
-                    </div>
-                  </div>
-                  <!-- Missing -->
-                  <div v-if="aclVerifyResult.missing.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      ⚠ 缺少 ACL ({{ aclVerifyResult.missing.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.missing"
-                      :key="'miss-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-ro">{{ item.access.toUpperCase() }}</span>
-                      <span class="acl-reason">{{ item.reason }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="repairAcl(item)"
-                      >
-                        修复
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Stale -->
-                  <div v-if="aclVerifyResult.stale.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-warn">
-                      🗑 残留 ACL ({{ aclVerifyResult.stale.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.stale"
-                      :key="'stale-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="dir-badge dir-badge-system">{{ item.rights }}</span>
-                      <button
-                        class="dir-add-btn"
-                        style="margin-left: auto"
-                        @click="revokeStaleAcl(item)"
-                      >
-                        清除
-                      </button>
-                    </div>
-                  </div>
-                  <!-- Errors -->
-                  <div v-if="aclVerifyResult.errors.length > 0" class="acl-section">
-                    <div class="acl-section-header acl-err">
-                      ✗ 错误 ({{ aclVerifyResult.errors.length }})
-                    </div>
-                    <div
-                      v-for="item in aclVerifyResult.errors"
-                      :key="'err-' + item.dir"
-                      class="dir-item"
-                    >
-                      <span class="dir-path" :title="item.dir">{{ item.dir }}</span>
-                      <span class="acl-reason">{{ item.error }}</span>
-                    </div>
-                  </div>
-                  <!-- Summary -->
-                  <div
-                    v-if="
-                      aclVerifyResult.missing.length === 0 &&
-                      aclVerifyResult.stale.length === 0 &&
-                      aclVerifyResult.errors.length === 0
-                    "
-                    class="acl-summary-ok"
-                  >
-                    ✓ 所有权限均已正确设置
-                  </div>
+                <div v-if="windowsNodeMxcFolderDraft.rw.length === 0" class="dir-empty">
+                  {{ t("settings.sandboxNoDirs") }}
                 </div>
               </div>
+              <div class="dir-section" style="margin-top: 10px">
+                <div class="mxc-folder-policy-heading">
+                  <span class="dir-section-label">{{ t("settings.sandboxDirsRO") }}</span>
+                  <el-button
+                    data-testid="mxc-add-ro"
+                    size="small"
+                    type="primary"
+                    plain
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="addWindowsNodeMxcFolder('ro')"
+                  >
+                    {{ t("settings.sandboxAddDir") }}
+                  </el-button>
+                </div>
+                <div
+                  v-for="dir in windowsNodeMxcFolderDraft.ro"
+                  :key="'mxc-ro-' + dir"
+                  class="dir-item"
+                >
+                  <span class="dir-path" :title="dir">{{ dir }}</span>
+                  <span class="dir-badge dir-badge-ro">{{
+                    t("settings.windowsNodeMxcGrantReadOnly")
+                  }}</span>
+                  <el-button
+                    data-testid="mxc-change-rw"
+                    text
+                    size="small"
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="changeWindowsNodeMxcFolderAccess(dir, 'rw')"
+                  >
+                    {{ t("settings.windowsNodeMxcChangeToRw") }}
+                  </el-button>
+                  <button
+                    class="tag-remove"
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="removeWindowsNodeMxcFolder(dir, 'ro')"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <div v-if="windowsNodeMxcFolderDraft.ro.length === 0" class="dir-empty">
+                  {{ t("settings.sandboxNoDirs") }}
+                </div>
+              </div>
+              <div
+                v-if="
+                  windowsNodeMxcFolderDraftDirty ||
+                  windowsNodeMxcStatus.folderPolicyRecovery?.previous
+                "
+                class="mxc-folder-policy-actions"
+              >
+                <template v-if="windowsNodeMxcFolderDraftDirty">
+                  <el-button
+                    type="primary"
+                    :loading="windowsNodeMxcFolderApplying"
+                    data-testid="mxc-apply-folder-policy"
+                    @click="applyWindowsNodeMxcFolderPolicy"
+                  >
+                    {{ t("settings.windowsNodeMxcApplyFolders") }}
+                  </el-button>
+                  <el-button
+                    data-testid="mxc-cancel-folder-policy"
+                    :disabled="windowsNodeMxcFolderApplying"
+                    @click="replaceWindowsNodeMxcFolderDraft(windowsNodeMxcFolderBaseline)"
+                  >
+                    {{ t("common.cancel") }}
+                  </el-button>
+                </template>
+                <el-button
+                  v-if="windowsNodeMxcStatus.folderPolicyRecovery?.previous"
+                  data-testid="mxc-stage-previous-folder-policy"
+                  text
+                  size="small"
+                  :disabled="windowsNodeMxcFolderApplying"
+                  @click="stagePreviousWindowsNodeMxcFolderPolicy"
+                >
+                  {{ t("settings.windowsNodeMxcStagePreviousFolders") }}
+                </el-button>
+              </div>
             </div>
-          </div>
-          <div class="section-footer">{{ t("settings.sandboxDirsHint") }}</div>
+          </template>
         </div>
-        <!-- .sandbox-disabled wrapper -->
+        <div class="card-group" data-testid="command-consent-settings">
+          <div
+            class="card-row no-border"
+            style="flex-direction: column; align-items: stretch; gap: 12px"
+          >
+            <span class="row-label">{{ t("settings.commandConsent") }}</span>
+            <el-radio-group
+              :model-value="settings.commandConsentMode"
+              :disabled="
+                commandConsentApplying ||
+                windowsNodeMxcApplying ||
+                windowsNodeMxcFolderApplying ||
+                chatStore.streaming
+              "
+              @change="setCommandConsentMode"
+            >
+              <el-radio value="ask-when-needed">{{
+                t("settings.commandConsentAskWhenNeeded")
+              }}</el-radio>
+              <el-radio value="allow-always">{{
+                t("settings.commandConsentAllowAlways")
+              }}</el-radio>
+            </el-radio-group>
+            <div class="mxc-folder-policy-hint">{{ t("settings.commandConsentHint") }}</div>
+            <div class="mxc-folder-policy-hint">{{ t("settings.commandConsentNativeTools") }}</div>
+            <div class="mxc-folder-policy-hint">{{ t("settings.commandConsentLiveUpdate") }}</div>
+          </div>
+        </div>
       </div>
 
       <!-- Data & Privacy -->
@@ -760,10 +901,6 @@
             <div class="sensitive-file-info">
               <span class="sensitive-file-examples">{{ t("settings.sensitiveFilePatterns") }}</span>
             </div>
-            <span class="status-indicator status-indicator--warn">
-              <span class="status-dot"></span>
-              {{ t("settings.permissionRequired") }}
-            </span>
           </div>
         </div>
         <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
@@ -802,7 +939,11 @@
             </div>
             <p class="copyright-notice">Copyright © 2026 {{ t("app.name") }}</p>
           </div>
-          <div v-if="updateResult" class="update-card" :class="`update-card-${updateResult.status}`">
+          <div
+            v-if="updateResult"
+            class="update-card"
+            :class="`update-card-${updateResult.status}`"
+          >
             <div class="update-title">{{ updateStatusTitle }}</div>
             <div class="update-detail">{{ updateStatusDetail }}</div>
             <ul
@@ -822,13 +963,20 @@
             </el-button>
           </div>
         </div>
+        <div class="sub-label">{{ t("settings.legal") }}</div>
+        <div class="card-group legal-links">
+          <a class="card-row legal-link" :href="eulaUrl" @click.prevent="openExternal(eulaUrl)">
+            {{ t("settings.eula") }}
+          </a>
+          <a
+            class="card-row legal-link no-border"
+            :href="privacyStatementUrl"
+            @click.prevent="openExternal(privacyStatementUrl)"
+          >
+            {{ t("settings.privacyStatement") }}
+          </a>
+        </div>
       </div>
-
-      <ModelSetupDialog
-        v-model="showProviderSetup"
-        single-provider
-        @configured="handleProviderConfigured"
-      />
     </div>
   </div>
 </template>
@@ -841,32 +989,56 @@ import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
-import { t, setLocale } from "@/i18n";
+import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
+import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
+import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
+import type { SessionModelRecovery } from "../../../src/session-model-types";
+import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
+import { mergeLocalModelCatalog } from "@/utils/local-model-catalog";
+import { isManagedLocalModel, type LocalModelCatalogEntry } from "../../../src/local-model-catalog";
+import { useLocalModelOperation } from "@/composables/use-local-model-operation";
+import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
 import {
-  normalizeModelInput,
+  getDefaultAgentModelOverride,
   removeModelProviderConfig,
-  selectPrimaryModelConfig,
-  retainOnlyProvider,
-  type ModelApiFormat,
-  type ModelInputCapability,
-  type ModelReasoningEffort,
+  removeProviderConnectionConfig,
 } from "@/utils/model-provider";
 import {
   mergeGitHubCopilotModelEntries,
   removeGitHubCopilotModelReferences,
 } from "@/utils/auth-managed-models";
-import { getManagedModelProvider } from "@/utils/managed-model-providers";
+import { MANAGED_MODEL_PROVIDERS, getManagedModelProvider } from "@/utils/managed-model-providers";
+import { isModelProviderEnabled } from "@/utils/model-features";
+import {
+  useProviderModelCatalog,
+  readConfiguredCatalogs,
+  type ConfiguredCatalogs,
+} from "@/composables/use-provider-model-catalog";
+import {
+  readConfiguredModels,
+  getModelRef,
+  providerName,
+  type ConfiguredModel,
+} from "@/utils/configured-models";
+import type { LocalModelFileStatus } from "../../../src/local-model-types";
+import {
+  createSearchAutosave,
+  patchSearchConfig,
+  type SearchProviderId,
+  type SearchSaveRequest,
+} from "@/utils/search-settings-autosave";
 import {
   hydratePrivacyControls,
   type PrivacyControls,
   type PrivacyLevel,
 } from "@/utils/privacy-settings";
-
 const route = useRoute();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const { operation: localOperation, refresh: refreshLocalOperation } = useLocalModelOperation();
 const devSettingsEnabled =
   import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_SETTINGS === "true";
 const SkillsDevPanel = devSettingsEnabled
@@ -943,220 +1115,440 @@ watch(
     }
   },
 );
+const windowsNodeMxcFolderDraft = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
+const windowsNodeMxcFolderBaseline = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
+type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
+type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
+type WindowsNodeMxcAmbientEntry = NonNullable<
+  WindowsNodeMxcStatus["ambientAccess"]
+>["entries"][number];
+const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
+const windowsNodeMxcStatusLoading = ref(false);
+const windowsNodeMxcVerifiedAt = ref<number | null>(null);
+let unsubscribeMxcDisplay: (() => void) | undefined;
+let mxcDisplayRevision = 0;
+const windowsNodeMxcStatusError = ref("");
+const windowsNodeMxcApplying = ref(false);
+const windowsNodeMxcFolderApplying = ref(false);
+const windowsNodeMxcTransitionPhases = new Set([
+  "updating-folders",
+  "updating-consent",
+  "updating-model",
+  "connecting-weixin",
+  "disconnecting-weixin",
+  "locking",
+  "disabling",
+  "validating",
+  "persisting",
+  "starting-locked",
+  "smoking-locked",
+  "starting-active",
+  "smoking-active",
+  "promoting-active",
+  "verifying-active",
+  "starting-standard",
+]);
 
-// -- Sandbox state --
-const sandboxStatus = reactive({ available: false, enabled: false });
-const externalApps = ref<string[]>([]);
-const newAppName = ref("");
-const sandboxNeedsRestart = ref(false);
-const sandboxApplying = ref(false);
-/** Snapshot of external apps at load time, used to detect changes */
-let externalAppsOriginal: string[] = [];
-const sandboxUserDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
-const sandboxSystemDirs = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
-const sandboxCapabilities = ref<string[]>([]);
-const capsRestarting = ref(false);
-const sandboxRestarting = ref(false);
+const windowsNodeMxcUnavailable = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  return (
+    !!status &&
+    !status.desiredEnabled &&
+    !!status.probe &&
+    (status.probe.outcome === "error" ||
+      (!status.fullAvailability?.available && !status.limitedAvailability?.available))
+  );
+});
 
-async function loadSandboxStatus() {
-  try {
-    const status = await window.openclaw.sandbox.getStatus();
-    sandboxStatus.available = status.available;
-    sandboxStatus.enabled = status.enabled;
-    externalApps.value = await window.openclaw.sandbox.getExternalApps();
-    externalAppsOriginal = [...externalApps.value];
-    sandboxNeedsRestart.value = false;
-    sandboxCapabilities.value = await window.openclaw.sandbox.getCapabilities();
-    const dirs = await window.openclaw.sandbox.getUserDirs();
-    sandboxUserDirs.rw = dirs.rw;
-    sandboxUserDirs.ro = dirs.ro;
-    // System dirs = all dirs from sandbox status minus user-added dirs
-    const userRwSet = new Set(dirs.rw.map((d: string) => d.toLowerCase()));
-    const userRoSet = new Set(dirs.ro.map((d: string) => d.toLowerCase()));
-    sandboxSystemDirs.rw = (status.sandboxDirsRW || []).filter(
-      (d: string) => !userRwSet.has(d.toLowerCase()),
-    );
-    sandboxSystemDirs.ro = (status.sandboxDirsRO || []).filter(
-      (d: string) => !userRoSet.has(d.toLowerCase()),
-    );
-  } catch {}
-}
+const windowsNodeMxcToggleDisabled = computed(
+  () =>
+    !windowsNodeMxcStatus.value ||
+    windowsNodeMxcApplying.value ||
+    windowsNodeMxcFolderApplying.value ||
+    windowsNodeMxcTransitionPhases.has(windowsNodeMxcStatus.value.lifecycleState.phase) ||
+    (!windowsNodeMxcStatus.value.desiredEnabled &&
+      (!!windowsNodeMxcStatusError.value || windowsNodeMxcUnavailable.value)),
+);
 
-async function toggleSandbox(enabled: boolean) {
-  sandboxRestarting.value = true;
-  await window.openclaw.sandbox.setEnabled(enabled);
-  // Wait for reconnection
-  const deadline = Date.now() + 15000;
-  const poll = setInterval(async () => {
-    try {
-      if ((await window.openclaw.chat.isConnected()) || Date.now() > deadline) {
-        clearInterval(poll);
-        sandboxRestarting.value = false;
-        await loadSandboxStatus();
-      }
-    } catch {
-      clearInterval(poll);
-      sandboxRestarting.value = false;
-    }
-  }, 500);
-}
+const windowsNodeMxcFullyOff = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  return (
+    status?.requestedMode === "off" &&
+    !status.desiredEnabled &&
+    !status.effectiveEnabled &&
+    status.effectiveStrength === "off" &&
+    status.lifecycleState.phase === "idle" &&
+    !status.lifecycleState.detail &&
+    status.activationLeaseMode === null &&
+    status.canvas.state === "off" &&
+    !status.hooks.pausedByMxc &&
+    !status.folderPolicyRecovery?.lastError &&
+    !windowsNodeMxcStatusError.value
+  );
+});
 
-function checkDirty() {
-  const a = externalApps.value;
-  const b = externalAppsOriginal;
-  sandboxNeedsRestart.value = a.length !== b.length || a.some((v, i) => v !== b[i]);
-}
+const windowsNodeMxcProtectionActive = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  return (
+    !!status?.effectiveEnabled &&
+    status.effectiveStrength !== "off" &&
+    status.lifecycleState.phase === "active" &&
+    !windowsNodeMxcStatusError.value
+  );
+});
 
-async function addExternalApp() {
-  const name = newAppName.value
-    .trim()
-    .toLowerCase()
-    .replace(/\.exe$/i, "");
-  if (!name || !/^[a-z0-9_-]+$/.test(name)) return;
-  if (externalApps.value.includes(name)) {
-    newAppName.value = "";
-    return;
+const windowsNodeMxcProtectionLabel = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (!status || windowsNodeMxcFullyOff.value) {
+    return t("settings.windowsNodeMxcProtectionOff");
   }
-  externalApps.value.push(name);
-  newAppName.value = "";
-  await window.openclaw.sandbox.setExternalApps([...externalApps.value]);
-  checkDirty();
-}
-
-async function removeExternalApp(idx: number) {
-  externalApps.value.splice(idx, 1);
-  await window.openclaw.sandbox.setExternalApps([...externalApps.value]);
-  checkDirty();
-}
-
-async function toggleCapability(cap: string, enabled: boolean) {
-  if (enabled) {
-    if (!sandboxCapabilities.value.includes(cap)) sandboxCapabilities.value.push(cap);
-  } else {
-    sandboxCapabilities.value = sandboxCapabilities.value.filter((c) => c !== cap);
+  if (windowsNodeMxcTransitionPhases.has(status.lifecycleState.phase)) {
+    return t(
+      status.requestedMode === "off"
+        ? "settings.windowsNodeMxcStopping"
+        : "settings.windowsNodeMxcStarting",
+    );
   }
-  await window.openclaw.sandbox.setCapabilities([...sandboxCapabilities.value]);
-  // Auto-restart gateway (capabilities require process restart)
-  capsRestarting.value = true;
-  try {
-    await window.openclaw.gateway.restart();
-  } catch {}
-  // Wait for reconnection, then clear the hint
-  const deadline = Date.now() + 15000;
-  const poll = setInterval(async () => {
-    try {
-      if ((await window.openclaw.chat.isConnected()) || Date.now() > deadline) {
-        clearInterval(poll);
-        capsRestarting.value = false;
-      }
-    } catch {
-      clearInterval(poll);
-      capsRestarting.value = false;
-    }
-  }, 500);
+  return t("settings.windowsNodeMxcActionRequired");
+});
+
+const windowsNodeMxcProtectionClass = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  return !status || windowsNodeMxcFullyOff.value ? "mxc-state-neutral" : "mxc-state-blocked";
+});
+
+const windowsNodeMxcProtectionDetail = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (!status || windowsNodeMxcFullyOff.value || windowsNodeMxcProtectionActive.value) {
+    return "";
+  }
+  const phase = t(`settings.windowsNodeMxcLifecyclePhase.${status.lifecycleState.phase}`);
+  return status.lifecycleState.detail ? `${phase} · ${status.lifecycleState.detail}` : phase;
+});
+
+const windowsNodeMxcHooksPausedSummary = computed(() => {
+  const hooks = windowsNodeMxcStatus.value?.hooks;
+  if (!hooks?.pausedByMxc) return "";
+  if (hooks.requestedExternalEnabled && hooks.requestedInternalEnabled) {
+    return t("settings.windowsNodeMxcHooksPausedBoth");
+  }
+  return hooks.requestedExternalEnabled
+    ? t("settings.windowsNodeMxcHooksPausedExternal")
+    : t("settings.windowsNodeMxcHooksPausedInternal");
+});
+
+const windowsNodeMxcLimitedMode = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  return status?.requestedMode === "limited-dacl" || status?.effectiveStrength === "limited-dacl";
+});
+
+const windowsNodeMxcCompactStatus = computed(() => {
+  const status = windowsNodeMxcStatus.value;
+  if (!status || windowsNodeMxcFullyOff.value) {
+    return t("settings.windowsNodeMxcCompactOff");
+  }
+  return t("settings.windowsNodeMxcCompactStatus", {
+    mode: windowsNodeMxcModeLabel(status.requestedMode),
+    state: windowsNodeMxcProtectionLabel.value,
+  });
+});
+
+const windowsNodeMxcAmbientEntries = computed(
+  () => windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [],
+);
+
+const windowsNodeMxcAmbientExceptions = computed(() =>
+  windowsNodeMxcAmbientEntries.value.filter((entry) => entry.status !== "denied"),
+);
+
+const windowsNodeMxcAmbientSummary = computed(() => {
+  const entries = windowsNodeMxcAmbientEntries.value;
+  if (entries.length === 0) {
+    return t("settings.windowsNodeMxcAmbientUnavailable");
+  }
+  const denied = entries.length - windowsNodeMxcAmbientExceptions.value.length;
+  if (windowsNodeMxcAmbientExceptions.value.length === 0) {
+    return "";
+  }
+  const details = windowsNodeMxcAmbientExceptions.value
+    .map(
+      (entry) =>
+        `${windowsNodeMxcAmbientCategoryLabel(entry.category)} — ${windowsNodeMxcAmbientStatusLabel(entry.status)}`,
+    )
+    .join(", ");
+  return t("settings.windowsNodeMxcAmbientExceptions", {
+    details,
+    denied,
+    total: entries.length,
+  });
+});
+
+const windowsNodeMxcAmbientSummaryClass = computed(() => {
+  if (windowsNodeMxcAmbientEntries.value.length === 0) {
+    return "mxc-summary-warning";
+  }
+  return "mxc-summary-error";
+});
+
+const windowsNodeMxcFolderTitle = computed(() => {
+  if (windowsNodeMxcLimitedMode.value) {
+    return t("settings.windowsNodeMxcLimitedFolders");
+  }
+  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
+    return t("settings.windowsNodeMxcConfiguredFolders");
+  }
+  return t("settings.windowsNodeMxcFullFolders");
+});
+
+const windowsNodeMxcFolderHint = computed(() => {
+  if (windowsNodeMxcLimitedMode.value) {
+    return t("settings.windowsNodeMxcLimitedFoldersHint");
+  }
+  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
+    return t("settings.windowsNodeMxcConfiguredFoldersHint");
+  }
+  return t("settings.windowsNodeMxcFoldersHint");
+});
+
+function windowsNodeMxcModeLabel(mode: WindowsNodeMxcMode) {
+  if (mode === "full") return t("settings.windowsNodeMxcModeFull");
+  if (mode === "limited-dacl") return t("settings.windowsNodeMxcModeLimited");
+  return t("settings.windowsNodeMxcModeOff");
 }
 
-async function _applyExternalApps() {
-  sandboxApplying.value = true;
+function windowsNodeMxcAmbientCategoryLabel(category: WindowsNodeMxcAmbientEntry["category"]) {
+  return t(`settings.windowsNodeMxcAmbientCategory.${category}`);
+}
+
+function windowsNodeMxcAmbientStatusLabel(status: WindowsNodeMxcAmbientEntry["status"]) {
+  return t(`settings.windowsNodeMxcAmbientStatus.${status}`);
+}
+
+const windowsNodeMxcFolderDraftDirty = computed(
+  () => policyIdentity(windowsNodeMxcFolderDraft) !== policyIdentity(windowsNodeMxcFolderBaseline),
+);
+
+function policyIdentity(policy: { rw: string[]; ro: string[] }) {
+  const normalize = (values: string[]) =>
+    values
+      .map((value) => value.toLowerCase())
+      .sort()
+      .join("\n");
+  return `${normalize(policy.rw)}\u0000${normalize(policy.ro)}`;
+}
+
+function replaceWindowsNodeMxcFolderDraft(policy: { rw: string[]; ro: string[] }) {
+  windowsNodeMxcFolderDraft.rw.splice(0, windowsNodeMxcFolderDraft.rw.length, ...policy.rw);
+  windowsNodeMxcFolderDraft.ro.splice(0, windowsNodeMxcFolderDraft.ro.length, ...policy.ro);
+}
+
+function replaceWindowsNodeMxcFolderBaseline(policy: { rw: string[]; ro: string[] }) {
+  windowsNodeMxcFolderBaseline.rw.splice(0, windowsNodeMxcFolderBaseline.rw.length, ...policy.rw);
+  windowsNodeMxcFolderBaseline.ro.splice(0, windowsNodeMxcFolderBaseline.ro.length, ...policy.ro);
+}
+
+function updateWindowsNodeMxcStatus(status: WindowsNodeMxcStatus, replaceFolderDraft = false) {
+  windowsNodeMxcStatus.value = status;
+  windowsNodeMxcStatusError.value = "";
+  const effectiveFolders = {
+    rw: status.folders.filter((entry) => entry.access === "rw").map((entry) => entry.path),
+    ro: status.folders.filter((entry) => entry.access === "ro").map((entry) => entry.path),
+  };
+  if (!windowsNodeMxcFolderDraftDirty.value || replaceFolderDraft) {
+    replaceWindowsNodeMxcFolderDraft(effectiveFolders);
+  }
+  replaceWindowsNodeMxcFolderBaseline(effectiveFolders);
+}
+
+async function loadWindowsNodeMxcStatus() {
+  if (windowsNodeMxcStatusLoading.value) return;
+  windowsNodeMxcStatusLoading.value = true;
+  windowsNodeMxcStatusError.value = "";
   try {
-    await window.openclaw.sandbox.applyExternalApps();
-    externalAppsOriginal = [...externalApps.value];
-    sandboxNeedsRestart.value = false;
+    if (typeof window.openclaw.windowsNodeMxc.getDisplayStatus === "function") {
+      const revision = mxcDisplayRevision;
+      const snapshot = await window.openclaw.windowsNodeMxc.getDisplayStatus();
+      if (revision === mxcDisplayRevision) applyWindowsNodeMxcDisplayStatus(snapshot);
+    } else {
+      const status = await window.openclaw.windowsNodeMxc.getStatus();
+      updateWindowsNodeMxcStatus(status);
+    }
+  } catch (error) {
+    windowsNodeMxcStatusError.value = error instanceof Error ? error.message : String(error);
+    ElMessage.error(windowsNodeMxcStatusError.value);
   } finally {
-    sandboxApplying.value = false;
+    if (
+      typeof window.openclaw.windowsNodeMxc.getDisplayStatus !== "function" ||
+      windowsNodeMxcStatusError.value
+    )
+      windowsNodeMxcStatusLoading.value = false;
   }
 }
 
-async function addSandboxDir(access: "rw" | "ro") {
-  const result = await window.openclaw.sandbox.addUserDir({ access });
-  if (result.reason === "parent-covers") {
-    const accessLabel =
-      result.parentAccess === "rw" ? t("settings.sandboxDirsRW") : t("settings.sandboxDirsRO");
-    ElMessage.warning(
-      t("settings.sandboxParentCovers", { parentDir: result.parentDir || "", access: accessLabel }),
-    );
-    return;
+function applyWindowsNodeMxcDisplayStatus(
+  snapshot: Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getDisplayStatus>>,
+) {
+  if (snapshot.status) updateWindowsNodeMxcStatus(snapshot.status);
+  else windowsNodeMxcStatus.value = null;
+  windowsNodeMxcVerifiedAt.value = snapshot.verifiedAt;
+  windowsNodeMxcStatusLoading.value = snapshot.refreshing;
+  windowsNodeMxcStatusError.value = snapshot.error ?? "";
+}
+
+async function toggleWindowsNodeMxc(): Promise<boolean> {
+  if (windowsNodeMxcToggleDisabled.value || !windowsNodeMxcStatus.value) return false;
+  const enabled = !windowsNodeMxcStatus.value.desiredEnabled;
+  windowsNodeMxcApplying.value = true;
+  try {
+    const status = await window.openclaw.windowsNodeMxc.setEnabled({ enabled });
+    if (status) {
+      updateWindowsNodeMxcStatus(status);
+    } else {
+      windowsNodeMxcStatus.value = null;
+      windowsNodeMxcVerifiedAt.value = null;
+      windowsNodeMxcStatusLoading.value = false;
+      await loadWindowsNodeMxcStatus();
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await loadWindowsNodeMxcStatus();
+  } finally {
+    windowsNodeMxcApplying.value = false;
   }
-  if (result.reason === "parent-rw-covers") {
-    ElMessage.warning(t("settings.sandboxParentRWCovers", { parentDir: result.parentDir || "" }));
-    return;
-  }
-  if (result.ok) {
-    sandboxUserDirs.rw = result.dirs.rw;
-    sandboxUserDirs.ro = result.dirs.ro;
-    if (result.removedChildren && result.removedChildren.length > 0) {
+  // The main-process result, not an optimistic switch click, owns the displayed state.
+  return false;
+}
+
+function showWindowsNodeMxcFolderPolicyError(reason: string) {
+  const keyByReason: Record<string, string> = {
+    duplicate: "settings.windowsNodeMxcFolderDuplicate",
+    "path-nonlocal": "settings.windowsNodeMxcFolderNonlocal",
+    "path-not-found": "settings.windowsNodeMxcFolderMissing",
+    "path-reparse-point": "settings.windowsNodeMxcFolderReparse",
+    "path-sensitive": "settings.windowsNodeMxcFolderSensitive",
+    "acl-failed": "settings.windowsNodeMxcFolderAclFailed",
+    "folder-not-configured": "settings.windowsNodeMxcFolderNotConfigured",
+  };
+  ElMessage.error(t(keyByReason[reason] ?? "settings.windowsNodeMxcFolderMutationFailed"));
+}
+
+async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
+  try {
+    const result = await window.openclaw.windowsNodeMxc.stageFolder({
+      access,
+      draft: {
+        rw: [...windowsNodeMxcFolderDraft.rw],
+        ro: [...windowsNodeMxcFolderDraft.ro],
+      },
+    });
+    if (result.canceled) return;
+    if (!result.ok) {
+      showWindowsNodeMxcFolderPolicyError(result.reason ?? "");
+      return;
+    }
+    await saveWindowsNodeMxcFolderDraft(result.dirs);
+    if (result.removedChildren?.length) {
       ElMessage.info(
         t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
       );
     }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
   }
 }
 
-async function removeSandboxDir(dir: string, access: "rw" | "ro") {
-  // Optimistic UI — remove immediately so the user sees instant feedback
-  const listKey = access === "rw" ? "rw" : "ro";
-  const idx = sandboxUserDirs[listKey].indexOf(dir);
-  if (idx >= 0) sandboxUserDirs[listKey].splice(idx, 1);
-
-  const result = await window.openclaw.sandbox.removeUserDir({ dir, access });
-  // Sync with actual backend state (adds back if revoke failed)
-  sandboxUserDirs.rw.splice(0, sandboxUserDirs.rw.length, ...result.dirs.rw);
-  sandboxUserDirs.ro.splice(0, sandboxUserDirs.ro.length, ...result.dirs.ro);
-}
-
-// -- ACL Verification (dev tool, triple-click "Sandbox Dirs" label to reveal) --
-const showAclVerify = ref(false);
-const aclVerifying = ref(false);
-const aclVerifyResult = ref<{
-  missing: Array<{ dir: string; access: string; reason: string }>;
-  stale: Array<{ dir: string; rights: string }>;
-  ok: Array<{ dir: string; access: string }>;
-  errors: Array<{ dir: string; error: string }>;
-} | null>(null);
-let _aclTripleClickCount = 0;
-let _aclTripleClickTimer: ReturnType<typeof setTimeout> | null = null;
-
-function onSandboxDirsLabelClick() {
-  _aclTripleClickCount++;
-  if (_aclTripleClickTimer) clearTimeout(_aclTripleClickTimer);
-  _aclTripleClickTimer = setTimeout(() => {
-    _aclTripleClickCount = 0;
-  }, 500);
-  if (_aclTripleClickCount >= 3) {
-    showAclVerify.value = !showAclVerify.value;
-    _aclTripleClickCount = 0;
-  }
-}
-
-async function verifyAcls() {
-  aclVerifying.value = true;
-  aclVerifyResult.value = null;
+async function changeWindowsNodeMxcFolderAccess(dir: string, access: "rw" | "ro") {
   try {
-    aclVerifyResult.value = await window.openclaw.sandbox.verifyAcls();
-  } catch (e: any) {
-    aclVerifyResult.value = {
-      missing: [],
-      stale: [],
-      ok: [],
-      errors: [{ dir: "(scan)", error: e.message }],
+    const next = {
+      rw: windowsNodeMxcFolderDraft.rw.filter((entry) => entry !== dir),
+      ro: windowsNodeMxcFolderDraft.ro.filter((entry) => entry !== dir),
     };
-  } finally {
-    aclVerifying.value = false;
+    next[access].push(dir);
+    await saveWindowsNodeMxcFolderDraft(
+      await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
+    );
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
   }
 }
 
-async function repairAcl(item: { dir: string; access: string }) {
-  const access = item.access === "rw" ? "rw" : ("ro" as const);
-  const result = await window.openclaw.sandbox.repairAcl({ dir: item.dir, access });
-  if (result.ok) await verifyAcls();
+async function removeWindowsNodeMxcFolder(dir: string, access: "rw" | "ro") {
+  try {
+    const next = {
+      rw: [...windowsNodeMxcFolderDraft.rw],
+      ro: [...windowsNodeMxcFolderDraft.ro],
+    };
+    next[access] = next[access].filter((entry) => entry !== dir);
+    await saveWindowsNodeMxcFolderDraft(
+      await window.openclaw.windowsNodeMxc.validateFolderPolicy(next),
+    );
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
 }
 
-async function revokeStaleAcl(item: { dir: string }) {
-  const result = await window.openclaw.sandbox.revokeStaleAcl(item.dir);
-  if (result.ok) await verifyAcls();
+async function saveWindowsNodeMxcFolderDraft(policy: { rw: string[]; ro: string[] }) {
+  if (windowsNodeMxcStatus.value?.requestedMode === "off") {
+    const saved = await window.openclaw.windowsNodeMxc.setFolderPolicy(policy);
+    replaceWindowsNodeMxcFolderDraft(saved);
+    replaceWindowsNodeMxcFolderBaseline(saved);
+    await loadWindowsNodeMxcStatus();
+    return;
+  }
+  replaceWindowsNodeMxcFolderDraft(policy);
+}
+
+async function applyWindowsNodeMxcFolderPolicy() {
+  try {
+    await ElMessageBox.confirm(
+      t("settings.windowsNodeMxcApplyFoldersWarning"),
+      t("settings.windowsNodeMxcApplyFolders"),
+      {
+        type: "warning",
+        confirmButtonText: t("settings.windowsNodeMxcApplyFolders"),
+        cancelButtonText: t("common.cancel"),
+      },
+    );
+  } catch {
+    return;
+  }
+  windowsNodeMxcFolderApplying.value = true;
+  try {
+    const status = await window.openclaw.windowsNodeMxc.applyFolderPolicy({
+      rw: [...windowsNodeMxcFolderDraft.rw],
+      ro: [...windowsNodeMxcFolderDraft.ro],
+    });
+    updateWindowsNodeMxcStatus(status, true);
+    ElMessage.success(t("settings.windowsNodeMxcApplyFoldersComplete"));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await loadWindowsNodeMxcStatus();
+  } finally {
+    windowsNodeMxcFolderApplying.value = false;
+  }
+}
+
+function stagePreviousWindowsNodeMxcFolderPolicy() {
+  const previous = windowsNodeMxcStatus.value?.folderPolicyRecovery?.previous;
+  if (previous) replaceWindowsNodeMxcFolderDraft(previous);
+}
+
+const commandConsentApplying = ref(false);
+async function setCommandConsentMode(value: string | number | boolean | undefined) {
+  if (value !== "ask-when-needed" && value !== "allow-always") return;
+  commandConsentApplying.value = true;
+  try {
+    settings.commandConsentMode = await window.openclaw.commandConsent.setMode(value);
+    await loadWindowsNodeMxcStatus();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    commandConsentApplying.value = false;
+  }
 }
 
 const settings = reactive({
+  commandConsentMode: "ask-when-needed" as "ask-when-needed" | "allow-always",
   language: "en-US",
   autoStart: false,
   minimizeToTray: false,
@@ -1173,75 +1565,222 @@ const piiToggles = reactive({
 });
 
 // --- Models & API state ---
-type ApiFormat = ModelApiFormat;
-type ReasoningEffort = ModelReasoningEffort;
-
-interface ModelEntry {
-  providerKey: string;
-  id: string;
-  name: string;
-  source: "managed" | "custom" | "auth-managed";
-  baseUrl?: string;
-  apiKey?: string;
-  apiFormat?: ApiFormat;
-  reasoningEffort?: ReasoningEffort;
-  input?: ModelInputCapability[];
-}
-
-function normalizeApiFormat(api?: string): ApiFormat {
-  if (api === "anthropic-messages") return "anthropic";
-  if (api === "openai-responses") return "openai-responses";
-  return "openai-chat";
-}
-
-function normalizeReasoningEffort(
-  value: unknown,
-  fallback: ReasoningEffort = "off",
-): ReasoningEffort {
-  const normalized = typeof value === "string" ? value.toLowerCase() : "";
-  if (
-    normalized === "off" ||
-    normalized === "minimal" ||
-    normalized === "low" ||
-    normalized === "medium" ||
-    normalized === "high" ||
-    normalized === "xhigh" ||
-    normalized === "adaptive"
-  ) {
-    return normalized;
-  }
-  return fallback;
-}
-
-function getModelRef(model: Pick<ModelEntry, "providerKey" | "id">): string {
-  return `${model.providerKey}/${model.id}`;
-}
-
-const customModels = ref<ModelEntry[]>([]);
-const selectedModel = ref("Pony-Alpha-2");
+const customModels = ref<ConfiguredModel[]>([]);
+const modelFormSelections = ref<Record<string, string>>({});
+const selectedModel = ref("");
 const copilotModelsLoading = ref(false);
 const copilotDisconnecting = ref(false);
 const switchingModelRef = ref("");
 const removingModelRef = ref("");
 let copilotModelsGeneration = 0;
 const showProviderSetup = ref(false);
-const selectedModelEntry = computed(
-  () => customModels.value.find((model) => getModelRef(model) === selectedModel.value) ?? null,
+const editingProviderKey = ref("");
+const editingModelRef = ref("");
+const providerSaving = ref(false);
+const modelStatusError = ref("");
+const localFileStatus = ref(new Map<string, LocalModelFileStatus>());
+const localCatalog = ref<LocalModelCatalogEntry[]>([]);
+const localProviderReady = ref(false);
+const localSelection = ref("");
+const localSelecting = ref(false);
+const sessionRecovery = ref<SessionModelRecovery | null>(null);
+const sessionRecovering = ref(false);
+const providerCatalog = useProviderModelCatalog();
+const providerCatalogInputs = ref<ConfiguredCatalogs>({});
+const providerCatalogLoading = ref(false);
+let providerCatalogRevision = 0;
+const providerCatalogError = computed(() => providerCatalog.errors(providerCatalogInputs.value));
+const modelOptions = computed(() =>
+  mergeLocalModelCatalog(
+    providerCatalog.merge(customModels.value, providerCatalogInputs.value),
+    localCatalog.value,
+  ).filter((model) => {
+    if (model.providerKey !== "llama-cpp") return true;
+    const modelRef = getModelRef(model);
+    const fileStatus =
+      localCatalog.value.find((entry) => entry.modelRef === modelRef)?.fileStatus ??
+      localFileStatus.value.get(modelRef);
+    return fileStatus === "present" || fileStatus === "external";
+  }),
 );
-const selectedModelIndex = computed(() =>
-  customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
-);
-
-// Display name of the configured provider shown in the Model section.
-const currentProviderName = computed(() => {
-  const entry = selectedModelEntry.value;
-  if (!entry) return "";
-  if (entry.providerKey === "github-copilot") return "GitHub Copilot";
-  return getManagedModelProvider(entry.providerKey)?.label ?? entry.providerKey;
+function modelOptionStatus(model: ConfiguredModel): string {
+  const preset = localCatalog.value.find((entry) => entry.modelRef === getModelRef(model));
+  if (preset && localOperation.value?.busy && localOperation.value.modelRef === preset.modelRef) {
+    return t(
+      localOperation.value.download && localOperation.value.step?.type !== "confirm"
+        ? "fixedLocal.downloading"
+        : "fixedLocal.preparing",
+    );
+  }
+  return preset?.fileStatus === "external" ? t("modelManager.external") : "";
+}
+let localSnapshotRevision = 0;
+const providerCards = computed(() => {
+  const keys = new Set([
+    "github-copilot",
+    ...MANAGED_MODEL_PROVIDERS.map((provider) => provider.id),
+    "llama-cpp",
+    ...customModels.value.map((model) => model.providerKey),
+  ]);
+  return [...keys].filter(isModelProviderEnabled).map((key) => {
+    const models = customModels.value.filter((model) => model.providerKey === key);
+    return {
+      key,
+      label:
+        key === "llama-cpp"
+          ? t("localModel.title")
+          : key === "custom"
+            ? t("modelManager.compatibleApi")
+            : providerName(key),
+      models,
+      signupUrl: getManagedModelProvider(key)?.signupUrl ?? "",
+      editableModels: key === "github-copilot" || getManagedModelProvider(key) ? [] : models,
+      removable:
+        key === "llama-cpp"
+          ? Boolean(localProviderReady.value || providerCatalogInputs.value[key])
+          : Boolean(getManagedModelProvider(key) && providerCatalogInputs.value[key]),
+      missing: models.some((model) => localFileStatus.value.get(getModelRef(model)) === "missing"),
+    };
+  });
 });
+const editingFamily = computed(
+  () =>
+    getManagedModelProvider(editingProviderKey.value)?.id ??
+    (editingProviderKey.value === "github-copilot" ? "github-copilot" : "custom"),
+);
+const providerPrefill = computed(() => {
+  const model = customModels.value.find((item) => getModelRef(item) === editingModelRef.value);
+  if (!model) {
+    const providerKey = editingProviderKey.value;
+    const connection = providerCatalogInputs.value[providerKey];
+    const provider = getManagedModelProvider(providerKey);
+    return connection && provider
+      ? {
+          familyId: provider.id,
+          providerKey,
+          modelName: "",
+          baseUrl: connection.baseUrl,
+          apiKey: connection.apiKey,
+          apiFormat: provider.apiFormat,
+        }
+      : null;
+  }
+  return {
+    familyId: editingFamily.value,
+    providerKey: model.providerKey,
+    modelName: model.id,
+    displayName: model.name,
+    baseUrl: model.baseUrl ?? "",
+    apiKey: model.apiKey ?? "",
+    apiFormat: model.apiFormat ?? ("openai-chat" as const),
+    reasoningEffort: model.reasoningEffort,
+    input: model.input,
+  };
+});
+const showLocalSetup = ref(false);
+const localTargetModel = ref<string>();
+const defaultAgentOverride = ref<ReturnType<typeof getDefaultAgentModelOverride>>(null);
+const removableLocalConnections = computed(() =>
+  customModels.value
+    .filter(
+      (model) =>
+        model.providerKey === "llama-cpp" &&
+        getModelRef(model) !== selectedModel.value &&
+        getModelRef(model) !== defaultAgentOverride.value?.modelRef,
+    )
+    .map((model) => ({ modelRef: getModelRef(model), name: model.name })),
+);
+const cloudTransition = ref(false);
+let modelViewDisposed = false;
+const modelActionBusy = computed(() =>
+  Boolean(
+    switchingModelRef.value ||
+    removingModelRef.value ||
+    copilotDisconnecting.value ||
+    cloudTransition.value ||
+    providerSaving.value ||
+    sessionRecovering.value ||
+    localSelecting.value,
+  ),
+);
+const modelMutationBlocked = computed(() =>
+  Boolean(
+    switchingModelRef.value ||
+    removingModelRef.value ||
+    copilotDisconnecting.value ||
+    cloudTransition.value ||
+    providerSaving.value ||
+    sessionRecovery.value ||
+    sessionRecovering.value ||
+    localSelecting.value ||
+    chatStore.streaming ||
+    localOperation.value?.busy,
+  ),
+);
+function openLocalModel(modelRef?: string) {
+  if (modelActionBusy.value) return;
+  localTargetModel.value = modelRef;
+  showLocalSetup.value = true;
+}
+
+async function prepareCloudChange(): Promise<boolean> {
+  cloudTransition.value = true;
+  try {
+    const release = await releaseLocalModelSetup(
+      window.openclaw.model.local,
+      confirmLocalModelSwitch,
+      () => !modelViewDisposed,
+    );
+    await refreshLocalOperation();
+    if (release === "pending") {
+      ElMessage.info(t("localModel.setupFinishing"));
+      showLocalSetup.value = true;
+      return false;
+    }
+    return release === "ready" && !modelViewDisposed;
+  } finally {
+    cloudTransition.value = false;
+  }
+}
+
+function isProviderExpanded(key: string): boolean {
+  return key === "llama-cpp"
+    ? showLocalSetup.value
+    : showProviderSetup.value && editingProviderKey.value === key;
+}
+
+function toggleProvider(key: string): void {
+  if (modelActionBusy.value) return;
+  if (isProviderExpanded(key)) {
+    if (key === "llama-cpp") showLocalSetup.value = false;
+    else showProviderSetup.value = false;
+  } else if (key === "llama-cpp") openLocalModel();
+  else openCloudSetup(key);
+}
+
+function openCloudSetup(providerKey: string, model?: ConfiguredModel): void {
+  if (modelActionBusy.value) return;
+  editingProviderKey.value = providerKey;
+  const entry =
+    model ??
+    customModels.value.find(
+      (item) =>
+        item.providerKey === providerKey &&
+        getModelRef(item) === modelFormSelections.value[providerKey],
+    ) ??
+    customModels.value.find((item) => item.providerKey === providerKey);
+  editingModelRef.value = entry ? getModelRef(entry) : `new:${providerKey}`;
+  showProviderSetup.value = true;
+}
+watch(
+  () => route.query?.provider,
+  (provider) => {
+    if (provider === "llama-cpp") openLocalModel();
+  },
+  { immediate: true },
+);
 
 // --- Web search providers ---
-type SearchProviderId = "parallel-free" | "brave" | "tavily";
 const searchProviders: {
   id: SearchProviderId;
   name: string;
@@ -1281,19 +1820,58 @@ const searchKeys = reactive<Record<SearchProviderId, string>>({
 const activeSearchProvider = computed(
   () => searchProviders.find((p) => p.id === searchProvider.value) ?? searchProviders[0],
 );
-// Snapshot of the last persisted state, used to drive the "Configured" status and the
-// enabled/disabled state of the single Save button.
+// Only the provider/key actually written is committed to this persisted snapshot.
 const savedSearchProvider = ref<SearchProviderId>("parallel-free");
 const savedSearchKeys = reactive<Record<SearchProviderId, string>>({
   "parallel-free": "",
   brave: "",
   tavily: "",
 });
-const searchSavingAll = ref(false);
-const searchDirty = computed(() => {
-  if (searchProvider.value !== savedSearchProvider.value) return true;
-  return searchProviders.some((p) => searchKeys[p.id].trim() !== savedSearchKeys[p.id]);
+type SearchSaveStatus = "idle" | "saving" | "saved" | "error" | "invalid";
+const searchSaveStatus = ref<SearchSaveStatus>("idle");
+const searchSaveError = ref("");
+const searchSaveStatusClass = computed(() => {
+  if (searchSaveStatus.value === "saved") return "status-indicator--ok";
+  if (searchSaveStatus.value === "saving") return "status-indicator--muted";
+  return "status-indicator--error";
 });
+const searchSaveStatusText = computed(() => {
+  if (searchSaveStatus.value === "saving") return t("settings.saving");
+  if (searchSaveStatus.value === "saved") return t("settings.saved");
+  if (searchSaveStatus.value === "invalid") return searchSaveError.value;
+  if (searchSaveStatus.value === "error") return t("settings.searchSaveFailed");
+  return "";
+});
+const searchAutosave = createSearchAutosave({
+  persist: persistSearchConfig,
+  saving() {
+    searchSaveError.value = "";
+    searchSaveStatus.value = "saving";
+  },
+  saved(request, current) {
+    savedSearchProvider.value = request.provider;
+    savedSearchKeys[request.provider] = request.key;
+    if (current) {
+      searchSaveError.value = "";
+      searchSaveStatus.value = "saved";
+    }
+  },
+  failed(error) {
+    searchSaveStatus.value = "error";
+    ElMessage.error(
+      t("settings.saveFailed", { error: error instanceof Error ? error.message : String(error) }),
+    );
+  },
+});
+watch(
+  [searchProvider, () => searchKeys[searchProvider.value]],
+  () => {
+    searchAutosave.invalidate();
+    searchSaveError.value = "";
+    searchSaveStatus.value = "idle";
+  },
+  { flush: "sync" },
+);
 
 // --- Usage state ---
 interface UsageStats {
@@ -1413,6 +1991,7 @@ watch(
     setLocale(v as Locale);
   },
 );
+
 watch(
   () => settings.autoStart,
   (v) => window.openclaw.settings.set("autoStart", v),
@@ -1460,73 +2039,55 @@ watch(activeSection, (v) => {
     void refreshModelsConfig();
   }
   if (v === "security") {
-    loadSandboxStatus();
+    void loadWindowsNodeMxcStatus();
   }
 });
 
 function applyModelsConfig(config: any): void {
-  const providers = config.models?.providers ?? {};
-  const modelDefaults = config.agents?.defaults?.models ?? {};
-  const defaultModelConfig = config.agents?.defaults?.model;
-  const primary =
-    typeof defaultModelConfig === "string" ? defaultModelConfig : defaultModelConfig?.primary;
-  const loaded: ModelEntry[] = [];
-  for (const [key, val] of Object.entries(providers) as [string, any][]) {
-    const managedProvider = getManagedModelProvider(key);
-    const models = val.models ?? [];
-    for (const m of models) {
-      const modelId = m.id ?? key;
-      const modelRef = `${key}/${modelId}`;
-      const managedModel = managedProvider?.models.find((model) => model.id === modelId);
-      const apiFormat = normalizeApiFormat(val.api);
-      const reasoningFallback =
-        m.reasoning === true || apiFormat === "openai-responses" ? "low" : "off";
-      loaded.push({
-        providerKey: key,
-        id: modelId,
-        name: m.name ?? managedModel?.name ?? modelId ?? key,
-        source: managedProvider ? "managed" : "custom",
-        baseUrl: val.baseUrl ?? "",
-        apiKey: val.apiKey ?? "",
-        apiFormat,
-        reasoningEffort: normalizeReasoningEffort(
-          modelDefaults[modelRef]?.params?.thinking,
-          reasoningFallback,
-        ),
-        input: normalizeModelInput(m.input ?? managedModel?.input),
-      });
-    }
-  }
-  if (
-    typeof primary === "string" &&
-    primary.startsWith("github-copilot/") &&
-    !loaded.some((model) => getModelRef(model) === primary)
-  ) {
-    const modelId = primary.slice("github-copilot/".length);
-    loaded.unshift({
-      providerKey: "github-copilot",
-      id: modelId,
-      name: modelId,
-      source: "auth-managed",
-    });
-  }
-  customModels.value = loaded;
+  defaultAgentOverride.value = getDefaultAgentModelOverride(config);
+  const parsed = readConfiguredModels(config);
+  customModels.value = parsed.models;
+  selectedModel.value = parsed.primary;
+  providerCatalogInputs.value = readConfiguredCatalogs(config);
+  const revision = ++providerCatalogRevision;
+  providerCatalogLoading.value = true;
+  void providerCatalog.loadConfigured(providerCatalogInputs.value).finally(() => {
+    if (!modelViewDisposed && revision === providerCatalogRevision)
+      providerCatalogLoading.value = false;
+  });
+  void loadLocalFileStatus();
+}
 
-  if (primary) {
-    const matched = loaded.find((model) => getModelRef(model) === primary);
-    selectedModel.value = matched ? getModelRef(matched) : primary;
-  } else if (loaded.length > 0) {
-    selectedModel.value = getModelRef(loaded[0]);
-  } else {
-    selectedModel.value = "";
+async function loadLocalFileStatus(): Promise<void> {
+  const revision = ++localSnapshotRevision;
+  localFileStatus.value = new Map();
+  localProviderReady.value = false;
+  try {
+    const [result, capabilities] = await Promise.all([
+      window.openclaw.model.local.getSnapshot(),
+      window.openclaw.model.local.getCapabilities(),
+    ]);
+    if (modelViewDisposed || revision !== localSnapshotRevision) return;
+    if (!result.ok) throw new Error(result.error);
+    localCatalog.value = result.value.catalog ?? [];
+    localFileStatus.value = new Map(
+      result.value.models.map((model) => [model.modelRef, model.fileStatus ?? "unknown"]),
+    );
+    if (!capabilities.ok) throw new Error(capabilities.error);
+    localProviderReady.value =
+      capabilities.value.supported &&
+      capabilities.value.plugin.installed &&
+      capabilities.value.plugin.enabled &&
+      capabilities.value.plugin.loaded !== false;
+  } catch (error) {
+    if (!modelViewDisposed && revision === localSnapshotRevision)
+      modelStatusError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
 async function loadSettingsGitHubCopilotModels(): Promise<void> {
   const generation = ++copilotModelsGeneration;
   copilotModelsLoading.value = true;
-  const modelsPromise = window.openclaw.model.listGitHubCopilotModels();
-  void modelsPromise.catch(() => {});
 
   try {
     const status = await window.openclaw.model.getGitHubCopilotStatus();
@@ -1536,12 +2097,13 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
       return;
     }
 
-    const models = await modelsPromise;
+    const models = await window.openclaw.model.listGitHubCopilotModels();
     if (generation !== copilotModelsGeneration) return;
     customModels.value = mergeGitHubCopilotModelEntries(customModels.value, models);
   } catch (error) {
     if (generation !== copilotModelsGeneration) return;
     console.warn("[settings] Could not load GitHub Copilot models:", error);
+    modelStatusError.value = error instanceof Error ? error.message : String(error);
   } finally {
     if (generation === copilotModelsGeneration) copilotModelsLoading.value = false;
   }
@@ -1549,31 +2111,53 @@ async function loadSettingsGitHubCopilotModels(): Promise<void> {
 
 async function refreshModelsConfig(): Promise<void> {
   try {
-    const config = await window.openclaw.config.read();
+    modelStatusError.value = "";
+    const [config, saved] = await Promise.all([
+      window.openclaw.config.read(),
+      window.openclaw.settings.get(),
+    ]);
+    modelFormSelections.value = saved?.modelFormSelections ?? {};
     if (!config) return;
     applyModelsConfig(config);
     void loadSettingsGitHubCopilotModels();
   } catch (error) {
     console.warn("[settings] Failed to refresh model configuration:", error);
+    modelStatusError.value = error instanceof Error ? error.message : String(error);
   }
 }
 
 function handleSettingsWindowFocus(): void {
   if (activeSection.value === "models" && !showProviderSetup.value) {
     void refreshModelsConfig();
+  } else if (activeSection.value === "security") {
+    void loadWindowsNodeMxcStatus();
   }
 }
 
 watch(showProviderSetup, (visible, wasVisible) => {
+  if (wasVisible && !visible) {
+    editingProviderKey.value = "";
+    void refreshModelsConfig();
+  }
+});
+watch(showLocalSetup, (visible, wasVisible) => {
   if (wasVisible && !visible) void refreshModelsConfig();
 });
 
 onMounted(async () => {
+  unsubscribeMxcDisplay = window.openclaw.windowsNodeMxc.onDisplayStatus?.((snapshot) => {
+    mxcDisplayRevision++;
+    applyWindowsNodeMxcDisplayStatus(snapshot);
+  });
   window.addEventListener("focus", handleSettingsWindowFocus);
-
+  if (activeSection.value === "security") {
+    void loadWindowsNodeMxcStatus();
+  }
   // Load persisted app settings
   const saved = await window.openclaw.settings.get();
   if (saved) {
+    modelFormSelections.value = saved.modelFormSelections ?? {};
+    settings.commandConsentMode = saved.commandConsentMode ?? "ask-when-needed";
     settings.language = saved.language ?? "en-US";
     settings.autoStart = saved.autoStart ?? false;
     settings.minimizeToTray = saved.minimizeToTray ?? false;
@@ -1595,12 +2179,17 @@ onMounted(async () => {
   }
 
   // Load web search provider configuration
-  loadSearchConfig(config);
+  if (!searchAutosave.isDisposed()) loadSearchConfig(config);
 });
 
 onUnmounted(() => {
+  searchAutosave.dispose();
+  unsubscribeMxcDisplay?.();
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
+  localSnapshotRevision += 1;
+  providerCatalogRevision += 1;
+  modelViewDisposed = true;
 });
 
 // --- Model & Gateway actions ---
@@ -1610,67 +2199,110 @@ async function handleProviderConfigured(): Promise<void> {
   ElMessage.success(t("settings.providerConfigured"));
 }
 
-async function restartGatewayAfterModelConfig(
-  options: { waitForRendererReconnect?: boolean } = {},
-): Promise<void> {
-  await window.openclaw.gateway.restart();
-  if (options.waitForRendererReconnect !== false) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-
-async function persistAndRestart(
-  mutate: (config: Record<string, unknown>) => Record<string, unknown>,
-  successMsg: string,
-): Promise<boolean> {
-  try {
-    const existing = await window.openclaw.config.read();
-    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
-      throw new Error("OpenClaw configuration is unavailable");
-    }
-    const nextConfig = mutate(existing);
-    await window.openclaw.config.write(nextConfig);
-  } catch (err: any) {
-    ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
-    await refreshModelsConfig();
-    return false;
-  }
-  try {
-    await restartGatewayAfterModelConfig();
-  } catch (err: any) {
-    ElMessage.error(t("settings.restartFailed", { error: err.message || err }));
-    await refreshModelsConfig();
-    return false;
-  }
+async function handleLocalModelSelected(): Promise<void> {
+  const model = localSelection.value;
   await refreshModelsConfig();
-  ElMessage.success(successMsg);
-  return true;
+  ElMessage.success(t("settings.modelSwitched", { model }));
 }
 
 async function selectModel(modelRef: string) {
-  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
-  if (!customModels.value.some((model) => getModelRef(model) === modelRef)) {
+  if (modelActionBusy.value || chatStore.streaming || sessionRecovery.value) return;
+  if (!modelOptions.value.some((model) => getModelRef(model) === modelRef)) {
     ElMessage.error(t("settings.configSaveFailed", { error: `Unknown model "${modelRef}"` }));
     return;
   }
-  switchingModelRef.value = modelRef;
+  if (modelRef.startsWith("llama-cpp/")) {
+    if (isManagedLocalModel(modelRef)) {
+      if (!localProviderReady.value) {
+        openLocalModel();
+        return;
+      }
+      localSelection.value = modelRef;
+      return;
+    }
+    openLocalModel(modelRef);
+    return;
+  }
   try {
-    await persistAndRestart(
-      (config) => {
-        const selected = selectPrimaryModelConfig(config, modelRef);
-        // Keep only the active model's provider so the config never accumulates stale providers.
-        const providerKey = modelRef.split("/")[0];
-        return retainOnlyProvider(selected, providerKey);
-      },
-      t("settings.modelSwitched", { model: modelRef }),
-    );
+    if (!(await prepareCloudChange())) return;
+    switchingModelRef.value = modelRef;
+    const expectedConfig = await window.openclaw.config.read();
+    if (chatStore.streaming || localOperation.value?.busy)
+      throw new Error(t("localModel.operationBusy"));
+    const selected = await window.openclaw.model.selectDefault({ modelRef, expectedConfig });
+    if (selected.modelRef !== modelRef)
+      throw new Error("The Gateway did not confirm the selected default model");
+    await refreshModelsConfig();
+    ElMessage.success(t("settings.modelSwitched", { model: modelRef }));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    await refreshModelsConfig();
   } finally {
     switchingModelRef.value = "";
   }
 }
 
+async function removeProviderConnection(providerKey: string): Promise<void> {
+  if (
+    modelMutationBlocked.value ||
+    (!getManagedModelProvider(providerKey) && providerKey !== "llama-cpp")
+  )
+    return;
+  removingModelRef.value = `${providerKey}/*`;
+  try {
+    const existing = await window.openclaw.config.read();
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const nextConfig = removeProviderConnectionConfig(existing, providerKey);
+    await ElMessageBox.confirm(
+      providerKey === "llama-cpp"
+        ? t("localModel.removeProviderConfirm")
+        : t("modelManager.removeProviderConfirm", { provider: providerName(providerKey) }),
+      t("modelManager.removeProviderTitle"),
+      {
+        type: "warning",
+        confirmButtonText: t("localModel.removeConnection"),
+        cancelButtonText: t("settings.cancel"),
+      },
+    );
+    if (modelViewDisposed) return;
+    if (
+      chatStore.streaming ||
+      localOperation.value?.busy ||
+      sessionRecovery.value ||
+      sessionRecovering.value
+    ) {
+      throw new Error(t("localModel.operationBusy"));
+    }
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "provider-remove",
+      providerKey,
+    });
+    if (providerKey === "llama-cpp") showLocalSetup.value = false;
+    showProviderSetup.value = false;
+    editingProviderKey.value = "";
+    editingModelRef.value = "";
+    applyModelsConfig(nextConfig);
+    ElMessage.success(t("modelManager.providerRemoved"));
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") {
+      ElMessage.error(
+        t("settings.configSaveFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  } finally {
+    await refreshModelsConfig();
+    removingModelRef.value = "";
+  }
+}
+
 async function removeCustomModel(idx: number) {
-  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
+  if (modelMutationBlocked.value) return;
   const removed = customModels.value[idx];
   if (!removed || removed.source === "auth-managed") return;
   const modelRef = getModelRef(removed);
@@ -1683,34 +2315,48 @@ async function removeCustomModel(idx: number) {
     if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
       throw new Error("OpenClaw configuration is unavailable");
     }
+    const defaultSelector = existing.agents?.defaults?.model;
+    const primary =
+      typeof defaultSelector === "string" ? defaultSelector : defaultSelector?.primary;
+    if (removed.providerKey === "llama-cpp" && primary === modelRef) {
+      throw new Error(t("localModel.selectBeforeRemove"));
+    }
+    if (primary === modelRef && fallback?.providerKey === "llama-cpp") {
+      throw new Error(t("localModel.selectBeforeRemove"));
+    }
+    if (chatStore.streaming || localOperation.value?.busy)
+      throw new Error(t("localModel.operationBusy"));
     const nextConfig = removeModelProviderConfig(
       existing,
       removed.providerKey,
       removed.id,
       fallback ? getModelRef(fallback) : undefined,
     );
-    await window.openclaw.config.write(nextConfig);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "model-remove",
+      providerKey: removed.providerKey,
+    });
     applyModelsConfig(nextConfig);
     ElMessage.success(t("settings.customModelDeleted"));
   } catch (err: any) {
     ElMessage.error(t("settings.configSaveFailed", { error: err.message || err }));
-    await refreshModelsConfig();
-    removingModelRef.value = "";
-    return;
-  }
-
-  try {
-    await restartGatewayAfterModelConfig({ waitForRendererReconnect: false });
-  } catch (err: any) {
-    ElMessage.warning(t("settings.restartFailed", { error: err.message || err }));
   } finally {
     await refreshModelsConfig();
     removingModelRef.value = "";
   }
 }
 
+async function removeLocalConnection(modelRef: string): Promise<void> {
+  if (!removableLocalConnections.value.some((model) => model.modelRef === modelRef)) return;
+  await removeCustomModel(customModels.value.findIndex((model) => getModelRef(model) === modelRef));
+  if (!customModels.value.some((model) => getModelRef(model) === modelRef))
+    showLocalSetup.value = false;
+}
+
 async function disconnectGitHubCopilot() {
-  if (switchingModelRef.value || removingModelRef.value || copilotDisconnecting.value) return;
+  if (modelMutationBlocked.value) return;
   try {
     await ElMessageBox.confirm(t("settings.copilotDisconnectConfirm"), t("settings.confirm"), {
       type: "warning",
@@ -1718,9 +2364,13 @@ async function disconnectGitHubCopilot() {
   } catch {
     return;
   }
+  if (modelMutationBlocked.value) return;
 
   const fallbackModel = customModels.value.find(
-    (model) => model.providerKey !== "github-copilot" && model.source !== "auth-managed",
+    (model) =>
+      model.providerKey !== "github-copilot" &&
+      model.providerKey !== "llama-cpp" &&
+      model.source !== "auth-managed",
   );
   const fallbackModelRef = fallbackModel ? getModelRef(fallbackModel) : undefined;
   copilotDisconnecting.value = true;
@@ -1733,21 +2383,15 @@ async function disconnectGitHubCopilot() {
       throw new Error(t("settings.copilotConfigUnavailable"));
     }
     const nextConfig = removeGitHubCopilotModelReferences(existingConfig, fallbackModelRef);
-    await window.openclaw.config.write(nextConfig);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existingConfig,
+      action: "copilot-disconnect",
+      providerKey: "github-copilot",
+    });
 
     await window.openclaw.model.disconnectGitHubCopilot();
 
-    try {
-      await restartGatewayAfterModelConfig();
-    } catch (error) {
-      await refreshModelsConfig();
-      ElMessage.warning(
-        t("settings.copilotDisconnectedRestartFailed", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      return;
-    }
     await refreshModelsConfig();
     ElMessage.success(t("settings.copilotDisconnected"));
   } catch (error) {
@@ -1781,41 +2425,79 @@ function snapshotSearchConfig(): void {
   for (const p of searchProviders) savedSearchKeys[p.id] = searchKeys[p.id].trim();
 }
 
+function validateActiveSearchKey(request: SearchSaveRequest): string | null {
+  if (!request.requiresKey) return null;
+  const key = request.key;
+  if (!key) return t("settings.searchApiKeyRequired");
+  if (request.provider === "brave" && !key.startsWith("BSA")) {
+    return t("settings.searchApiKeyFormatInvalid");
+  }
+  if (request.provider === "tavily" && !key.startsWith("tvly-")) {
+    return t("settings.searchApiKeyFormatInvalid");
+  }
+  return null;
+}
+
+function setSearchValidationError(message: string): void {
+  searchSaveError.value = message;
+  searchSaveStatus.value = "invalid";
+}
+
 // Writes only the active provider into tools.web.search — the single object the gateway
 // consumes. The gateway schema rejects any extra keys under tools.web, so no per-provider map
 // is persisted; unsaved keys for other providers live only in-memory for quick switching.
-async function persistSearchConfig(): Promise<void> {
-  const config = (await window.openclaw.config.read()) || {};
-  config.tools = config.tools || {};
-  config.tools.web = config.tools.web || {};
-  delete config.tools.web.searchProviders;
-  const activeKey = searchKeys[searchProvider.value].trim();
-  if (!activeSearchProvider.value.requiresKey) {
-    config.tools.web.search = { provider: searchProvider.value };
-  } else if (activeKey) {
-    config.tools.web.search = { provider: searchProvider.value, apiKey: activeKey };
-  } else {
-    delete config.tools.web.search;
-  }
-  await window.openclaw.config.write(config);
+async function persistSearchConfig(
+  request: SearchSaveRequest,
+  canWrite: () => boolean,
+): Promise<boolean> {
+  const config = await window.openclaw.config.read();
+  if (!canWrite()) return false;
+  await window.openclaw.config.write(patchSearchConfig(config, request));
+  return true;
 }
 
-async function saveSearchSettings(): Promise<void> {
-  searchSavingAll.value = true;
+// Capture and validate synchronously before any read, then serialize read/patch/write.
+function saveSearchSettings(): void {
+  const request: SearchSaveRequest = Object.freeze({
+    provider: searchProvider.value,
+    key: searchKeys[searchProvider.value].trim(),
+    requiresKey: activeSearchProvider.value.requiresKey,
+  });
+  const validationError = validateActiveSearchKey(request);
+  if (validationError) {
+    setSearchValidationError(validationError);
+    return;
+  }
+  searchAutosave.save(request);
+}
+
+function handleSearchProviderChange(): void {
+  saveSearchSettings();
+}
+
+function saveSearchKeyIfReady(): void {
+  saveSearchSettings();
+}
+
+async function openExternal(url: string) {
   try {
-    await persistSearchConfig();
-    snapshotSearchConfig();
-    ElMessage.success(t("settings.searchSettingsSaved"));
-  } catch (err: any) {
-    ElMessage.error(t("settings.saveFailed", { error: err.message || err }));
-  } finally {
-    searchSavingAll.value = false;
+    await window.openclaw.shell.openExternal(url);
+  } catch (error) {
+    ElMessage.error(
+      t("settings.openLinkFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 }
 
-function openExternal(url: string) {
-  window.openclaw.shell.openExternal(url);
-}
+const mxcWebsiteUrl = "https://github.com/microsoft/mxc";
+const privacyStatementUrl = "https://www.microsoft.com/privacy/privacystatement";
+const eulaUrl = computed(() =>
+  getLocale() === "zh-CN"
+    ? "https://microclaw.microsoft.com/eula.html"
+    : "https://microclaw.microsoft.com/eula.en.html",
+);
 
 async function checkForUpdates() {
   updateChecking.value = true;
@@ -1850,7 +2532,7 @@ function openUpdateDownload() {
 
 async function restartGateway() {
   try {
-    await window.openclaw.gateway.restart();
+    await window.openclaw.gateway.restart({ reason: "settings-manual" });
     ElMessage.success(t("settings.gatewayRestarting"));
   } catch (err: any) {
     ElMessage.error(t("settings.restartFailed", { error: err.message }));
@@ -1890,6 +2572,142 @@ async function clearChatHistory() {
 </script>
 
 <style scoped>
+.model-settings-section {
+  max-width: 1040px;
+}
+.model-section-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.provider-description {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin: 0 0 16px;
+}
+.provider-error {
+  color: var(--el-color-danger);
+  font-size: 13px;
+}
+.provider-cards {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 28px;
+}
+.provider-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  background: var(--el-fill-color-blank);
+  overflow: hidden;
+}
+.provider-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+}
+.provider-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+}
+.provider-toggle:hover {
+  background: var(--el-fill-color-light);
+}
+.provider-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+}
+.provider-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.provider-chevron-up {
+  transform: rotate(180deg);
+}
+.provider-card-title {
+  flex: 1;
+  min-width: 0;
+}
+.provider-card-title strong {
+  font-size: 16px;
+}
+.provider-runtime {
+  margin-left: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.provider-card-title p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin: 6px 0 0;
+}
+.provider-state {
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.provider-state.warning {
+  color: var(--el-color-warning-dark-2);
+}
+.provider-editor {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.provider-connection-actions {
+  padding: 0 24px 20px;
+}
+.provider-model-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 24px;
+  font-size: 13px;
+}
+.provider-model-row > span:first-child {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.default-model-card {
+  margin-bottom: 12px;
+}
+.model-search-selector {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.model-search-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+@media (max-width: 700px) {
+  .provider-card-heading {
+    gap: 8px;
+    padding: 14px;
+    flex-wrap: wrap;
+  }
+  .provider-card-title {
+    flex-basis: 60%;
+  }
+}
+.local-setup-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 4px 20px;
+  color: var(--smtc-foreground-ctrl-neutral-secondary-rest, #666);
+  font-size: 13px;
+}
+
 .settings-view {
   display: flex;
   flex: 1;
@@ -2191,6 +3009,21 @@ async function clearChatHistory() {
   color: var(--text-muted);
   font-size: 12px;
   text-align: center;
+}
+
+.legal-links {
+  margin-top: 0;
+}
+
+.legal-link {
+  color: var(--el-color-primary);
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.legal-link:hover {
+  text-decoration: underline;
 }
 
 .update-card {
@@ -2621,6 +3454,126 @@ async function clearChatHistory() {
 }
 
 /* Sandbox external apps */
+.mxc-card {
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border));
+}
+.mxc-heading {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border-row);
+}
+.mxc-subtitle {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.mxc-docs-link {
+  display: block;
+  width: fit-content;
+  padding: 12px 16px;
+  color: var(--el-color-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.mxc-docs-link:hover {
+  text-decoration: underline;
+}
+.mxc-state {
+  font-size: 12px;
+  font-weight: 700;
+}
+.mxc-state-blocked {
+  color: var(--settings-action-danger);
+}
+.mxc-state-neutral {
+  color: var(--text-muted);
+}
+.mxc-primary-detail {
+  padding: 0 24px 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.mxc-status-summary {
+  justify-content: flex-start;
+}
+.mxc-status-summary .mxc-state {
+  font-size: 14px;
+}
+.mxc-ambient-compact {
+  display: block;
+  padding: 12px 24px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.mxc-summary-warning {
+  color: #b26a00;
+}
+.mxc-summary-error {
+  color: var(--settings-action-danger);
+}
+.mxc-folder-policy {
+  gap: 8px;
+}
+.mxc-folder-policy-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mxc-folder-policy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.mxc-folder-policy-locked {
+  margin-top: 0;
+}
+.mxc-folder-policy .dir-item {
+  gap: 8px;
+}
+.mxc-folder-policy .dir-path {
+  flex: 1;
+}
+.mxc-folder-policy .tag-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.mxc-folder-policy-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mxc-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+.mxc-alert {
+  margin-top: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.mxc-alert-warning {
+  border-color: rgba(230, 162, 60, 0.45);
+  background: rgba(230, 162, 60, 0.08);
+}
+.mxc-alert-success {
+  border-color: rgba(103, 194, 58, 0.45);
+  background: rgba(103, 194, 58, 0.08);
+}
+.mxc-alert-error {
+  border-color: color-mix(in srgb, var(--settings-action-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--settings-action-danger) 8%, transparent);
+}
 .external-apps-list {
   display: flex;
   flex-wrap: wrap;

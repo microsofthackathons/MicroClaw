@@ -9,9 +9,11 @@ export type WeixinReplyProgressSenderDeps = {
   runId: string;
   to: string;
   accountId: string;
+  isActive?: () => boolean;
   opts: WeixinApiOptions & {
     contextToken?: string;
     runId?: string;
+    isActive?: () => boolean;
   };
 };
 
@@ -36,6 +38,7 @@ export class WeixinReplyProgressSender {
 
   private readonly to: string;
   private readonly accountId: string;
+  private readonly isActive?: () => boolean;
   private readonly opts: WeixinReplyProgressSenderDeps["opts"];
   private finalized = false;
   private sendChain: Promise<void> = Promise.resolve();
@@ -44,7 +47,8 @@ export class WeixinReplyProgressSender {
     this.runId = deps.runId;
     this.to = deps.to;
     this.accountId = deps.accountId;
-    this.opts = { ...deps.opts, runId: deps.runId };
+    this.isActive = deps.isActive;
+    this.opts = { ...deps.opts, runId: deps.runId, isActive: deps.isActive };
   }
 
   get replyOptions() {
@@ -55,9 +59,10 @@ export class WeixinReplyProgressSender {
   }
 
   private enqueueMessage(item: MessageItem, label: string): void {
-    if (this.finalized) return;
+    if (this.finalized || this.isActive?.() === false) return;
     this.sendChain = this.sendChain
       .then(async () => {
+        if (this.isActive?.() === false) return;
         await sendMessageItemWeixin({
           to: this.to,
           item,

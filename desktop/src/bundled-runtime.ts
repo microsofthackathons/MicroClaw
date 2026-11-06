@@ -1,49 +1,44 @@
-import { extractAll } from "@electron/asar";
 import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  materializeRuntimeArchive,
+  materializeRuntimeArchiveAsync,
+  runtimeArchiveCacheVersion,
+} from "./runtime-archive";
+import { measureRuntimePhase, type RuntimePreparationTiming } from "./runtime-preparation-timing";
 
-const RUNTIME_ENTRY = path.join("node_modules", "openclaw", "openclaw.mjs");
-const VERSION_MARKER = ".microclaw-version";
+export { materializeRuntimeArchive, runtimeArchiveCacheVersion } from "./runtime-archive";
 
-export function materializeRuntimeArchive(
-  archivePath: string,
-  runtimeRoot: string,
-  version: string,
-  extractArchive: (archive: string, destination: string) => void = extractAll,
-): string {
-  const entryPath = path.join(runtimeRoot, RUNTIME_ENTRY);
-  const markerPath = path.join(runtimeRoot, VERSION_MARKER);
-  if (
-    fs.existsSync(entryPath) &&
-    fs.existsSync(markerPath) &&
-    fs.readFileSync(markerPath, "utf8").trim() === version
-  ) {
-    return runtimeRoot;
-  }
-
-  const stagingRoot = `${runtimeRoot}.staging-${process.pid}`;
-  fs.rmSync(stagingRoot, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(runtimeRoot), { recursive: true });
-  try {
-    extractArchive(archivePath, stagingRoot);
-    if (!fs.existsSync(path.join(stagingRoot, RUNTIME_ENTRY))) {
-      throw new Error("Bundled OpenClaw archive is missing openclaw.mjs");
-    }
-    fs.writeFileSync(path.join(stagingRoot, VERSION_MARKER), `${version}\n`, "utf8");
-    fs.rmSync(runtimeRoot, { recursive: true, force: true });
-    fs.renameSync(stagingRoot, runtimeRoot);
-  } catch (error) {
-    fs.rmSync(stagingRoot, { recursive: true, force: true });
-    throw new Error("Failed to prepare the bundled OpenClaw runtime", { cause: error });
-  }
-  return runtimeRoot;
-}
-
-export function resolveBundledOpenClawDir(): string | null {
+function bundledRuntimeLocation(timing?: RuntimePreparationTiming) {
   if (!app.isPackaged) return null;
   const archivePath = path.join(process.resourcesPath, "openclaw.asar");
   if (!fs.existsSync(archivePath)) return null;
-  const runtimeRoot = path.join(app.getPath("userData"), "runtime", "openclaw");
-  return materializeRuntimeArchive(archivePath, runtimeRoot, app.getVersion());
+  return {
+    archivePath,
+    runtimeRoot: path.join(app.getPath("userData"), "runtime", "openclaw"),
+    version: measureRuntimePhase(timing, "archive-metadata", () =>
+      runtimeArchiveCacheVersion(archivePath, app.getVersion()),
+    ),
+  };
+}
+
+export async function prepareBundledOpenClawDir(
+  timing?: RuntimePreparationTiming,
+): Promise<string | null> {
+  const location = bundledRuntimeLocation(timing);
+  if (!location) return null;
+  return materializeRuntimeArchiveAsync(
+    location.archivePath,
+    location.runtimeRoot,
+    location.version,
+    undefined,
+    timing,
+  );
+}
+
+export function resolveBundledOpenClawDir(): string | null {
+  const location = bundledRuntimeLocation();
+  if (!location) return null;
+  return materializeRuntimeArchive(location.archivePath, location.runtimeRoot, location.version);
 }

@@ -1,0 +1,82 @@
+{
+  "models": [
+    {
+      "modelRef": "llama-cpp/qwen3.5-4b-q4_k_m",
+      "name": "Qwen3.5 4B Q4_K_M",
+      "downloadBytes": 2740937888,
+      "cacheFile": "hf_unsloth_Qwen3.5-4B-GGUF_e87f176479d0855a907a41277aca2f8ee7a09523_Qwen3.5-4B-Q4_K_M.gguf",
+      "preferred": true,
+      "repository": "unsloth/Qwen3.5-4B-GGUF",
+      "revision": "167b4afc359863325cb4164418c715421b4e9118",
+      "file": "Qwen3.5-4B-Q4_K_M.gguf",
+      "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+      "memoryGiB": 6,
+      "minimumSystemGiB": 8,
+      "requiresAcceleration": false,
+      "legacySources": [
+        "hf:unsloth/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf#e87f176479d0855a907a41277aca2f8ee7a09523"
+      ]
+    },
+    {
+      "modelRef": "llama-cpp/qwen3.5-9b-q4_k_m",
+      "name": "Qwen3.5 9B Q4_K_M",
+      "downloadBytes": 5680522464,
+      "cacheFile": "hf_unsloth_Qwen3.5-9B-GGUF_3885219b6810b007914f3a7950a8d1b469d598a5_Qwen3.5-9B-Q4_K_M.gguf",
+      "preferred": false,
+      "repository": "unsloth/Qwen3.5-9B-GGUF",
+      "revision": "ae90f0d1c1be2b9250b0ef68265615f6fe3c777b",
+      "file": "Qwen3.5-9B-Q4_K_M.gguf",
+      "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+      "memoryGiB": 10,
+      "minimumSystemGiB": 16,
+      "requiresAcceleration": false,
+      "legacySources": [
+        "hf:unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf#3885219b6810b007914f3a7950a8d1b469d598a5"
+      ]
+    },
+    {
+      "modelRef": "llama-cpp/qwen3.5-35b-a3b-q4_k_m",
+      "name": "Qwen3.5 35B-A3B Q4_K_M",
+      "downloadBytes": 22016023168,
+      "cacheFile": "ms_unsloth_Qwen3.5-35B-A3B-GGUF_645c01cc0329777db4171bef0ab864b55aa7b04b_Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "preferred": false,
+      "repository": "unsloth/Qwen3.5-35B-A3B-GGUF",
+      "revision": "645c01cc0329777db4171bef0ab864b55aa7b04b",
+      "file": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "sha256": "3b46d1066bc91cc2d613e3bc22ce691dd77e6f0d33c9060690d24ce6de494375",
+      "memoryGiB": 28,
+      "minimumSystemGiB": 48,
+      "requiresAcceleration": false,
+      "legacySources": []
+    },
+    {
+      "modelRef": "llama-cpp/qwen3.8-27b-ud-q4_k_m",
+      "name": "Qwen3.8 27B UD-Q4_K_M",
+      "downloadBytes": 16464440224,
+      "cacheFile": "ms_unsloth_Qwen3.8-27B-GGUF_ba7608d4e5e1f3ea3d016cebd1c972c42686e9da_Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "preferred": false,
+      "repository": "unsloth/Qwen3.8-27B-GGUF",
+      "revision": "ba7608d4e5e1f3ea3d016cebd1c972c42686e9da",
+      "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+      "memoryGiB": 22,
+      "minimumSystemGiB": 32,
+      "requiresAcceleration": true,
+      "legacySources": [
+        "hf:unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf#4ca720788d1e01f1bff70c033e0d0028fd02e502"
+      ]
+    }
+  ],
+  "embedding": {
+    "modelRef": "llama-cpp/embeddinggemma-300m-qat-q8_0",
+    "downloadBytes": 328577056,
+    "cacheFile": "hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf",
+    "repository": "ggml-org/embeddinggemma-300m-qat-q8_0-GGUF",
+    "revision": "a79284d65d2c250faff08d1cba5b3114f29660f8",
+    "file": "embeddinggemma-300m-qat-Q8_0.gguf",
+    "sha256": "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67",
+    "legacySources": [
+      "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf"
+    ]
+  }
+}

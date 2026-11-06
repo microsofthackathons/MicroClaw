@@ -1,11 +1,3 @@
-import {
-  fireAndForgetHook,
-  buildCanonicalSentMessageHookContext,
-  toPluginMessageContext,
-  toPluginMessageSentEvent,
-} from "openclaw/plugin-sdk/hook-runtime";
-import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
-
 import { logger } from "../util/logger.js";
 
 const CHANNEL_ID = "openclaw-weixin";
@@ -22,11 +14,12 @@ export async function applyWeixinMessageSendingHook(params: {
   mediaUrl?: string;
   runId?: string;
 }): Promise<{ cancelled: boolean; text: string }> {
-  const hookRunner = getGlobalHookRunner();
-  if (!hookRunner?.hasHooks("message_sending")) {
-    return { cancelled: false, text: params.text };
-  }
   try {
+    const { getGlobalHookRunner } = await import("openclaw/plugin-sdk/plugin-runtime");
+    const hookRunner = getGlobalHookRunner();
+    if (!hookRunner?.hasHooks("message_sending")) {
+      return { cancelled: false, text: params.text };
+    }
     const hookResult = await hookRunner.runMessageSending(
       {
         to: params.to,
@@ -64,8 +57,28 @@ export function emitWeixinMessageSent(params: {
   accountId?: string;
   runId?: string;
 }): void {
+  void emitSent(params).catch((error) => {
+    logger.warn(`message_sent hook error: ${String(error)}`);
+  });
+}
+
+async function emitSent(params: {
+  to: string;
+  content: string;
+  success: boolean;
+  error?: string;
+  accountId?: string;
+  runId?: string;
+}): Promise<void> {
+  const { getGlobalHookRunner } = await import("openclaw/plugin-sdk/plugin-runtime");
   const hookRunner = getGlobalHookRunner();
   if (!hookRunner?.hasHooks("message_sent")) return;
+  const {
+    fireAndForgetHook,
+    buildCanonicalSentMessageHookContext,
+    toPluginMessageContext,
+    toPluginMessageSentEvent,
+  } = await import("openclaw/plugin-sdk/hook-runtime");
   const canonical = buildCanonicalSentMessageHookContext({
     to: params.to,
     content: params.content,

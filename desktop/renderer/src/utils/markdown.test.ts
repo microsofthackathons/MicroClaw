@@ -37,6 +37,44 @@ describe("renderMarkdown", () => {
     expect(result).toContain("https://google.com");
   });
 
+  it("only autolinks explicit URLs, not fuzzy domains, emails, or IPs", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(
+      "dev@example.com example.com 192.168.1.1 https://example.com/path http://example.org",
+    );
+
+    expect(
+      Array.from(container.querySelectorAll("a"), (link) => link.getAttribute("href")),
+    ).toEqual(["https://example.com/path", "http://example.org"]);
+  });
+
+  it("preserves reference links and their titles", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown('[文档][guide]\n\n[guide]: https://example.com "Guide"');
+    const link = container.querySelector("a");
+
+    expect(link?.textContent).toBe("文档");
+    expect(link?.getAttribute("href")).toBe("https://example.com");
+    expect(link?.getAttribute("title")).toBe("Guide");
+  });
+
+  it("keeps incomplete reference titles visible as text", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown('[guide]: /path "unfinished\nMore text');
+
+    expect(container.textContent).toContain("[guide]: /path");
+    expect(container.textContent).toContain("unfinished");
+    expect(container.textContent).toContain("More text");
+  });
+
+  it("preserves typography while leaving inline code unchanged", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown('"Hello" -- world...\n\n`"literal" -- ...`');
+
+    expect(container.querySelector("p")?.textContent).toBe("“Hello” – world…");
+    expect(container.querySelector("code")?.textContent).toBe('"literal" -- ...');
+  });
+
   it("sanitizes script tags (XSS prevention)", () => {
     const result = renderMarkdown('<script>alert("xss")</script>');
     expect(result).not.toContain("<script");
@@ -55,6 +93,45 @@ describe("renderMarkdown", () => {
     const result = renderMarkdown("# Heading\n\n- item 1\n- item 2");
     expect(result).toContain("<h1>");
     expect(result).toContain("<li>");
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "jav&#x61;script:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+  ])("removes unsafe link destinations: %s", (destination) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(`<a href="${destination}">link</a>`);
+    const link = container.querySelector("a");
+
+    expect(link?.textContent).toBe("link");
+    expect(link?.hasAttribute("href")).toBe(false);
+  });
+
+  it.each([
+    '<svg><foreignObject><p><img src="x" onerror="alert(1)"></p></foreignObject></svg>',
+    '<math><mtext><img src="x" onerror="alert(1)"></mtext></math>',
+    '<iframe srcdoc="<script>alert(1)</script>"></iframe>',
+  ])("removes executable embedded HTML: %s", (input) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(input);
+
+    expect(container.querySelector("script, iframe, svg, math")).toBeNull();
+    expect(container.querySelector("[onerror], [onload], [srcdoc]")).toBeNull();
+  });
+
+  it("preserves tables and expandable details after sanitization", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderMarkdown(
+      "| Name | Value |\n| --- | --- |\n| **safe** | `value` |\n\n" +
+        "<details><summary>Details</summary><p>More text</p></details>",
+    );
+
+    expect(container.querySelector("th")?.textContent).toBe("Name");
+    expect(container.querySelector("td strong")?.textContent).toBe("safe");
+    expect(container.querySelector("td code")?.textContent).toBe("value");
+    expect(container.querySelector("details summary")?.textContent).toBe("Details");
+    expect(container.querySelector("details p")?.textContent).toBe("More text");
   });
 
   it("handles malformed markdown gracefully (error boundary)", () => {

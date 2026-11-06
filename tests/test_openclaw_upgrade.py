@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 import unittest.mock
 import weakref
@@ -54,7 +55,7 @@ def _concurrent_create_worker(
         transaction = OpenClawUpgradeTransaction.create(
             microclaw_root=Path(microclaw_value),
             state_dir=state,
-            target_version="2026.7.1-1",
+            target_version="2026.8.2",
             installation=_worker_installation(prefix_value),
         )
     except upgrade.UpgradeInProgressError:
@@ -326,6 +327,117 @@ class DurabilityHelperTests(unittest.TestCase):
             ],
         )
 
+    def test_windows_move_file_ex_retries_transient_lock_errors(self) -> None:
+        kernel32 = unittest.mock.MagicMock()
+        kernel32.MoveFileExW.side_effect = [False, False, True]
+        source = Path(r"C:\upgrade\source")
+        destination = Path(r"C:\upgrade\destination")
+        with (
+            unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+            unittest.mock.patch("ctypes.get_last_error", side_effect=[5, 32], create=True),
+            unittest.mock.patch.object(upgrade.time, "sleep") as sleep,
+        ):
+            upgrade._windows_move_file(source, destination, replace=False)
+        self.assertEqual(kernel32.MoveFileExW.call_count, 3)
+        sleep.assert_has_calls([unittest.mock.call(0.05), unittest.mock.call(0.1)])
+        for call in kernel32.MoveFileExW.call_args_list:
+            self.assertEqual(
+                call.args,
+                (
+                    str(upgrade._native_io_path(source)),
+                    str(upgrade._native_io_path(destination)),
+                    0x8,
+                ),
+            )
+
+    def test_windows_move_file_ex_permanent_denial_is_bounded_and_names_both_paths(self) -> None:
+        kernel32 = unittest.mock.MagicMock()
+        kernel32.MoveFileExW.return_value = False
+        source = Path(r"C:\upgrade\source")
+        destination = Path(r"C:\upgrade\destination")
+        error = PermissionError(errno.EACCES, "Access is denied")
+        error.winerror = 5
+        with (
+            unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+            unittest.mock.patch("ctypes.get_last_error", return_value=5, create=True),
+            unittest.mock.patch("ctypes.WinError", return_value=error, create=True),
+            unittest.mock.patch.object(upgrade.time, "sleep") as sleep,
+            self.assertRaises(PermissionError) as caught,
+        ):
+            upgrade._windows_move_file(source, destination, replace=False)
+        self.assertEqual(kernel32.MoveFileExW.call_count, 8)
+        self.assertEqual(sleep.call_count, 7)
+        self.assertEqual(caught.exception.winerror, 5)
+        self.assertEqual(caught.exception.filename, str(source))
+        self.assertEqual(caught.exception.filename2, str(destination))
+        self.assertIn(repr(str(source)), str(caught.exception))
+        self.assertIn(repr(str(destination)), str(caught.exception))
+
+    def test_windows_move_file_ex_does_not_retry_unrelated_errors(self) -> None:
+        for winerror in (2, 3, 17, 80, 183):
+            with self.subTest(winerror=winerror):
+                kernel32 = unittest.mock.MagicMock()
+                kernel32.MoveFileExW.return_value = False
+                error = OSError(errno.EIO, "move failed")
+                error.winerror = winerror
+                with (
+                    unittest.mock.patch("ctypes.WinDLL", return_value=kernel32, create=True),
+                    unittest.mock.patch(
+                        "ctypes.get_last_error", return_value=winerror, create=True
+                    ),
+                    unittest.mock.patch("ctypes.WinError", return_value=error, create=True),
+                    unittest.mock.patch.object(upgrade.time, "sleep") as sleep,
+                    self.assertRaises(OSError),
+                ):
+                    upgrade._windows_move_file(Path("source"), Path("destination"), replace=True)
+                kernel32.MoveFileExW.assert_called_once()
+                sleep.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows file sharing behavior")
+    def test_windows_directory_publication_waits_for_open_descendant_file(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "backup.staging"
+            destination = root / "backup"
+            source.mkdir()
+            payload = source / "installer.bin"
+            payload.write_bytes(b"backup-payload")
+            handle = kernel32.CreateFileW(str(payload), 0x80000000, 0x3, None, 3, 0x80, None)
+            self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+            closed = threading.Event()
+
+            def release() -> None:
+                if not closed.is_set():
+                    kernel32.CloseHandle(handle)
+                    closed.set()
+
+            timer = threading.Timer(0.25, release)
+            timer.start()
+            try:
+                upgrade._durable_rename(source, destination)
+            finally:
+                timer.cancel()
+                timer.join(timeout=5)
+                release()
+            self.assertFalse(source.exists())
+            self.assertEqual((destination / "installer.bin").read_bytes(), b"backup-payload")
+
     @unittest.skipUnless(os.name == "nt", "Windows extended path behavior")
     def test_native_io_path_uses_extended_windows_syntax(self) -> None:
         local = upgrade._native_io_path(Path(r"C:\upgrade\payload"))
@@ -451,7 +563,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         transaction = OpenClawUpgradeTransaction.create(
             microclaw_root=self.microclaw,
             state_dir=self.state,
-            target_version="2026.7.1-1",
+            target_version="2026.8.2",
             installation=installation or self._installation(),
             backup_mode=backup_mode,
             managed_paths=managed_paths,
@@ -595,7 +707,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         )
         self.assertEqual(data["schema_version"], 2)
         self.assertEqual(data["source_version"], "2026.3.12")
-        self.assertEqual(data["target_version"], "2026.7.1-1")
+        self.assertEqual(data["target_version"], "2026.8.2")
         self.assertEqual(data["phase"], "backing-up")
         self.assertEqual(data["validation_results"], {})
         self.assertEqual(data["backup_mode"], "full")
@@ -875,12 +987,26 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         )
         self.assertEqual((self.package / "old.txt").read_text(), "changed-package")
 
+    def test_local_provider_addition_rolls_back_without_touching_other_extensions(self) -> None:
+        other = self.state / "extensions" / "other-plugin"
+        other.mkdir(parents=True)
+        (other / "keep.txt").write_text("keep", encoding="utf-8")
+        tx = self._create(
+            backup_mode=UpgradeBackupMode.MANAGED_STATE,
+            managed_paths=(Path("openclaw.json"), Path("extensions") / "llama-cpp"),
+        )
+        tx.backup()
+        local = self.state / "extensions" / "llama-cpp"
+        local.mkdir()
+        (local / "new.js").write_text("new", encoding="utf-8")
+        tx.rollback()
+        self.assertFalse(local.exists())
+        self.assertEqual((other / "keep.txt").read_text(encoding="utf-8"), "keep")
+
     def test_schema_v2_managed_paths_leave_unchanged_uninstaller_outside_rollback(self) -> None:
         (self.state / "MicroClawInstaller.exe").write_text("old-installer", encoding="utf-8")
         (self.state / "_internal").mkdir()
-        (self.state / "_internal" / "runtime.dll").write_text(
-            "old-runtime", encoding="utf-8"
-        )
+        (self.state / "_internal" / "runtime.dll").write_text("old-runtime", encoding="utf-8")
         tx = self._create(
             backup_mode=UpgradeBackupMode.MANAGED_STATE,
             managed_paths=upgrade.managed_state_paths(include_uninstaller=False),
@@ -893,9 +1019,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
         (self.state / "openclaw.json").write_text('{"changed":true}', encoding="utf-8")
         (self.state / "MicroClawInstaller.exe").write_text("new-installer", encoding="utf-8")
-        (self.state / "_internal" / "runtime.dll").write_text(
-            "new-runtime", encoding="utf-8"
-        )
+        (self.state / "_internal" / "runtime.dll").write_text("new-runtime", encoding="utf-8")
         tx.rollback()
 
         self.assertEqual((self.state / "openclaw.json").read_text(), '{"gateway":{}}')
@@ -905,9 +1029,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
     def test_schema_v1_manifest_uses_legacy_managed_paths(self) -> None:
         (self.state / "MicroClawInstaller.exe").write_text("old-installer", encoding="utf-8")
         (self.state / "_internal").mkdir()
-        (self.state / "_internal" / "runtime.dll").write_text(
-            "old-runtime", encoding="utf-8"
-        )
+        (self.state / "_internal" / "runtime.dll").write_text("old-runtime", encoding="utf-8")
         created = self._create(backup_mode=UpgradeBackupMode.MANAGED_STATE)
         created.close()
         payload = json.loads(created.manifest_path.read_text(encoding="utf-8"))
@@ -1019,7 +1141,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 tx = OpenClawUpgradeTransaction.create(
                     microclaw_root=self.microclaw / "file-state",
                     state_dir=state_dir,
-                    target_version="2026.7.1-1",
+                    target_version="2026.8.2",
                     installation=self._installation(),
                 )
                 tx.backup()
@@ -1045,7 +1167,7 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
                 tx = OpenClawUpgradeTransaction.create(
                     microclaw_root=self.microclaw / "directory-state",
                     state_dir=state_dir,
-                    target_version="2026.7.1-1",
+                    target_version="2026.8.2",
                     installation=self._installation(),
                 )
                 tx.backup()

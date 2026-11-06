@@ -6,8 +6,13 @@ OpenClaw 的微信渠道插件，支持通过扫码完成登录授权。
 
 ## 兼容性
 
+本仓库维护上游 **2.4.6** 及适用于 **OpenClaw 2026.10.2+** 的本地 SDK 兼容补丁；这不是腾讯发布的新 npm 版本。默认 MicroClaw 安装器不捆绑或自动安装微信插件。原始 vendor 压缩包及校验值保持不变；`desktop/scripts/stage-weixin-runtime.mjs` 保留为独立工具，对显式准备好的插件暂存目录重新编译，确保 TypeScript 和 JavaScript 入口都包含补丁。
+
+补丁替换已移除的 SDK 导入，登录后使用原子配置更新，并保留已有的配对名单、旧账户归属回退和命令访问组策略。`build.ps1` 和 `deploy.py` 不会安装此可选插件。
+
 | 插件版本 | OpenClaw 版本            | npm dist-tag | 状态   |
 |---------|--------------------------|--------------|--------|
+| 2.4.6 + MicroClaw 补丁 | >=2026.10.2 | 未发布 | 可选源码 |
 | 2.0.x   | >=2026.3.22              | `latest`     | 活跃   |
 | 1.0.x   | >=2026.1.0 <2026.3.22    | `legacy`     | 维护中 |
 
@@ -272,8 +277,8 @@ openclaw config set session.dmScope per-account-channel-peer
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `seq` | `number?` | 消息序列号 |
-| `message_id` | `number?` | 消息唯一 ID |
+| `seq` | `number` / `string`（可选） | 消息序列号 |
+| `message_id` | `number` / `string`（可选） | 消息唯一 ID |
 | `from_user_id` | `string?` | 发送者 ID |
 | `to_user_id` | `string?` | 接收者 ID |
 | `create_time_ms` | `number?` | 创建时间戳（ms） |
@@ -282,6 +287,10 @@ openclaw config set session.dmScope per-account-channel-peer
 | `message_state` | `number?` | `0` = NEW, `1` = GENERATING, `2` = FINISH |
 | `item_list` | `MessageItem[]?` | 消息内容列表 |
 | `context_token` | `string?` | 会话上下文令牌，回复时需回传 |
+
+`getUpdates` 将数值形式的 `message_id` 和 `seq` 原始 JSON 字面量保留为十进制字符串，
+因此不会丢失超过 JavaScript 安全整数范围的精度。远程审批要求两个字段均为有效的非负
+uint64 十进制值；不会还原已舍入的数值，也不会补造缺失的游标。普通聊天仍允许这些字段缺省。
 
 #### MessageItem
 
