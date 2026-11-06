@@ -1,5 +1,7 @@
 import { GatewayRequestError } from "./gateway-client";
 import { assertChatModelSupported } from "./provider-model-capabilities";
+import { prepareProviderCatalogModelPatch } from "./provider-model-registration";
+import type { ProviderCatalogInput, ProviderCatalogResult } from "./provider-model-catalog";
 import {
   parseGitHubCopilotGatewayAuthStatus,
   parseGitHubCopilotGatewayModels,
@@ -32,7 +34,7 @@ interface Dependencies {
     | null;
   readConfig(): unknown;
   assertMutable(): void;
-  prepareModel?(modelRef: string, expectedConfig: unknown): Promise<unknown>;
+  discover?(input: ProviderCatalogInput): Promise<ProviderCatalogResult>;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -67,10 +69,7 @@ export async function selectDefaultModel(
   const ref = params.modelRef;
   assertChatModelSupported(ref);
   deps.assertMutable();
-  let expectedConfig = params.expectedConfig;
-  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
-  if (deps.prepareModel) expectedConfig = await deps.prepareModel(ref, expectedConfig);
-  deps.assertMutable();
+  const expectedConfig = params.expectedConfig;
   assertModelConfigUnchanged(expectedConfig, deps.readConfig());
   const gateway = deps.gateway();
   if (!gateway?.connected || !supportsLocalModelGatewayVersion(gateway.serverVersion))
@@ -94,6 +93,15 @@ export async function selectDefaultModel(
     assertCurrent();
     return object(result);
   };
+  const catalogPatch = deps.discover
+    ? await prepareProviderCatalogModelPatch(
+        { ...deps, discover: deps.discover },
+        ref,
+        expectedConfig,
+      )
+    : undefined;
+  assertCurrent();
+  assertModelConfigUnchanged(expectedConfig, deps.readConfig());
   const snapshot = await request("config.get", {});
   if (
     snapshot.valid !== true ||
@@ -126,7 +134,7 @@ export async function selectDefaultModel(
     if (row?.available === false)
       throw new Error("The selected GitHub Copilot model is unavailable");
   } else {
-    const provider = object(object(object(config.models).providers)[providerId]);
+    const provider = object(object(object((catalogPatch ?? config).models).providers)[providerId]);
     if (
       !Array.isArray(provider.models) ||
       !provider.models.some((model) => object(model).id === modelId)
@@ -134,12 +142,15 @@ export async function selectDefaultModel(
       throw new Error("The selected model is not configured");
   }
   assertModelConfigUnchanged(expectedConfig, deps.readConfig());
-  if (getPrimaryModel(config) !== ref) {
+  if (catalogPatch || getPrimaryModel(config) !== ref) {
     let result: Record<string, unknown>;
     try {
       result = await request("config.patch", {
         baseHash: snapshot.hash,
-        raw: JSON.stringify({ agents: { defaults: { model: { primary: ref } } } }),
+        raw: JSON.stringify({
+          ...catalogPatch,
+          agents: { defaults: { model: { primary: ref } } },
+        }),
       });
     } catch (cause) {
       if (
@@ -156,6 +167,16 @@ export async function selectDefaultModel(
       throw new Error(
         "The saved default model could not be confirmed; reload settings before retrying",
       );
+    if (catalogPatch) {
+      const savedProvider = object(
+        object(object(object(result.config).models).providers)[providerId],
+      );
+      if (
+        !Array.isArray(savedProvider.models) ||
+        !savedProvider.models.some((model) => object(model).id === modelId)
+      )
+        throw new Error("The registered default model could not be confirmed; reload settings");
+    }
     const stats = object(object(object(result.sentinel).payload).stats);
     if (stats.requiresRestart === true)
       throw new ModelConfigRestartRequiredError(typeof result.hash === "string" ? result.hash : "");

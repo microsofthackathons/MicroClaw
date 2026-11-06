@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   appendModelEndpoint,
   prepareModelBaseUrl,
@@ -24,10 +25,10 @@ export type ProviderCatalogResult =
   | { ok: true; models: string[] }
   | { ok: false; error: ProviderCatalogError };
 
-export async function discoverProviderModels(
+function prepareCatalogInput(
   input: unknown,
   environment: Record<string, string | undefined>,
-): Promise<ProviderCatalogResult> {
+): { ok: true; input: ProviderCatalogInput } | { ok: false; error: ProviderCatalogError } {
   if (!input || typeof input !== "object" || Array.isArray(input))
     return { ok: false, error: "credentials" };
   const params = input as Partial<ProviderCatalogInput>;
@@ -38,10 +39,53 @@ export async function discoverProviderModels(
   if (/[*•●]|__OPENCLAW_REDACTED__/i.test(key.value)) return { ok: false, error: "maskedKey" };
   const base = prepareModelBaseUrl(params.baseUrl);
   if (!base.ok) return { ok: false, error: "endpoint" };
+  return { ok: true, input: { baseUrl: base.value, apiKey: key.value } };
+}
+
+export async function discoverProviderModels(
+  input: unknown,
+  environment: Record<string, string | undefined>,
+): Promise<ProviderCatalogResult> {
+  const prepared = prepareCatalogInput(input, environment);
+  return prepared.ok ? requestProviderModels(prepared.input) : prepared;
+}
+
+export function createProviderModelCatalog() {
+  const entries = new Map<string, { expiresAt: number; promise: Promise<ProviderCatalogResult> }>();
+  return async (
+    input: unknown,
+    environment: Record<string, string | undefined>,
+  ): Promise<ProviderCatalogResult> => {
+    const prepared = prepareCatalogInput(input, environment);
+    if (!prepared.ok) return prepared;
+    for (const [id, entry] of entries) {
+      if (entry.expiresAt <= Date.now()) entries.delete(id);
+    }
+    const id = createHash("sha256")
+      .update(JSON.stringify([prepared.input.baseUrl, prepared.input.apiKey]))
+      .digest("hex");
+    const cached = entries.get(id);
+    if (cached) return structuredClone(await cached.promise);
+    const entry = {
+      expiresAt: Infinity,
+      promise: requestProviderModels(prepared.input),
+    };
+    entries.set(id, entry);
+    while (entries.size > 16) entries.delete(entries.keys().next().value!);
+    const result = await entry.promise;
+    if (entries.get(id) === entry) {
+      if (result.ok) entry.expiresAt = Date.now() + 60_000;
+      else entries.delete(id);
+    }
+    return structuredClone(result);
+  };
+}
+
+async function requestProviderModels(input: ProviderCatalogInput): Promise<ProviderCatalogResult> {
   try {
-    const result = await requestModelEndpoint(appendModelEndpoint(base.value, "models"), {
+    const result = await requestModelEndpoint(appendModelEndpoint(input.baseUrl, "models"), {
       method: "GET",
-      headers: { Authorization: `Bearer ${key.value}`, Accept: "application/json" },
+      headers: { Authorization: `Bearer ${input.apiKey}`, Accept: "application/json" },
       signal: AbortSignal.timeout(30_000),
       responseBodyLimit: 1024 * 1024,
     });

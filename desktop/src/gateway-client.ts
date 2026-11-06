@@ -45,7 +45,7 @@ export type GatewayResponseFrame = {
   id: string;
   ok: boolean;
   payload?: unknown;
-  error?: { code: string; message: string; details?: unknown };
+  error?: { code: string; message: string; details?: unknown; retryAfterMs?: number };
 };
 
 export class GatewayRequestError extends Error {
@@ -53,6 +53,7 @@ export class GatewayRequestError extends Error {
     message: string,
     readonly code?: string,
     readonly details?: unknown,
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "GatewayRequestError";
@@ -813,10 +814,24 @@ export class GatewayClient {
       })
       .catch((err) => {
         console.error("[gateway-client] connect handshake failed:", err.message);
-        // Don't reconnect for auth errors — they won't resolve on retry.
-        // Instead, notify the caller so it can kill the stale gateway and restart.
-        const isAuthError = /unauthorized|token.*mismatch|rate.limited/i.test(err.message);
-        if (isAuthError) {
+        const details =
+          err instanceof GatewayRequestError && err.details && typeof err.details === "object"
+            ? (err.details as Record<string, unknown>)
+            : undefined;
+        const isRateLimited =
+          (err instanceof GatewayRequestError && err.code === "AUTH_RATE_LIMITED") ||
+          details?.code === "AUTH_RATE_LIMITED" ||
+          details?.authReason === "rate_limited" ||
+          /rate[ _-]?limited|too many failed authentication attempts/i.test(err.message);
+        if (isRateLimited) {
+          const retryAfterMs = err instanceof GatewayRequestError ? err.retryAfterMs : undefined;
+          this.backoffMs = Math.max(
+            this.backoffMs,
+            typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+              ? Math.min(Math.ceil(retryAfterMs), 2_147_483_647)
+              : WS_RECONNECT_MAX_MS,
+          );
+        } else if (/unauthorized|token.*mismatch/i.test(err.message)) {
           this.closed = true; // prevent auto-reconnect
           this.opts.onAuthError?.(err.message);
         }
@@ -923,6 +938,7 @@ export class GatewayClient {
             res.error?.message ?? "request failed",
             res.error?.code,
             res.error?.details,
+            res.error?.retryAfterMs,
           ),
         );
       }
