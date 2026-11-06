@@ -34,7 +34,7 @@
     "@microsoft/eslint-formatter-sarif": "^3.1.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.1",
-    "concurrently": "^9.0.0",
+    "concurrently": "^9.2.5",
     "electron": "^44.9.3",
     "electron-builder": "^26.15.3",
     "eslint": "^10.1.0",
