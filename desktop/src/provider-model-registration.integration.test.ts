@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { expect, it, vi } from "vitest";
 import { GatewayClient } from "./gateway-client";
 import { registerProviderCatalogModel } from "./provider-model-registration";
-import { discoverProviderModels } from "./provider-model-catalog";
+import { createProviderModelCatalog, type ProviderCatalogInput } from "./provider-model-catalog";
 import { selectDefaultModel } from "./default-model-selection";
 import { SessionModelService } from "./session-model-service";
 
@@ -127,14 +127,33 @@ it.skipIf(!entry)(
         { timeout: 90000, interval: 500 },
       );
       const readConfig = () => JSON.parse(readFileSync(configPath, "utf8"));
+      const request = client.request.bind(client);
+      const gatewayRequests = vi
+        .spyOn(client, "request")
+        .mockImplementation(
+          async <Result = unknown>(
+            method: string,
+            params?: unknown,
+            timeoutMs?: number | null,
+          ): Promise<Result> => {
+            const started = performance.now();
+            try {
+              return await request<Result>(method, params, timeoutMs);
+            } finally {
+              console.info(
+                `[provider-catalog-rpc] ${method}: ${Math.round(performance.now() - started)}ms`,
+              );
+            }
+          },
+        );
       const before = readConfig();
       const generation = client.connectionGeneration;
+      const catalog = createProviderModelCatalog();
       const deps = {
         gateway: () => client,
         readConfig,
         assertMutable: () => {},
-        discover: (input: Parameters<typeof discoverProviderModels>[0]) =>
-          discoverProviderModels(input, {}),
+        discover: (input: ProviderCatalogInput) => catalog(input, {}),
       };
       const restart = vi.fn(async () => {
         throw new Error("Unexpected Gateway restart");
@@ -162,20 +181,18 @@ it.skipIf(!entry)(
         overridden: true,
       });
       const sessionElapsed = performance.now() - started;
-      expect(sessionElapsed).toBeLessThan(10000);
       expect(readConfig().agents).toEqual(before.agents);
+      const defaultRequestStart = gatewayRequests.mock.calls.length;
       const defaultStarted = performance.now();
       await expect(
-        selectDefaultModel(
-          {
-            ...deps,
-            prepareModel: (ref, expected) => registerProviderCatalogModel(deps, ref, expected),
-          },
-          { modelRef: "qwen/live-two", expectedConfig: readConfig() },
-        ),
+        selectDefaultModel(deps, { modelRef: "qwen/live-two", expectedConfig: readConfig() }),
       ).resolves.toEqual({ modelRef: "qwen/live-two" });
       const defaultElapsed = performance.now() - defaultStarted;
-      expect(defaultElapsed).toBeLessThan(10000);
+      expect(
+        gatewayRequests.mock.calls
+          .slice(defaultRequestStart)
+          .filter(([method]) => method === "config.patch"),
+      ).toHaveLength(1);
       expect(readConfig().agents.defaults.modelPolicy).toEqual(before.agents.defaults.modelPolicy);
       expect(readConfig().agents.entries).toEqual(before.agents.entries);
       await expect(sessions.get("agent:main:first")).resolves.toMatchObject({
@@ -184,10 +201,13 @@ it.skipIf(!entry)(
       expect(restart).not.toHaveBeenCalled();
       expect(client.connectionGeneration).toBe(generation);
       expect(child.exitCode).toBeNull();
-      expect(requests).toEqual(["GET /v1/models", "GET /v1/models"]);
+      expect(requests).toEqual(["GET /v1/models"]);
       console.info(
         `[provider-catalog] session: ${Math.round(sessionElapsed)}ms; default: ${Math.round(defaultElapsed)}ms; no restart or inference`,
       );
+      expect(sessionElapsed).toBeLessThan(10000);
+      expect(defaultElapsed).toBeLessThan(10000);
+      gatewayRequests.mockRestore();
     } finally {
       client.stop();
       if (child.pid && child.exitCode === null && child.signalCode === null) {
