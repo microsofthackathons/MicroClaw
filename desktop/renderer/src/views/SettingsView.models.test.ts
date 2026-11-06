@@ -10,7 +10,6 @@ import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import SettingsView from "./SettingsView.vue";
 import type { LocalModelOperation } from "../../../src/local-model-types";
 import { LOCAL_MODEL_PRESETS } from "../../../src/local-model-catalog";
-import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
 import DefaultModelPicker from "@/components/DefaultModelPicker.vue";
 import SessionModelRecoveryNotice from "@/components/SessionModelRecoveryNotice.vue";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";

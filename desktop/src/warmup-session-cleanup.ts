@@ -47,9 +47,7 @@ function getArtifactBases(entry: SessionEntry, sessionsDir: string): Set<string>
  * The running Gateway caches and serializes sessions.json itself, so callers
  * must never use this helper while a Gateway process can still access the store.
  */
-export function cleanupStoppedGatewayWarmupSession(
-  stateDir: string,
-): WarmupSessionCleanupResult {
+export function cleanupStoppedGatewayWarmupSession(stateDir: string): WarmupSessionCleanupResult {
   const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
   const storePath = path.join(sessionsDir, "sessions.json");
   if (!fs.existsSync(storePath)) {
