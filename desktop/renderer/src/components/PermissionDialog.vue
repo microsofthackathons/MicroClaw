@@ -106,25 +106,9 @@ const commandHtml = computed(() => {
 });
 
 const isMxcApproval = computed(() => props.request?.type === "mxc-approval");
-const remoteDeliveryText = computed(() => {
-  const delivery = props.request?.remoteDelivery;
-  if (!delivery || delivery.reason === "disabled") return "";
-  if (delivery.state === "sent") {
-    return delivery.replyMode === "code-required"
-      ? t("perm.phoneCodeRequired")
-      : t("perm.phoneSent");
-  }
-  if (delivery.state === "sending") return t("perm.phoneSending");
-  if (delivery.state === "unconfirmed") return t("perm.phoneUnconfirmed");
-  return t("perm.phoneLocalOnly", { reason: delivery.reason ?? "unavailable" });
-});
-const isLimitedMxcApproval = computed(
-  () => isMxcApproval.value && props.request?.containmentStrength === "limited-dacl",
-);
 const isAttendedApproval = computed(
   () => props.request?.type === "app-approval" || isMxcApproval.value,
 );
-const declaredAccess = computed(() => props.request?.declaredAccess ?? []);
 const folderChanges = computed(() => props.request?.folderChanges ?? []);
 const allowsOnce = computed(
   () => !props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-once"),
@@ -134,20 +118,10 @@ const allowsAlways = computed(
     folderChanges.value.length === 0 &&
     (!props.request?.allowedDecisions || props.request.allowedDecisions.includes("allow-always")),
 );
-const mxcScopeText = computed(() => {
-  if (props.request?.containmentStrength === "off") return t("perm.hostCommandScope");
-  if (folderChanges.value.length > 0) return t("perm.mxcFolderGrantScope");
-  if (isLimitedMxcApproval.value) {
-    return allowsAlways.value ? t("perm.mxcLimitedScope") : t("perm.mxcLimitedScopeOnce");
-  }
-  if (declaredAccess.value.length > 0) {
-    return allowsAlways.value ? t("perm.mxcScope") : t("perm.mxcScopeOnce");
-  }
-  return allowsAlways.value ? t("perm.mxcScopeNoAccess") : t("perm.mxcScopeNoAccessOnce");
-});
 const isShellRequest = computed(
   () => props.request?.type === "shell" || props.request?.type === "shell-async",
 );
+const isCommandApproval = computed(() => isAttendedApproval.value || isShellRequest.value);
 const isReadOnly = computed(() => props.request?.accessNeeded === "ro");
 const riskLevel = computed<"low" | "medium" | "high">(() => {
   if (!props.request) return "low";
@@ -165,20 +139,11 @@ const dialogIcon = computed(() => {
 });
 const dialogTitle = computed(() => {
   if (!props.request) return t("perm.title");
-  if (props.request.containmentStrength === "off") return t("perm.titleCommand");
-  if (isLimitedMxcApproval.value) return t("perm.titleMxcLimited");
-  if (isMxcApproval.value) return t("perm.titleMxc");
-  if (props.request.type === "app-approval") return t("perm.titleApp");
-  if (isShellRequest.value) return t("perm.titleCommand");
+  if (isCommandApproval.value) return t("perm.titleCommand");
   return isReadOnly.value ? t("perm.titleRead") : t("perm.titleWrite");
 });
 const riskHint = computed(() => {
   if (!props.request) return "";
-  if (isLimitedMxcApproval.value) return t("perm.riskMxcLimited");
-  if (isMxcApproval.value) return t("perm.riskMxc");
-  if (props.request.type === "app-approval") return t("perm.riskApp");
-  if (isShellRequest.value)
-    return isReadOnly.value ? t("perm.riskCommandRO") : t("perm.riskCommandRW");
   return isReadOnly.value ? t("perm.riskRead") : t("perm.riskWrite");
 });
 const countdownPercent = computed(() =>
@@ -212,10 +177,10 @@ function respond(decision: string) {
       >
         <div class="perm-header">
           <div class="perm-heading">
-            <span class="perm-icon">{{ dialogIcon }}</span>
+            <span v-if="!isCommandApproval" class="perm-icon">{{ dialogIcon }}</span>
             <div>
               <div class="perm-title">{{ dialogTitle }}</div>
-              <div class="perm-subtitle">{{ riskHint }}</div>
+              <div v-if="!isCommandApproval" class="perm-subtitle">{{ riskHint }}</div>
             </div>
           </div>
           <button class="perm-close" :disabled="responding" @click="respond('deny')">
@@ -229,36 +194,7 @@ function respond(decision: string) {
             </svg>
           </button>
         </div>
-        <div v-if="isMxcApproval" class="perm-body">
-          {{ isLimitedMxcApproval ? t("perm.mxcLimitedDesc") : t("perm.mxcDesc") }}
-        </div>
-        <div v-else class="perm-body" v-html="descriptionHtml"></div>
-        <div
-          v-if="remoteDeliveryText"
-          class="perm-body"
-          role="status"
-          data-testid="mxc-phone-delivery"
-        >
-          {{ remoteDeliveryText }}
-        </div>
-        <div v-if="isMxcApproval && declaredAccess.length > 0" class="perm-mxc-detail">
-          <div class="perm-command-label">
-            {{
-              isLimitedMxcApproval ? t("perm.mxcAdditionalAccessLabel") : t("perm.mxcAccessLabel")
-            }}
-          </div>
-          <div
-            v-for="declaration in declaredAccess"
-            :key="`${declaration.access}:${declaration.path}`"
-            class="perm-mxc-access"
-          >
-            <span>
-              {{ declaration.access === "ro" ? t("perm.mxcAccessRo") : t("perm.mxcAccessRw") }}
-              —
-            </span>
-            <code>{{ declaration.path }}</code>
-          </div>
-        </div>
+        <div v-if="!isCommandApproval" class="perm-body" v-html="descriptionHtml"></div>
         <div v-if="request.command" class="perm-command">
           <div class="perm-command-label">{{ t("perm.commandLabel") }}</div>
           <code v-if="isMxcApproval" class="perm-command-code">{{ request.command }}</code>
@@ -281,22 +217,10 @@ function respond(decision: string) {
             <code>{{ grant.path }}</code>
           </div>
         </div>
-        <div v-if="isMxcApproval && request.dirPath" class="perm-mxc-detail">
-          <div class="perm-command-label">{{ t("perm.mxcCwdLabel") }}</div>
-          <code class="perm-mxc-value">{{ request.dirPath }}</code>
-        </div>
         <div
-          v-if="
-            isLimitedMxcApproval &&
-            request.providerInitialization?.contract === 'microclaw.powershell-filesystem-scope.v1'
-          "
-          class="perm-body"
-          data-testid="mxc-powershell-scope"
+          v-if="!isCommandApproval && SHOW_CALLER_STACK && request?.callerStack"
+          class="perm-command"
         >
-          {{ t("perm.mxcPowerShellScope") }}
-        </div>
-        <div v-if="isMxcApproval" class="perm-body perm-mxc-scope">{{ mxcScopeText }}</div>
-        <div v-if="SHOW_CALLER_STACK && request?.callerStack" class="perm-command">
           <div class="perm-command-label">{{ t("perm.callerLabel") }}</div>
           <code class="perm-command-code perm-stack">{{ request.callerStack }}</code>
         </div>
@@ -305,7 +229,9 @@ function respond(decision: string) {
             <span role="status">{{
               responding ? t("perm.responding") : t("perm.autoDeny", { seconds: countdown })
             }}</span>
-            <span class="perm-risk-label">{{ riskLevel.toUpperCase() }}</span>
+            <span v-if="!isCommandApproval" class="perm-risk-label">{{
+              riskLevel.toUpperCase()
+            }}</span>
           </div>
           <div class="perm-countdown-bar" aria-hidden="true">
             <span :style="{ width: countdownPercent + '%' }"></span>
@@ -505,17 +431,11 @@ html.dark .perm-overlay--modal {
   font-weight: 600;
 }
 
-.perm-mxc-access code,
-.perm-mxc-value {
+.perm-mxc-access code {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text-primary);
   font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
-}
-
-.perm-mxc-scope {
-  color: var(--text-secondary);
-  font-size: 12px;
 }
 
 .perm-command-label {

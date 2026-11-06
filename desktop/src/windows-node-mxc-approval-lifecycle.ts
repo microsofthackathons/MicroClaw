@@ -154,61 +154,62 @@ export class WindowsNodeMxcApprovalLifecycle {
   }
 }
 
+export function renderMxcPermissionResult(
+  status: "approved" | "denied" | "expired" | "failed" | "cancelled",
+  locale: "en-US" | "zh-CN",
+): string {
+  const messages = {
+    "en-US": {
+      approved: "✅ Microclaw Permission Approved",
+      denied: "❌ Microclaw Permission Denied",
+      expired: "⏰ Microclaw Permission Expired",
+      failed: "❌ Microclaw Permission Failed",
+      cancelled: "❌ Microclaw Permission Cancelled",
+    },
+    "zh-CN": {
+      approved: "✅ Microclaw 权限已批准",
+      denied: "❌ Microclaw 权限已拒绝",
+      expired: "⏰ Microclaw 权限已过期",
+      failed: "❌ Microclaw 权限处理失败",
+      cancelled: "❌ Microclaw 权限审批已取消",
+    },
+  };
+  return messages[locale][status];
+}
+
 export function renderMxcApprovalTerminal(
   outcome: MxcApprovalTerminal,
   locale: "en-US" | "zh-CN",
   foldersSaved = false,
 ): string {
-  if (foldersSaved) {
-    const result =
-      outcome.origin === "timeout"
-        ? locale === "zh-CN"
-          ? "MicroClaw 安全审批结果：命令审批已到期；不会自动重试。"
-          : "MicroClaw Security Approval RESULT: command approval expired; no automatic retry."
-        : renderMxcApprovalTerminal(outcome, locale);
-    return (
-      result +
-      (locale === "zh-CN"
-        ? " 所示文件夹权限已保存，直到在设置中移除；这不代表命令执行成功。"
-        : " The displayed folder grants were saved until removed in Settings; this is not command execution success.")
+  const status =
+    outcome.origin === "timeout"
+      ? "expired"
+      : outcome.status === "accepted"
+        ? outcome.decision === "deny"
+          ? "denied"
+          : "approved"
+        : outcome.status === "unconfirmed"
+          ? "failed"
+          : "cancelled";
+  const lines = [renderMxcPermissionResult(status, locale)];
+  if (
+    outcome.status === "unconfirmed" ||
+    (status === "expired" && outcome.status === "cancelled")
+  ) {
+    lines.push(locale === "zh-CN" ? "⚠️ 权限结果未确认。" : "⚠️ Permission outcome unconfirmed.");
+  }
+  if (outcome.status === "accepted" && outcome.warning === "durable-persistence-failed") {
+    lines.push(
+      locale === "zh-CN"
+        ? "⚠️ 无法保存永久权限，仅本次获得批准。"
+        : "⚠️ Remembered permission could not be saved; only this request was approved.",
     );
   }
-  if (outcome.origin === "timeout") {
-    if (outcome.status !== "accepted") {
-      return locale === "zh-CN"
-        ? "MicroClaw 安全审批结果：已到期；权限决策及执行结果未确认。未接受新的用户决策，不会自动重试。"
-        : "MicroClaw Security Approval RESULT: deadline expired; permission resolution and execution outcome unconfirmed. No new user decision accepted; no automatic retry.";
-    }
-    return locale === "zh-CN"
-      ? "MicroClaw 安全审批结果：已过期，未及时收到有效决策；此次审批未授予新权限。这不是用户拒绝，也不是命令执行结果。"
-      : "MicroClaw Security Approval RESULT: expired; no timely valid decision received, no new permission granted by this prompt. This is not an operator rejection or a command execution result.";
+  if (foldersSaved && status !== "approved") {
+    lines.push(
+      locale === "zh-CN" ? "⚠️ 文件夹权限已保存。" : "⚠️ Folder permissions were already saved.",
+    );
   }
-  if (outcome.status !== "accepted") {
-    return locale === "zh-CN"
-      ? `MicroClaw 安全审批结果：${outcome.status === "cancelled" ? "已取消" : "决策未确认"}（${outcome.origin}）。未确认批准或拒绝；不会自动重试。`
-      : `MicroClaw Security Approval RESULT: ${outcome.status} (${outcome.origin}). No approval or denial confirmed; no automatic retry.`;
-  }
-  const labels = {
-    "allow-once": locale === "zh-CN" ? "仅允许一次" : "allowed once",
-    "allow-always":
-      locale === "zh-CN"
-        ? "已保存此智能体的 Windows Node 命令允许列表规则"
-        : "saved in this agent's Windows Node command allowlist",
-    deny:
-      outcome.origin === "gateway"
-        ? locale === "zh-CN"
-          ? "网关已阻止；无法确认操作者身份"
-          : "blocked by Gateway; operator identity not established"
-        : locale === "zh-CN"
-          ? "操作者已拒绝"
-          : "denied by operator",
-  };
-  const warning = outcome.warning
-    ? locale === "zh-CN"
-      ? " 永久审批保存失败，仅本次决策已接受。"
-      : " Durable approval was not saved; only the current decision was accepted."
-    : "";
-  return locale === "zh-CN"
-    ? `MicroClaw 安全审批结果：${labels[outcome.decision]}（${outcome.origin}）。权限决策已接受；这不代表命令执行成功。${warning}`
-    : `MicroClaw Security Approval RESULT: ${labels[outcome.decision]} (${outcome.origin}). Permission decision accepted; this is not command execution success.${warning}`;
+  return lines.join("\n");
 }

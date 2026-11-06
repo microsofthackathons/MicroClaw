@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
+import { setLocale } from "@/i18n";
 import PermissionDialog from "./PermissionDialog.vue";
 
 describe("PermissionDialog", () => {
@@ -36,14 +37,17 @@ describe("PermissionDialog", () => {
     }
   });
 
-  it("offers one combined Allow action and discloses persistent folder grants", async () => {
+  it("keeps the folders to add or upgrade and the combined Allow decision", async () => {
     const wrapper = mount(PermissionDialog, {
       props: {
         request: {
           requestId: "folder-request",
           type: "mxc-approval",
           command: "hostname.exe",
-          folderChanges: [{ path: "C:\\Work", access: "rw" }],
+          folderChanges: [
+            { path: "C:\\Work", access: "rw" },
+            { path: "C:\\Docs<script>", access: "ro" },
+          ],
           allowedDecisions: ["deny", "allow-once", "allow-always"],
         },
       },
@@ -53,8 +57,19 @@ describe("PermissionDialog", () => {
       "Allow",
     ]);
     expect(wrapper.get('[data-testid="mxc-folder-grants"]').text()).toContain("C:\\Work");
-    expect(wrapper.text()).toContain("permanently adds the listed folder permissions");
-    expect(wrapper.text()).toContain("It does not remember the command");
+    expect(wrapper.get('[data-testid="mxc-folder-grants"] .perm-command-label').text()).toBe(
+      "Folders to add or upgrade",
+    );
+    expect(wrapper.findAll(".perm-mxc-access span").map((entry) => entry.text())).toEqual([
+      "Read and write —",
+      "Read only —",
+    ]);
+    expect(wrapper.findAll(".perm-mxc-access code").map((entry) => entry.text())).toEqual([
+      "C:\\Work",
+      "C:\\Docs<script>",
+    ]);
+    expect(wrapper.find(".perm-mxc-access script").exists()).toBe(false);
+    expect(wrapper.find(".perm-body").exists()).toBe(false);
     await wrapper.findAll(".perm-actions button")[1].trigger("click");
     expect(wrapper.emitted("respond")?.[0]).toEqual(["allow-once"]);
     wrapper.unmount();
@@ -76,9 +91,9 @@ describe("PermissionDialog", () => {
       "Allow once",
       "Allow always",
     ]);
-    expect(wrapper.find(".perm-body").text()).toBe(
-      "AI is trying to launch soffice. This app is not in the sandbox whitelist and needs to run outside the sandbox.",
-    );
+    expect(wrapper.find(".perm-body").exists()).toBe(false);
+    expect(wrapper.get(".perm-title").text()).toBe("Your agent wants to run the following command");
+    wrapper.unmount();
   });
 
   it("shows only decisions advertised by a Gateway approval", () => {
@@ -98,9 +113,10 @@ describe("PermissionDialog", () => {
       "Deny",
       "Allow once",
     ]);
+    wrapper.unmount();
   });
 
-  it("shows an MXC-contained command with separate RO and RW access", () => {
+  it("keeps exact command text while hiding non-grant metadata", () => {
     const command = `${"x".repeat(350)} <img src=x onerror=alert(1)>`;
     const wrapper = mount(PermissionDialog, {
       props: {
@@ -118,26 +134,22 @@ describe("PermissionDialog", () => {
       },
     });
 
-    expect(wrapper.find(".perm-title").text()).toBe("MXC sandbox command approval");
-    expect(wrapper.find(".perm-subtitle").text()).toBe(
-      "Contained by MXC: review the command and declared folder use before allowing.",
+    expect(wrapper.find(".perm-title").text()).toBe(
+      "Your agent wants to run the following command",
     );
-    expect(wrapper.findAll(".perm-body")[0].text()).toBe(
-      "AI wants to run this command inside the MXC sandbox.",
-    );
-    expect(wrapper.find(".perm-command-label").text()).toBe("Declared folder use");
+    expect(wrapper.find(".perm-subtitle").exists()).toBe(false);
+    expect(wrapper.find(".perm-icon").exists()).toBe(false);
+    expect(wrapper.find(".perm-body").exists()).toBe(false);
+    expect(wrapper.find(".perm-risk-label").exists()).toBe(false);
+    expect(wrapper.find(".perm-command-label").text()).toBe("Command");
     expect(wrapper.find(".perm-command-code").text()).toBe(command);
     expect(wrapper.find(".perm-command-code img").exists()).toBe(false);
-    expect(wrapper.findAll(".perm-mxc-access").map((entry) => entry.text())).toEqual([
-      String.raw`Read only — C:\Users\test\Documents`,
-      String.raw`Read and write — C:\Users\test\Desktop<script>`,
-    ]);
-    expect(wrapper.find(".perm-mxc-access script").exists()).toBe(false);
-    expect(wrapper.find(".perm-mxc-value").text()).toBe("isolated-scratch:v1");
-    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
-      "Remembering uses Windows Node's executable and argument allowlist",
-    );
+    expect(wrapper.find(".perm-mxc-access").exists()).toBe(false);
+    expect(wrapper.find(".perm-mxc-value").exists()).toBe(false);
+    expect(wrapper.find(".perm-countdown-row").text()).toBe("Auto-deny in 60s");
+    expect(wrapper.get(".perm-countdown-bar span").attributes("style")).toContain("width: 100%");
     expect(wrapper.text()).not.toContain("Requested folder access");
+    wrapper.unmount();
   });
 
   it("omits the folder section when an MXC command declares no access", () => {
@@ -156,17 +168,16 @@ describe("PermissionDialog", () => {
 
     expect(wrapper.find(".perm-mxc-access").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Declared folder use");
-    expect(wrapper.findAll(".perm-body")[1].text()).toBe(
-      "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
-    );
+    expect(wrapper.find(".perm-body").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Allow always");
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
       "Deny",
       "Allow once",
     ]);
+    wrapper.unmount();
   });
 
-  it("keeps Limited approval concise and explains agent-scoped reuse", () => {
+  it("omits Limited metadata without changing eligible remember decisions", async () => {
     const wrapper = mount(PermissionDialog, {
       props: {
         request: {
@@ -185,12 +196,12 @@ describe("PermissionDialog", () => {
       },
     });
 
-    expect(wrapper.find(".perm-title").text()).toBe("Limited filesystem containment");
-    expect(wrapper.find(".perm-subtitle").text()).toContain("Limited filesystem containment");
-    expect(wrapper.findAll(".perm-body")[0].text()).toBe(
-      "AI wants to run this command with Limited filesystem containment.",
+    expect(wrapper.find(".perm-title").text()).toBe(
+      "Your agent wants to run the following command",
     );
-    expect(wrapper.find(".perm-command-label").text()).toBe("Additional filesystem grants");
+    expect(wrapper.find(".perm-subtitle").exists()).toBe(false);
+    expect(wrapper.find(".perm-body").exists()).toBe(false);
+    expect(wrapper.find(".perm-command-label").text()).toBe("Command");
     expect(wrapper.text()).not.toContain("Ambient filesystem access");
     expect(wrapper.find(".perm-mxc-ambient").exists()).toBe(false);
     expect(wrapper.findAll(".perm-actions button").map((button) => button.text())).toEqual([
@@ -198,12 +209,9 @@ describe("PermissionDialog", () => {
       "Allow once",
       "Remember for this agent",
     ]);
-    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
-      "additive, not an exclusive allowlist",
-    );
-    expect(wrapper.findAll(".perm-body")[1].text()).toContain(
-      "for this agent across conversations; it does not bind the working directory or folders",
-    );
+    await wrapper.findAll(".perm-actions button")[2].trigger("click");
+    expect(wrapper.emitted("respond")).toEqual([["allow-always"]]);
+    wrapper.unmount();
   });
 
   it("keeps high-risk actions visible without optional semantic color tokens", () => {
@@ -213,7 +221,7 @@ describe("PermissionDialog", () => {
     expect(globalStyles).toContain("--danger: var(--smtc-status-danger-foreground, #ef4444);");
   });
 
-  it("discloses only Limited prepared provider scope without hiding executed command bytes", async () => {
+  it("hides provider explanation without changing executed command bytes", async () => {
     const command =
       "[void]'microclaw.powershell-filesystem-scope.v1';exact initializer;Remove-Item -Path 'C:\\workspace\\folder'";
     const request = {
@@ -227,11 +235,13 @@ describe("PermissionDialog", () => {
       allowedDecisions: ["deny" as const, "allow-once" as const],
     };
     const wrapper = mount(PermissionDialog, { props: { request } });
-    expect(wrapper.get('[data-testid="mxc-powershell-scope"]').text()).toContain("MicroClawCwd:");
+    expect(wrapper.find('[data-testid="mxc-powershell-scope"]').exists()).toBe(false);
     expect(wrapper.get(".perm-command-code").text()).toBe(command);
     expect(wrapper.findAll(".perm-actions button")).toHaveLength(2);
     await wrapper.setProps({ request: { ...request, containmentStrength: "full" } });
     expect(wrapper.find('[data-testid="mxc-powershell-scope"]').exists()).toBe(false);
+    expect(wrapper.get(".perm-command-code").text()).toBe(command);
+    wrapper.unmount();
   });
 
   it("renders attended prompts above the startup loading gate", () => {
@@ -243,7 +253,7 @@ describe("PermissionDialog", () => {
     expect(component).toContain("z-index: 10001;");
   });
 
-  it("updates phone status without restarting the authoritative countdown and emits timeout denial", async () => {
+  it("keeps phone updates hidden without restarting the authoritative countdown", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     const request = {
@@ -265,7 +275,7 @@ describe("PermissionDialog", () => {
           remoteDelivery: { state: "sent", reason: null, replyMode: "code-required", revision: 2 },
         },
       });
-      expect(wrapper.get('[data-testid="mxc-phone-delivery"]').text()).toContain("request code");
+      expect(wrapper.find('[data-testid="mxc-phone-delivery"]').exists()).toBe(false);
       await wrapper.setProps({
         request: {
           ...request,
@@ -277,15 +287,11 @@ describe("PermissionDialog", () => {
           },
         },
       });
-      const simpleText = wrapper.get('[data-testid="mxc-phone-delivery"]').text();
-      expect(simpleText).toContain("reply 1 to allow once or 3 to deny");
-      expect(simpleText).toContain("only if the phone prompt offers it");
-      expect(simpleText).toContain("delayed reply");
-      expect(simpleText).not.toContain("CODE");
-      expect(simpleText).not.toMatch(/turn.*off|enable again/);
+      expect(wrapper.find('[data-testid="mxc-phone-delivery"]').exists()).toBe(false);
+      expect(wrapper.get(".perm-countdown-row").text()).toBe("Auto-deny in 35s");
       expect(wrapper.get(".perm-command-code").text()).toBe(request.command);
-      expect(wrapper.get(".perm-mxc-value").text()).toBe(request.dirPath);
-      expect(wrapper.get(".perm-mxc-access").text()).toContain(String.raw`C:\Approved`);
+      expect(wrapper.find(".perm-mxc-value").exists()).toBe(false);
+      expect(wrapper.find(".perm-mxc-access").exists()).toBe(false);
       await vi.advanceTimersByTimeAsync(34_000);
       expect(wrapper.emitted("respond")).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1_000);
@@ -295,4 +301,93 @@ describe("PermissionDialog", () => {
       vi.useRealTimers();
     }
   });
+
+  it.each([
+    ["en-US", "Your agent wants to run the following command"],
+    ["zh-CN", "你的智能体希望运行以下命令"],
+  ] as const)(
+    "uses the simplified command title and content in %s for every containment mode",
+    async (locale, title) => {
+      setLocale(locale);
+      const request = {
+        requestId: "localized-command",
+        type: "mxc-approval" as const,
+        command: "hostname.exe",
+        dirPath: "C:\\Private",
+        callerStack: "private diagnostic stack",
+        remoteDelivery: {
+          state: "local-only" as const,
+          reason: "source-origin-unavailable" as const,
+          replyMode: null,
+          revision: 1,
+        },
+        allowedDecisions: ["deny" as const, "allow-once" as const],
+      };
+      const wrapper = mount(PermissionDialog, { props: { request } });
+      try {
+        for (const containmentStrength of ["full", "limited-dacl", "off"] as const) {
+          await wrapper.setProps({ request: { ...request, containmentStrength } });
+          expect(wrapper.get(".perm-title").text()).toBe(title);
+          expect(wrapper.get(".perm-command-code").text()).toBe(request.command);
+          expect(wrapper.find(".perm-body").exists()).toBe(false);
+          expect(wrapper.find(".perm-risk-label").exists()).toBe(false);
+          expect(wrapper.text()).not.toContain("C:\\Private");
+          expect(wrapper.text()).not.toContain("source-origin-unavailable");
+          expect(wrapper.findAll(".perm-actions button")).toHaveLength(2);
+        }
+        await wrapper.findAll(".perm-actions button")[0].trigger("click");
+        expect(wrapper.emitted("respond")).toEqual([["deny"]]);
+      } finally {
+        wrapper.unmount();
+        setLocale("en-US");
+      }
+    },
+  );
+
+  it("preserves the separate file-access dialog and grant decision", async () => {
+    const wrapper = mount(PermissionDialog, {
+      props: {
+        request: {
+          requestId: "file-request",
+          type: "file",
+          dirPath: "C:\\Documents",
+          accessNeeded: "ro",
+        },
+      },
+    });
+    expect(wrapper.get(".perm-body").text()).toContain("C:\\Documents");
+    expect(wrapper.get(".perm-title").text()).not.toContain("following command");
+    await wrapper.findAll(".perm-actions button")[1].trigger("click");
+    expect(wrapper.emitted("respond")).toEqual([["grant-ro"]]);
+    wrapper.unmount();
+  });
+
+  it.each(["shell", "shell-async"] as const)(
+    "simplifies %s without altering escaped command text or grant decisions",
+    async (type) => {
+      const command = 'echo "<script> & text"';
+      const wrapper = mount(PermissionDialog, {
+        props: {
+          request: {
+            requestId: type,
+            type,
+            command,
+            dirPath: "C:\\Work",
+            accessNeeded: "rw",
+          },
+        },
+      });
+      expect(wrapper.get(".perm-title").text()).toBe(
+        "Your agent wants to run the following command",
+      );
+      expect(wrapper.get(".perm-command-code").text()).toBe(command);
+      expect(wrapper.find(".perm-command-code script").exists()).toBe(false);
+      expect(wrapper.find(".perm-body").exists()).toBe(false);
+      expect(wrapper.find(".perm-subtitle").exists()).toBe(false);
+      expect(wrapper.find(".perm-risk-label").exists()).toBe(false);
+      await wrapper.findAll(".perm-actions button")[1].trigger("click");
+      expect(wrapper.emitted("respond")).toEqual([["grant-rw"]]);
+      wrapper.unmount();
+    },
+  );
 });

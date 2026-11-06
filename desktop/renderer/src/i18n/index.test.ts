@@ -152,7 +152,7 @@ describe("i18n", () => {
         state: t("settings.windowsNodeMxcStatusActive"),
       }),
     ).toBe("Limited containment (DACL) — Active");
-    expect(t("settings.windowsNodeMxcLearnMore")).toBe("Learn more about MXC");
+    expect(t("settings.windowsNodeMxcLearnMore")).toBe("Learn more about sandboxing");
     expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe(
       "Ambient access before selected-folder grants",
     );
@@ -195,7 +195,7 @@ describe("i18n", () => {
         state: t("settings.windowsNodeMxcStatusActive"),
       }),
     ).toBe("有限隔离（DACL） — 已启用");
-    expect(t("settings.windowsNodeMxcLearnMore")).toBe("了解更多 MXC 信息");
+    expect(t("settings.windowsNodeMxcLearnMore")).toBe("了解有关沙盒隔离的更多信息");
     expect(t("settings.windowsNodeMxcAmbientBeforeGrants")).toBe("所选文件夹授权前的环境访问");
     expect(t("settings.windowsNodeMxcProtected")).toBe("已保护");
     expect(t("settings.windowsNodeMxcStarting")).toBe("正在启动");

@@ -711,8 +711,9 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
       }),
     ]);
     expect(mocks.send).toHaveBeenCalledTimes(2);
-    expect(mocks.send.mock.calls[1][0].text).toContain(`(${origin})`);
-    expect(mocks.send.mock.calls[1][0].text).toContain("not command execution success");
+    expect(mocks.send.mock.calls[1][0].text).toBe(
+      decision === "deny" ? "❌ Microclaw Permission Denied" : "✅ Microclaw Permission Approved",
+    );
     expect(state.store.list()).toHaveLength(0);
     expect(await state.reply("1", 44)).toBe(true);
     expect(state.resolveGateway).toHaveBeenCalledTimes(1);
@@ -1005,9 +1006,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     await state.lifecycle.decide("deny", "timeout");
     expect(state.resolveGateway).toHaveBeenCalledExactlyOnceWith("deny");
     expect(state.resolved[0]).toMatchObject({ decision: "deny", origin: "timeout" });
-    expect(mocks.send.mock.calls.at(-1)[0].text).toMatch(
-      /RESULT: expired; no timely valid decision/,
-    );
+    expect(mocks.send.mock.calls.at(-1)[0].text).toBe("⏰ Microclaw Permission Expired");
     expect(mocks.send.mock.calls.at(-1)[0].text).not.toContain("Permission decision accepted");
     expect(state.store.list()).toEqual([]);
   });
@@ -1032,7 +1031,7 @@ describe("production source, plan, broker, pipe, decision and phone lifecycle", 
     expect(state.resolved[0]).toMatchObject({ decision: "allow-once", origin: "desktop" });
     expect(state.store.list()).toEqual([]);
     expect(mocks.send).toHaveBeenCalledTimes(3);
-    expect(mocks.send.mock.calls.at(-1)[0].text).toContain("not command execution success");
+    expect(mocks.send.mock.calls.at(-1)[0].text).toBe("✅ Microclaw Permission Approved");
   });
 
   it("lets a phone decision win a concurrent Desktop denial, once", async () => {
