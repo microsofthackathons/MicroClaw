@@ -107,6 +107,7 @@ import {
   validateChatAttachments,
 } from "./chat-attachments";
 import { prepareAttachmentForOpen } from "./attachment-open";
+import { readInboundImage } from "./attachment-preview";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
@@ -9458,6 +9459,15 @@ function registerIpcHandlers(): void {
       throw new Error("Only HTTP(S) links can be opened");
     }
     return shell.openExternal(url);
+  });
+
+  ipcMain.handle("attachment:read-image", async (event, mediaPath: unknown) => {
+    assertTrustedRendererIpc(event);
+    try {
+      return { ok: true, dataUrl: await readInboundImage(mediaPath, getOpenClawStateDir()) };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   ipcMain.handle("attachment:open", async (_event, request: unknown) => {

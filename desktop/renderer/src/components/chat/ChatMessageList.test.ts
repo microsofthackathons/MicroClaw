@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
-import { shallowMount } from "@vue/test-utils";
+import { flushPromises, shallowMount } from "@vue/test-utils";
+import { ElImageViewer } from "element-plus";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { setLocale } from "@/i18n";
@@ -33,6 +34,43 @@ describe("chat waiting feedback", () => {
     const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
     expect(wrapper.get(".chat-error").attributes("role")).toBe("alert");
     expect(wrapper.find(".chat-error__btn--primary").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("renders a Weixin image without a dark bubble and previews it inside the app", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    const message = {
+      role: "user",
+      content: [],
+      __openclaw: {
+        media: [
+          {
+            path: "media://inbound/1be4ae56-6c48-4787-8fef-04c0cb29e130.png",
+            contentType: "image/png",
+            kind: "image",
+          },
+        ],
+      },
+    };
+    store.messages = [message];
+    const openAttachment = vi.spyOn(window.openclaw.attachment, "open");
+    const dataUrl = "data:image/png;base64,AQID";
+    vi.spyOn(window.openclaw.attachment, "readImage").mockResolvedValue({ ok: true, dataUrl });
+    const wrapper = shallowMount(ChatMessageList, {
+      global: { plugins: [pinia], stubs: { ChatAttachments: false } },
+    });
+
+    await flushPromises();
+    expect(wrapper.get(".chat-bubble.user").classes()).toContain("chat-bubble--image-only");
+    expect(wrapper.get(".chat-attachment__image").attributes("src")).toBe(dataUrl);
+    const card = wrapper.get(".chat-attachment");
+    expect(card.attributes("role")).toBe("button");
+    await card.trigger("click");
+    expect(wrapper.findComponent(ElImageViewer).exists()).toBe(true);
+    expect(openAttachment).not.toHaveBeenCalled();
+    await card.trigger("dblclick");
+    expect(wrapper.find(".chat-edit-input").exists()).toBe(false);
     wrapper.unmount();
   });
 
