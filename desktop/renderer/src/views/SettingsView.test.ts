@@ -7,7 +7,7 @@ import {
   type VueWrapper,
 } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ElMessage, ElMessageBox, ElSwitch } from "element-plus";
+import { ElMessage, ElMessageBox, ElSelect, ElSwitch } from "element-plus";
 import { setLocale } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -30,9 +30,26 @@ describe("SettingsView", () => {
   const validateFolderPolicy = vi.fn();
   const applyFolderPolicy = vi.fn();
 
-  function toggleSandbox(wrapper: ReturnType<typeof shallowMount>) {
+  async function stageSandbox(wrapper: ReturnType<typeof shallowMount>) {
     const toggle = wrapper.findComponent(ElSwitch);
-    return (toggle.props("beforeChange") as () => Promise<boolean>)();
+    toggle.vm.$emit("update:modelValue", !toggle.props("modelValue"));
+    await wrapper.vm.$nextTick();
+  }
+
+  async function applyChanges(wrapper: ReturnType<typeof shallowMount>) {
+    await wrapper.get('[data-testid="mxc-apply-changes"]').trigger("click");
+    await flushPromises();
+  }
+
+  async function toggleSandbox(wrapper: ReturnType<typeof shallowMount>) {
+    if (wrapper.findComponent(ElSwitch).props("disabled")) return;
+    await stageSandbox(wrapper);
+    await applyChanges(wrapper);
+  }
+
+  async function stageConsent(wrapper: ReturnType<typeof shallowMount>) {
+    wrapper.findComponent(ElSelect).vm.$emit("update:modelValue", "allow-always");
+    await wrapper.vm.$nextTick();
   }
 
   const localNode = {
@@ -92,6 +109,7 @@ describe("SettingsView", () => {
 
   afterEach(() => {
     delete testUtilsConfig.global.components.ElSwitch;
+    delete testUtilsConfig.global.components.ElSelect;
     vi.restoreAllMocks();
   });
 
@@ -198,7 +216,9 @@ describe("SettingsView", () => {
   });
 
   beforeEach(() => {
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
     testUtilsConfig.global.components.ElSwitch = ElSwitch;
+    testUtilsConfig.global.components.ElSelect = ElSelect;
     routeState.section = "skills";
     setLocale("en-US");
     getWindowsNodeMxcStatus.mockReset().mockResolvedValue(status("diagnostic-unpaired-local-node"));
@@ -391,14 +411,13 @@ describe("SettingsView", () => {
         refreshing: true,
         error: null,
       });
-    setWindowsNodeMxcEnabled.mockResolvedValueOnce(null);
     const errorMessage = vi.spyOn(ElMessage, "error");
     const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
     await flushPromises();
 
-    await toggleSandbox(wrapper);
+    update({ status: null, verifiedAt: null, refreshing: true, error: null });
     await flushPromises();
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: false });
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
     expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
     expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(false);
@@ -857,7 +876,7 @@ describe("SettingsView", () => {
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(1);
     expect(errorMessage).toHaveBeenCalledWith("exact backend unavailable");
 
-    await toggleSandbox(wrapper);
+    await applyChanges(wrapper);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(2);
   });
 
@@ -891,7 +910,7 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-capability-consent"]').exists()).toBe(false);
   });
 
-  it("keeps the switch and route unchanged when the native confirmation is cancelled", async () => {
+  it("preserves the pending choice and route if the backend returns the unchanged mode", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue({
       ...status("node-local"),
@@ -910,14 +929,14 @@ describe("SettingsView", () => {
 
     setWindowsNodeMxcEnabled.mockResolvedValueOnce(offStatus());
     const errorMessage = vi.spyOn(ElMessage, "error");
-    expect(await toggleSandbox(wrapper)).toBe(false);
+    await toggleSandbox(wrapper);
     await flushPromises();
 
-    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(false);
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(true);
     expect(gateway.ready).toBe(true);
     expect(chat.wsConnected).toBe(true);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: true });
-    expect(errorMessage).not.toHaveBeenCalled();
+    expect(errorMessage).toHaveBeenCalledWith(expect.stringContaining("could not be verified"));
   });
 
   it("sends only a clone-safe boolean and leaves tier/WeChat authority to main", async () => {
@@ -1003,9 +1022,9 @@ describe("SettingsView", () => {
     await flushPromises();
 
     const pending = toggleSandbox(wrapper);
-    await wrapper.vm.$nextTick();
+    await flushPromises();
     const toggle = wrapper.findComponent(ElSwitch);
-    expect(toggle.props("modelValue")).toBe(false);
+    expect(toggle.props("modelValue")).toBe(true);
     expect(toggle.props("loading")).toBe(true);
     expect(toggle.props("disabled")).toBe(true);
     await toggleSandbox(wrapper);
@@ -1020,15 +1039,10 @@ describe("SettingsView", () => {
     });
   });
 
-  it("keeps the real switch Off during native confirmation and cancellation, then reflects the returned On state", async () => {
+  it("stages the real switch, cancels confirmation without mutation, and applies only after confirmation", async () => {
     routeState.section = "security";
     getWindowsNodeMxcStatus.mockResolvedValue(offStatus());
-    let decide!: (value: WindowsNodeMxcStatus) => void;
-    setWindowsNodeMxcEnabled.mockReturnValueOnce(
-      new Promise<WindowsNodeMxcStatus>((resolve) => {
-        decide = resolve;
-      }),
-    );
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce("cancel");
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [createPinia()],
@@ -1048,18 +1062,19 @@ describe("SettingsView", () => {
     const input = wrapper.get<HTMLInputElement>(".el-switch__input");
     await control.trigger("click");
     await flushPromises();
-    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: true });
-    expect(input.element.checked).toBe(false);
-    expect(control.classes()).toContain("is-disabled");
-    expect(wrapper.findComponent(ElSwitch).props("loading")).toBe(true);
-    decide(offStatus());
-    await flushPromises();
-    expect(input.element.checked).toBe(false);
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled();
+    expect(input.element.checked).toBe(true);
+    expect(control.classes()).not.toContain("is-disabled");
+    expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(true);
+    await applyChanges(wrapper);
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(input.element.checked).toBe(true);
     expect(wrapper.findComponent(ElSwitch).props("loading")).toBe(false);
 
     setWindowsNodeMxcEnabled.mockResolvedValueOnce(status("node-local"));
-    await control.trigger("click");
-    await flushPromises();
+    await applyChanges(wrapper);
+    expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: true });
     expect(input.element.checked).toBe(true);
     expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
     wrapper.unmount();
@@ -1130,7 +1145,7 @@ describe("SettingsView", () => {
 
     expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(false);
     expect(wrapper.find('[data-testid="mxc-official-link"]').attributes("href")).toBe(
-      "https://github.com/microsoft/mxc",
+      "https://learn.microsoft.com/windows/apps/develop/mxc/",
     );
     await toggleSandbox(wrapper);
     expect(setWindowsNodeMxcEnabled).toHaveBeenCalledWith({ enabled: true });
@@ -1175,10 +1190,10 @@ describe("SettingsView", () => {
         global: { plugins: [createPinia()] },
       });
       await flushPromises();
-      expect(await toggleSandbox(wrapper)).toBe(false);
+      await toggleSandbox(wrapper);
       await flushPromises();
       const toggle = wrapper.findComponent(ElSwitch);
-      expect(toggle.props("modelValue")).toBe(enabled);
+      expect(toggle.props("modelValue")).toBe(!enabled);
       expect(toggle.props("loading")).toBe(false);
       expect(toggle.props("disabled")).toBe(false);
       expect(errorMessage).toHaveBeenCalledWith("Backend transition failed");
@@ -1228,7 +1243,7 @@ describe("SettingsView", () => {
       expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(false);
       await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
       await flushPromises();
-      await wrapper.get('[data-testid="mxc-apply-folder-policy"]').trigger("click");
+      await wrapper.get('[data-testid="mxc-apply-changes"]').trigger("click");
       await flushPromises();
       expect(applyFolderPolicy).toHaveBeenCalledExactlyOnceWith({
         rw: ["C:\\Work"],
@@ -1263,7 +1278,7 @@ describe("SettingsView", () => {
       await flushPromises();
       expect(wrapper.find('[data-testid="mxc-status-loading"]').exists()).toBe(false);
       expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Docs");
-      expect(wrapper.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(
         outcome === "failure",
       );
       expect(getDisplay).toHaveBeenCalledTimes(outcome === "success" ? 1 : 2);
@@ -1274,8 +1289,8 @@ describe("SettingsView", () => {
   );
 
   it.each([
-    ["en-US", "MXC is off. Tools run without MXC isolation.", "Learn more about MXC"],
-    ["zh-CN", "MXC 已关闭。工具运行时不受 MXC 隔离保护。", "了解更多 MXC 信息"],
+    ["en-US", "MXC is off. Tools run without MXC isolation.", "Learn more about sandboxing"],
+    ["zh-CN", "MXC 已关闭。工具运行时不受 MXC 隔离保护。", "了解有关沙盒隔离的更多信息"],
   ] as const)(
     "shows one switch, the official external link and the Off disclosure in %s",
     async (locale, disclosure, linkLabel) => {
@@ -1294,11 +1309,14 @@ describe("SettingsView", () => {
       expect(wrapper.find(".mxc-card details").exists()).toBe(false);
       const link = wrapper.get('[data-testid="mxc-official-link"]');
       expect(wrapper.findAll(".mxc-card a")).toHaveLength(1);
-      expect(link.text()).toBe(linkLabel);
-      expect(link.attributes("href")).toBe("https://github.com/microsoft/mxc");
+      expect(link.text()).toBe("");
+      expect(link.attributes("aria-label")).toBe(linkLabel);
+      expect(link.attributes("href")).toBe("https://learn.microsoft.com/windows/apps/develop/mxc/");
       await link.trigger("click");
       await flushPromises();
-      expect(openExternal).toHaveBeenCalledExactlyOnceWith("https://github.com/microsoft/mxc");
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith(
+        "https://learn.microsoft.com/windows/apps/develop/mxc/",
+      );
       expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
       expect(wrapper.find('[data-testid="mxc-off-disclosure"]').text()).toBe(disclosure);
       expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
@@ -1328,7 +1346,9 @@ describe("SettingsView", () => {
     await wrapper.get('[data-testid="mxc-official-link"]').trigger("click");
     await flushPromises();
 
-    expect(openExternal).toHaveBeenCalledExactlyOnceWith("https://github.com/microsoft/mxc");
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith(
+      "https://learn.microsoft.com/windows/apps/develop/mxc/",
+    );
     expect(errorMessage).toHaveBeenCalledWith(
       expect.stringContaining("System browser unavailable"),
     );
@@ -1356,14 +1376,20 @@ describe("SettingsView", () => {
       await flushPromises();
 
       expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(false);
-      expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain(
-        phase === "starting-standard" ? "Turning MXC off" : "Action required",
+      expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(
+        phase === "starting-standard",
       );
+      if (phase === "starting-standard") {
+        expect(wrapper.get('[data-testid="mxc-status-summary"]').text()).toContain(
+          "Turning MXC off",
+        );
+      }
+      expect(wrapper.text()).not.toContain("Off — Action required");
       expect(wrapper.find(".mxc-primary-detail").text()).toContain(
         "Standard Gateway restoration is incomplete.",
       );
       expect(wrapper.find(".section").text()).not.toContain("Retry Gateway restoration.");
-      expect(wrapper.find(".mxc-folder-policy").exists()).toBe(true);
+      expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
       wrapper.unmount();
     },
   );
@@ -1403,12 +1429,13 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
-    expect(wrapper.find(".mxc-folder-policy").exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
+    expect(wrapper.find(".mxc-folder-policy").exists()).toBe(remaining.desiredEnabled === true);
     if (remaining.folderPolicyRecovery) {
       expect(wrapper.find(".mxc-folder-policy .mxc-alert-error").exists()).toBe(false);
       expect(wrapper.text()).not.toContain(remaining.folderPolicyRecovery.lastError);
-      expect(wrapper.find('[data-testid="mxc-stage-previous-folder-policy"]').exists()).toBe(true);
+      await stageSandbox(wrapper);
+      expect(wrapper.find('[data-testid="mxc-stage-previous-folder-policy"]').exists()).toBe(false);
     }
     wrapper.unmount();
   });
@@ -1495,7 +1522,7 @@ describe("SettingsView", () => {
     expect(wrapper.find('[data-testid="mxc-status-error"]').text()).toContain(
       "Native status inspection failed",
     );
-    expect(wrapper.find('[data-testid="mxc-status-summary"]').text()).toContain("Action required");
+    expect(wrapper.find('[data-testid="mxc-status-summary"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
@@ -1537,7 +1564,7 @@ describe("SettingsView", () => {
     const policy = wrapper.find(".mxc-folder-policy");
     expect(policy.text()).toContain(String.raw`C:\Users\Alice\Desktop`);
     expect(policy.text()).toContain("Read/write");
-    expect(policy.text()).toContain("not an exclusive allowlist");
+    expect(policy.text()).not.toContain("not an exclusive allowlist");
 
     expect(wrapper.find('[data-testid="mxc-technical-details-toggle"]').exists()).toBe(false);
     expect(wrapper.find(".mxc-card").text()).not.toContain("ambient-hash-1");
@@ -1587,10 +1614,10 @@ describe("SettingsView", () => {
     await flushPromises();
 
     const policy = wrapper.find(".mxc-folder-policy");
-    expect(policy.text()).toContain("Limited additional filesystem grants");
-    expect(policy.text()).toContain("add access");
-    expect(policy.text()).toContain("not an exclusive allowlist");
-    expect(policy.text()).toContain("Read-only cannot reduce access");
+    expect(policy.text()).not.toContain("Limited additional filesystem grants");
+    expect(policy.text()).not.toContain("add access");
+    expect(policy.text()).not.toContain("not an exclusive allowlist");
+    expect(policy.text()).not.toContain("Read-only cannot reduce access");
     expect(wrapper.find('[data-testid="mxc-limited-approvals"]').exists()).toBe(false);
     expect(wrapper.find(".mxc-card").text()).not.toContain("hostname.exe");
 
@@ -1798,7 +1825,7 @@ describe("SettingsView", () => {
     await flushPromises();
 
     const policy = wrapper.find(".mxc-folder-policy");
-    expect(policy.text()).toContain("Changes are staged only");
+    expect(policy.text()).not.toContain("Changes are staged only");
     expect(policy.find('[data-testid="mxc-add-rw"]').attributes("disabled")).toBe("false");
     await policy.find('[data-testid="mxc-add-rw"]').trigger("click");
     await flushPromises();
@@ -1807,7 +1834,7 @@ describe("SettingsView", () => {
       draft: { rw: ["C:\\Work"], ro: ["C:\\Docs"] },
     });
     expect(policy.text()).toContain("C:\\New");
-    expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(true);
     expect(setFolderPolicy).not.toHaveBeenCalled();
   });
 
@@ -1844,7 +1871,7 @@ describe("SettingsView", () => {
 
     await wrapper.find('[data-testid="mxc-add-ro"]').trigger("click");
     await flushPromises();
-    await wrapper.find('[data-testid="mxc-apply-folder-policy"]').trigger("click");
+    await wrapper.find('[data-testid="mxc-apply-changes"]').trigger("click");
     await flushPromises();
 
     expect(applyFolderPolicy).toHaveBeenCalledWith({
@@ -1861,7 +1888,7 @@ describe("SettingsView", () => {
     ["en-US", "off"],
     ["zh-CN", "off"],
   ] as const)(
-    "omits saved folder-policy diagnostics but retains recovery actions in %s while %s",
+    "omits saved diagnostics and shows recovery only in the applied sandbox mode in %s while %s",
     async (locale, phase) => {
       routeState.section = "security";
       setLocale(locale);
@@ -1893,9 +1920,22 @@ describe("SettingsView", () => {
       expect(wrapper.text()).not.toContain("上次应用失败后已安全锁定");
       expect(wrapper.text()).not.toContain(savedRecovery.lastError);
       expect(wrapper.text()).not.toContain(savedRecovery.failurePhase);
+      if (phase === "off") {
+        expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
+        await stageSandbox(wrapper);
+        expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
+        expect(wrapper.find('[data-testid="mxc-stage-previous-folder-policy"]').exists()).toBe(
+          false,
+        );
+        expect(initial.folderPolicyRecovery).toEqual(savedRecovery);
+        expect(errorMessage).not.toHaveBeenCalled();
+        expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+        wrapper.unmount();
+        return;
+      }
       const policy = wrapper.get(".mxc-folder-policy");
       expect(policy.findAll(".dir-path").map((entry) => entry.text())).toEqual(["C:\\Current"]);
-      expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
       const stagePrevious = policy.get('[data-testid="mxc-stage-previous-folder-policy"]');
       expect(stagePrevious.text()).toBe(
         locale === "en-US" ? "Stage previous policy" : "暂存以前的策略",
@@ -1905,14 +1945,19 @@ describe("SettingsView", () => {
       await flushPromises();
 
       expect(policy.findAll(".dir-path").map((entry) => entry.text())).toEqual(["C:\\Previous"]);
-      expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(true);
-      const cancel = policy.get('[data-testid="mxc-cancel-folder-policy"]');
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(true);
+      const cancel = wrapper.get('[data-testid="mxc-cancel-changes"]');
       expect(cancel.text()).toBe(locale === "en-US" ? "Cancel" : "取消");
       await cancel.trigger("click");
       await flushPromises();
 
-      expect(policy.findAll(".dir-path").map((entry) => entry.text())).toEqual(["C:\\Current"]);
-      expect(policy.find('[data-testid="mxc-apply-folder-policy"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+      expect(
+        wrapper
+          .get(".mxc-folder-policy")
+          .findAll(".dir-path")
+          .map((entry) => entry.text()),
+      ).toEqual(["C:\\Current"]);
       expect(initial.folderPolicyRecovery).toEqual(savedRecovery);
       expect(errorMessage).not.toHaveBeenCalled();
       expect(setFolderPolicy).not.toHaveBeenCalled();
@@ -1958,7 +2003,7 @@ describe("SettingsView", () => {
 
     await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
     await flushPromises();
-    await wrapper.get('[data-testid="mxc-apply-folder-policy"]').trigger("click");
+    await wrapper.get('[data-testid="mxc-apply-changes"]').trigger("click");
     await flushPromises();
 
     expect(applyFolderPolicy).toHaveBeenCalledExactlyOnceWith({
@@ -1977,6 +2022,354 @@ describe("SettingsView", () => {
     expect(wrapper.text()).not.toContain("persisting");
     expect(wrapper.find('[data-testid="mxc-stage-previous-folder-policy"]').exists()).toBe(true);
     expect(setFolderPolicy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("cancels all staged security changes without affecting actual protection", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus.mockResolvedValue({
+      ...status("node-local"),
+      effectiveEnabled: true,
+      effectiveStrength: "full",
+      lifecycleState: { phase: "active", detail: null, updatedAt: new Date(0).toISOString() },
+      folders: [{ path: "C:\\Work", access: "rw" }],
+    });
+    stageFolder.mockResolvedValue({ ok: true, dirs: { rw: ["C:\\Work"], ro: ["C:\\Docs"] } });
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    expect(wrapper.findAll(".mxc-sandbox-label")).toHaveLength(1);
+    expect(wrapper.find(".mxc-heading").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Full hard-boundary approved folders");
+    expect(wrapper.findComponent(ElSwitch).props("activeText")).toBe("");
+    expect(wrapper.findComponent(ElSwitch).props("inactiveText")).toBe("");
+
+    await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
+    await flushPromises();
+    await stageConsent(wrapper);
+    await stageSandbox(wrapper);
+    expect(wrapper.find(".mxc-folder-policy").exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(false);
+    const consent = wrapper.get('[data-testid="command-consent-settings"]').element;
+    const actions = wrapper.get('[data-testid="mxc-apply-changes"]').element;
+    expect(
+      consent.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(actions.textContent).toBe("Apply changes");
+    await wrapper.get('[data-testid="mxc-cancel-changes"]').trigger("click");
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(true);
+    expect(wrapper.findComponent(ElSelect).props("modelValue")).toBe("ask-when-needed");
+    expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Work");
+    expect(wrapper.get(".mxc-folder-policy").text()).not.toContain("C:\\Docs");
+    expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+    expect(setFolderPolicy).not.toHaveBeenCalled();
+    expect(applyFolderPolicy).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(window.openclaw.commandConsent.setMode).not.toHaveBeenCalled();
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("preserves pending mode and folder choices across display refreshes and toggle-back", async () => {
+    routeState.section = "security";
+    const initial = {
+      ...status("node-local"),
+      folders: [{ path: "C:\\Work", access: "rw" as const }],
+    };
+    getWindowsNodeMxcStatus.mockResolvedValue(initial);
+    let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+    window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+      update = callback;
+      return vi.fn();
+    };
+    stageFolder.mockResolvedValue({ ok: true, dirs: { rw: ["C:\\Work"], ro: ["C:\\Docs"] } });
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    await stageSandbox(wrapper);
+    await stageSandbox(wrapper);
+    expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
+    await flushPromises();
+    await stageSandbox(wrapper);
+    update({ status: null, verifiedAt: null, refreshing: true, error: null });
+    update({ status: initial, verifiedAt: 200, refreshing: false, error: null });
+    await flushPromises();
+    expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(false);
+    await stageSandbox(wrapper);
+    expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Docs");
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it.each([true, false])(
+    "stages consent and confirms without restarting while sandboxing On=%s",
+    async (enabled) => {
+      routeState.section = "security";
+      getWindowsNodeMxcStatus.mockResolvedValue(
+        enabled
+          ? status("node-local")
+          : offStatus({
+              probe: { ...status("node-local").probe!, outcome: "unsupported" },
+              fullAvailability: null,
+              limitedAvailability: null,
+            }),
+      );
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      expect(wrapper.find("el-radio-group").exists()).toBe(false);
+      await stageConsent(wrapper);
+      expect(window.openclaw.commandConsent.setMode).not.toHaveBeenCalled();
+      expect(wrapper.get('[data-testid="mxc-apply-changes"]').attributes("disabled")).toBe("false");
+      await applyChanges(wrapper);
+      expect(window.openclaw.commandConsent.setMode).toHaveBeenCalledExactlyOnceWith(
+        "allow-always",
+      );
+      expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+        expect.stringContaining("The Gateway will not restart."),
+        "Apply changes",
+        expect.objectContaining({ confirmButtonText: "Apply changes" }),
+      );
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      expect(applyFolderPolicy).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
+
+  it.each([true, false])(
+    "awaits pending folders, then consent, then mode when the current mode is On=%s",
+    async (enabled) => {
+      routeState.section = "security";
+      const initial = status("node-local");
+      let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+      window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+        update = callback;
+        return vi.fn();
+      };
+      const folders = { rw: ["C:\\Work"], ro: ["C:\\Docs"] };
+      const updated = {
+        ...initial,
+        folders: [
+          { path: "C:\\Work", access: "rw" as const },
+          { path: "C:\\Docs", access: "ro" as const },
+        ],
+      };
+      getWindowsNodeMxcStatus.mockResolvedValue(initial);
+      stageFolder.mockResolvedValue({ ok: true, dirs: folders });
+      let finishFolders!: () => void;
+      const pendingFolders = new Promise<void>((resolve) => {
+        finishFolders = resolve;
+      });
+      const folderOperation = enabled ? applyFolderPolicy : setFolderPolicy;
+      folderOperation.mockImplementation(async (draft) => {
+        expect(isProxy(draft)).toBe(false);
+        expect(structuredClone(draft)).toEqual(folders);
+        await pendingFolders;
+        return enabled ? updated : folders;
+      });
+      let finishConsent!: () => void;
+      vi.mocked(window.openclaw.commandConsent.setMode).mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          finishConsent = resolve;
+        });
+        return "allow-always";
+      });
+      setWindowsNodeMxcEnabled.mockResolvedValue({
+        ...(enabled ? offStatus() : status("node-local")),
+        folders: updated.folders,
+      });
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      await wrapper.get('[data-testid="mxc-add-ro"]').trigger("click");
+      await flushPromises();
+      if (!enabled) {
+        update({ status: offStatus(), verifiedAt: 200, refreshing: false, error: null });
+        await flushPromises();
+        expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
+      }
+      await stageConsent(wrapper);
+      await stageSandbox(wrapper);
+      expect(folderOperation).not.toHaveBeenCalled();
+      expect(window.openclaw.commandConsent.setMode).not.toHaveBeenCalled();
+      await applyChanges(wrapper);
+      expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Folder changes will be applied first, then the Gateway will restart",
+        ),
+        "Apply changes",
+        expect.any(Object),
+      );
+      expect(folderOperation).toHaveBeenCalledExactlyOnceWith(folders);
+      expect(window.openclaw.commandConsent.setMode).not.toHaveBeenCalled();
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      expect(wrapper.findComponent(ElSelect).props("disabled")).toBe(true);
+      finishFolders();
+      await flushPromises();
+      expect(window.openclaw.commandConsent.setMode).toHaveBeenCalledExactlyOnceWith(
+        "allow-always",
+      );
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      finishConsent();
+      await flushPromises();
+      expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: !enabled });
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
+
+  it.each([true, false])(
+    "keeps folders tied to the applied mode, not the pending toggle, from On=%s",
+    async (enabled) => {
+      routeState.section = "security";
+      const folders = [{ path: "C:\\Work", access: "rw" as const }];
+      getWindowsNodeMxcStatus.mockResolvedValue({
+        ...(enabled ? status("node-local") : offStatus()),
+        folders,
+      });
+      setWindowsNodeMxcEnabled.mockResolvedValue({
+        ...(enabled ? offStatus() : status("node-local")),
+        folders,
+      });
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      expect(wrapper.find(".mxc-folder-policy").exists()).toBe(enabled);
+      await stageSandbox(wrapper);
+      expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(!enabled);
+      expect(wrapper.find(".mxc-folder-policy").exists()).toBe(enabled);
+      expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+      await applyChanges(wrapper);
+      expect(wrapper.find(".mxc-folder-policy").exists()).toBe(!enabled);
+      expect(setWindowsNodeMxcEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: !enabled });
+      wrapper.unmount();
+    },
+  );
+
+  it.each(["folders", "consent", "mode"] as const)(
+    "stops after a %s failure and retries only unapplied changes",
+    async (failure) => {
+      routeState.section = "security";
+      const initial = status("node-local");
+      const folders = [{ path: "C:\\Work", access: "rw" as const }];
+      getWindowsNodeMxcStatus.mockResolvedValue(initial);
+      stageFolder.mockResolvedValue({ ok: true, dirs: { rw: ["C:\\Work"], ro: [] } });
+      const persisted = await window.openclaw.settings.get();
+      vi.mocked(window.openclaw.settings.get).mockImplementation(async () => persisted);
+      applyFolderPolicy.mockImplementation(async () => {
+        const updated = { ...initial, folders };
+        getWindowsNodeMxcStatus.mockResolvedValue(updated);
+        return updated;
+      });
+      vi.mocked(window.openclaw.commandConsent.setMode).mockImplementation(async (mode) => {
+        persisted.commandConsentMode = mode;
+        return mode;
+      });
+      setWindowsNodeMxcEnabled.mockResolvedValue(offStatus({ folders }));
+      const failedOperation =
+        failure === "folders"
+          ? applyFolderPolicy
+          : failure === "consent"
+            ? vi.mocked(window.openclaw.commandConsent.setMode)
+            : setWindowsNodeMxcEnabled;
+      failedOperation.mockRejectedValueOnce(new Error(`${failure} failed`));
+      const errorMessage = vi.spyOn(ElMessage, "error");
+      const successMessage = vi.spyOn(ElMessage, "success");
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      await wrapper.get('[data-testid="mxc-add-rw"]').trigger("click");
+      await flushPromises();
+      await stageConsent(wrapper);
+      await stageSandbox(wrapper);
+      await applyChanges(wrapper);
+      expect(errorMessage).toHaveBeenCalledWith(`${failure} failed`);
+      expect(successMessage).not.toHaveBeenCalled();
+      expect(applyFolderPolicy).toHaveBeenCalledTimes(1);
+      expect(window.openclaw.commandConsent.setMode).toHaveBeenCalledTimes(
+        failure === "folders" ? 0 : 1,
+      );
+      expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(failure === "mode" ? 1 : 0);
+      expect(wrapper.findComponent(ElSwitch).props("modelValue")).toBe(false);
+      await applyChanges(wrapper);
+      expect(applyFolderPolicy).toHaveBeenCalledTimes(failure === "folders" ? 2 : 1);
+      expect(window.openclaw.commandConsent.setMode).toHaveBeenCalledTimes(
+        failure === "consent" ? 2 : 1,
+      );
+      expect(setWindowsNodeMxcEnabled).toHaveBeenCalledTimes(failure === "mode" ? 2 : 1);
+      expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
+
+  it("rejects a changed baseline during confirmation and prevents duplicate confirmation", async () => {
+    routeState.section = "security";
+    const initial = status("node-local");
+    let update!: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
+    window.openclaw.windowsNodeMxc.onDisplayStatus = (callback) => {
+      update = callback;
+      return vi.fn();
+    };
+    stageFolder.mockResolvedValue({ ok: true, dirs: { rw: ["C:\\Work"], ro: [] } });
+    let confirm!: () => void;
+    vi.mocked(ElMessageBox.confirm).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          confirm = () => resolve("confirm" as never);
+        }),
+    );
+    const errorMessage = vi.spyOn(ElMessage, "error");
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    await wrapper.get('[data-testid="mxc-add-rw"]').trigger("click");
+    await flushPromises();
+    await applyChanges(wrapper);
+    await applyChanges(wrapper);
+    expect(ElMessageBox.confirm).toHaveBeenCalledTimes(1);
+    expect(wrapper.findComponent(ElSwitch).props("disabled")).toBe(true);
+    expect(applyFolderPolicy).not.toHaveBeenCalled();
+    update({
+      status: { ...initial, folders: [{ path: "C:\\External", access: "rw" }] },
+      verifiedAt: 200,
+      refreshing: false,
+      error: null,
+    });
+    await flushPromises();
+    confirm();
+    await flushPromises();
+    expect(errorMessage).toHaveBeenCalledWith(
+      expect.stringContaining("changed while you were confirming"),
+    );
+    expect(applyFolderPolicy).not.toHaveBeenCalled();
+    expect(setWindowsNodeMxcEnabled).not.toHaveBeenCalled();
+    expect(wrapper.get(".mxc-folder-policy").text()).toContain("C:\\Work");
+    wrapper.unmount();
+  });
+
+  it("verifies the actual Off snapshot when the mode API returns no status", async () => {
+    routeState.section = "security";
+    getWindowsNodeMxcStatus
+      .mockResolvedValueOnce(status("node-local"))
+      .mockResolvedValue(offStatus());
+    setWindowsNodeMxcEnabled.mockResolvedValueOnce(null);
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    await toggleSandbox(wrapper);
+    expect(getWindowsNodeMxcStatus).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="mxc-off-disclosure"]').exists()).toBe(true);
+    expect(wrapper.find(".mxc-folder-policy").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mxc-apply-changes"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("does not apply pending consent while active work is streaming", async () => {
+    routeState.section = "security";
+    const pinia = createPinia();
+    const wrapper = shallowMount(SettingsView, { global: { plugins: [pinia] } });
+    await flushPromises();
+    await stageConsent(wrapper);
+    useChatStore(pinia).streaming = true;
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findComponent(ElSelect).props("disabled")).toBe(true);
+    await applyChanges(wrapper);
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled();
+    expect(window.openclaw.commandConsent.setMode).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 

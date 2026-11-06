@@ -44,6 +44,7 @@ import { WindowsNodeMxcWeixinRemoteApprovalServer } from "../src/windows-node-mx
 import { BundledWindowsNodeHost } from "../src/bundled-windows-node-host";
 import {
   commitMxcApprovalDecision,
+  renderMxcApprovalTerminal,
   WindowsNodeMxcApprovalLifecycle,
 } from "../src/windows-node-mxc-approval-lifecycle";
 import { createPowerShellFilesystemInitialization } from "../src/windows-node-mxc-powershell-scope";
@@ -94,13 +95,17 @@ const executable = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powersh
 let captured;
 function displayedCommand(text) {
   const lines = text.split("\n\n")[1].split("\n").slice(1);
-  const escaped = !lines[0].startsWith("  | ");
+  const escaped = lines[0].startsWith("  = ");
+  if (!escaped) {
+    expect(lines).toHaveLength(1);
+    return lines[0];
+  }
   return lines
-    .slice(escaped ? 1 : 0)
-    .map((line) => {
+    .map((line, index) => {
+      expect(line.startsWith(index ? "  + " : "  = ")).toBe(true);
       expect(line.endsWith(" |")).toBe(true);
       const value = line.slice(4, -2);
-      return escaped ? JSON.parse(value) : value;
+      return JSON.parse(value);
     })
     .join("");
 }
@@ -571,6 +576,65 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     });
     return { entry, commit, outcomes };
   }
+  it.each([
+    [
+      { status: "accepted", decision: "allow-once", origin: "wechat" },
+      false,
+      "✅ Microclaw Permission Approved",
+    ],
+    [
+      { status: "accepted", decision: "allow-once", origin: "wechat" },
+      true,
+      "✅ Microclaw Permission Approved",
+    ],
+    [
+      { status: "accepted", decision: "deny", origin: "desktop" },
+      false,
+      "❌ Microclaw Permission Denied",
+    ],
+    [
+      { status: "accepted", decision: "deny", origin: "timeout" },
+      false,
+      "⏰ Microclaw Permission Expired",
+    ],
+    [
+      { status: "unconfirmed", origin: "wechat", reason: "resolution-failed" },
+      true,
+      "❌ Microclaw Permission Failed\n⚠️ Permission outcome unconfirmed.\n⚠️ Folder permissions were already saved.",
+    ],
+  ])(
+    "sends the concise terminal outcome through real Main and the provider (%#)",
+    async (outcome, foldersSaved, expected) => {
+      await deliver();
+      const entry = {
+        request: approval,
+        remoteSource: findWeixinApprovalSource(sources, approval),
+        remoteAttempt: Promise.resolve(),
+        remoteChallengeId: deliveredChallengeId,
+        folderGrantsSaved: foldersSaved,
+      };
+      const finish = createMainFunctionFixture("finishPendingWindowsNodeMxcGatewayApproval", {
+        windowsNodeMxcWeixinRemoteApprovalBroker: broker,
+        queuedWindowsNodeMxcGatewayApprovals: [],
+        pendingWindowsNodeMxcGatewayApproval: entry,
+        sendToWindow: vi.fn(),
+        mainWindow: {},
+        getWindowsNodeMxcWeixinRemoteApprovalConfiguration: () => configuration,
+        exactWeixinApprovalSource,
+        readAuthenticatedWeixinWireOwner,
+        getOpenClawStateDir: () => stateDir,
+        renderMxcApprovalTerminal,
+        remoteApprovalDiagnosticBinding,
+        console: { info: vi.fn() },
+      });
+      await finish.handle(entry, outcome, "en-US", server);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fetch.mock.calls[1][1].body).msg.item_list[0].text_item.text).toBe(
+        expected,
+      );
+    },
+  );
+
   it("projects the authenticated canonical origin through actual Main initial, delivery-update and snapshot producers, without exposing peer authority", async () => {
     const executionSessionKey = "agent:main:sandbox:execution-policy";
     const request = {
@@ -725,8 +789,8 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expect(delivery).not.toBeNull();
       const text = JSON.parse(fetch.mock.calls[0][1].body).msg.item_list[0].text_item.text;
       expect(displayedCommand(text)).toBe(approval.command);
-      for (const grant of grants) expect(text).toContain(grant.path);
-      if (!grants.length) expect(text).toContain("None");
+      expect(text).not.toContain("Folders to Add or Upgrade:");
+      expect(approval.declaredAccess).toEqual(grants);
       expect(JSON.stringify(approval)).toBe(before);
       expect(
         await transport.intercept({
@@ -932,9 +996,7 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
       expect(sent.item_list[0].text_item.text).toContain("Reply 1:");
       if (operation.startsWith("exists")) {
         expect(displayedCommand(sent.item_list[0].text_item.text)).toBe(approval.command);
-        expect(sent.item_list[0].text_item.text).toContain(
-          operation === "exists-ro" ? "Read-only" : "Read/write",
-        );
+        expect(sent.item_list[0].text_item.text).not.toContain("Folders to Add or Upgrade:");
         expect(approval.arguments.at(-1)).toBe(
           `powershell -NoProfile -Command "Test-Path '${target}'"`,
         );
@@ -1217,7 +1279,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     ).toBe(1);
     expect(
       fetch.mock.calls.filter(([, params]) =>
-        JSON.parse(params.body).msg.item_list[0].text_item.text.includes("Command (exact;"),
+        JSON.parse(params.body).msg.item_list[0].text_item.text.includes(
+          "Your agent wants to run the following command:",
+        ),
       ),
     ).toHaveLength(1);
   });
@@ -1343,7 +1407,9 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
     ).toBe(1);
     expect(
       fetch.mock.calls.filter(([, params]) =>
-        JSON.parse(params.body).msg.item_list[0].text_item.text.includes("Command (exact;"),
+        JSON.parse(params.body).msg.item_list[0].text_item.text.includes(
+          "Your agent wants to run the following command:",
+        ),
       ),
     ).toHaveLength(1);
   });
@@ -1881,7 +1947,10 @@ describe("exact authenticated provider peer through real cache, sender, HTTP ada
           await source({ message_id: 1001 + step * 4, seq: 42 + step * 4 });
           const delivery = await deliver();
           expect(delivery).not.toBeNull();
-          expect(delivery.text).toContain("Verified folder initialization");
+          expect(displayedCommand(delivery.text)).toBe(
+            windowsCommand(approval.providerInitialization.originalArgv),
+          );
+          expect(delivery.text).not.toContain("Verified folder initialization");
           const code = delivery.replyCode;
           expect(
             await transport.intercept({

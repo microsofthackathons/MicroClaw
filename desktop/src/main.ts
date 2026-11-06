@@ -3554,7 +3554,7 @@ async function finishPendingWindowsNodeMxcGatewayApproval(
       accountId: source.accountId,
       kind: "terminal",
       to: source.senderId,
-      text: `${renderMxcApprovalTerminal(outcome, locale, pending.folderGrantsSaved)} [${remoteApprovalDiagnosticBinding(pending.request).approvalHash}]`,
+      text: renderMxcApprovalTerminal(outcome, locale, pending.folderGrantsSaved),
       ...(pending.remoteChallengeId ? { terminalChallengeId: pending.remoteChallengeId } : {}),
       onDiagnostic: (diagnostic) =>
         console.info(

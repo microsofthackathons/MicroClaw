@@ -53,6 +53,115 @@ function normalized(argv: string[], executablePath: string, initialize = false) 
 }
 
 describe("generic WeChat presentation of the prepared exec plan", () => {
+  for (const locale of ["en-US", "zh-CN"] as const) {
+    it(`shows only the requested command, choices, and remaining seconds in ${locale}`, () => {
+      const { approval } = normalized([cmd, "/d", "/s", "/c", "whoami"], cmd);
+      approval.hasMutableFileOperand = true;
+      const result = renderCanonicalWeixinExecPrompt({
+        approval,
+        security,
+        code: "23456789",
+        expiresAtUnixMs: 123_000,
+        nowUnixMs: 1_000,
+        locale,
+      });
+      if (result.status !== "supported") throw new Error("Simple prompt was not supported");
+      expect(result.text).toBe(
+        (locale === "en-US"
+          ? [
+              "🛡️ MicroClaw Security Approval",
+              "",
+              "Your agent wants to run the following command:",
+              `${cmd} /d /s /c whoami`,
+              "",
+              "Reply 1: allow once",
+              "3: deny",
+              "",
+              "Expire in 122 seconds",
+            ]
+          : [
+              "🛡️ MicroClaw 安全审批",
+              "",
+              "你的智能体希望运行以下命令：",
+              `${cmd} /d /s /c whoami`,
+              "",
+              "回复 1：仅允许一次",
+              "3：拒绝",
+              "",
+              "将在 122 秒后过期",
+            ]
+        ).join("\n"),
+      );
+    });
+
+    it(`shows only requested folder grants in a combined approval in ${locale}`, () => {
+      const { approval } = normalized([cmd, "/d", "/s", "/c", "whoami"], cmd);
+      approval.folderChanges = [
+        { path: root, access: "rw" },
+        { path: "C:\\Reference", access: "ro" },
+      ];
+      const result = renderCanonicalWeixinExecPrompt({
+        approval,
+        security,
+        code: "23456789",
+        expiresAtUnixMs: 123_000,
+        nowUnixMs: 1_000,
+        locale,
+      });
+      if (result.status !== "supported") throw new Error("Combined prompt was not supported");
+      expect(result.text).toBe(
+        (locale === "en-US"
+          ? [
+              "🛡️ MicroClaw Security Approval",
+              "",
+              "Your agent wants to run the following command:",
+              `${cmd} /d /s /c whoami`,
+              "",
+              "Folders to Add or Upgrade:",
+              `Read/write: ${root}`,
+              "Read-only: C:\\Reference",
+              "",
+              "Reply 1: allow",
+              "3: deny",
+              "",
+              "Expire in 122 seconds",
+            ]
+          : [
+              "🛡️ MicroClaw 安全审批",
+              "",
+              "你的智能体希望运行以下命令：",
+              `${cmd} /d /s /c whoami`,
+              "",
+              "要添加或升级的文件夹：",
+              `读写： ${root}`,
+              "只读： C:\\Reference",
+              "",
+              "回复 1：允许",
+              "3：拒绝",
+              "",
+              "将在 122 秒后过期",
+            ]
+        ).join("\n"),
+      );
+    });
+  }
+
+  it("retains coded replies when bare replies are disabled", () => {
+    const { approval } = normalized([cmd, "/d", "/s", "/c", "whoami"], cmd);
+    const result = renderCanonicalWeixinExecPrompt({
+      approval,
+      security,
+      code: "23456789",
+      expiresAtUnixMs: 123_000,
+      nowUnixMs: 1_000,
+      locale: "en-US",
+      bareReplies: false,
+    });
+    if (result.status !== "supported") throw new Error("Coded prompt was not supported");
+    expect(result.text).toContain("Reply 1 23456789: allow once\n3 23456789: deny");
+    expect(result.text).not.toMatch(/^2[: ]/m);
+  });
+
   it.each(["en-US", "zh-CN"] as const)(
     "shows an unchanged stock CMD wrapper and complete PowerShell payload in %s",
     (locale) => {
@@ -65,6 +174,7 @@ describe("generic WeChat presentation of the prepared exec plan", () => {
         security,
         code: "23456789",
         expiresAtUnixMs: 123_000,
+        nowUnixMs: 1_000,
         locale,
       });
       expect(result.status).toBe("supported");
@@ -97,6 +207,7 @@ describe("generic WeChat presentation of the prepared exec plan", () => {
       security,
       code: "23456789",
       expiresAtUnixMs: 123_000,
+      nowUnixMs: 1_000,
       locale: "en-US",
     });
     expect(result.status).toBe("supported");
@@ -104,7 +215,7 @@ describe("generic WeChat presentation of the prepared exec plan", () => {
     expect(result.text).toContain(target);
     expect(result.text).toContain(script.includes("Remove-Item") ? "Remove-Item" : "New-Item");
     expect(result.text).toContain("Force");
-    expect(result.text).toContain("initialization");
+    expect(result.text).not.toContain("initialization");
     expect(result.text).not.toContain("microclaw.powershell-filesystem-scope.v1");
     expect(approval.command).toBe(plan.commandText);
     expect(approval.arguments).toEqual(plan.argv.slice(1));
@@ -124,6 +235,7 @@ describe("generic WeChat presentation of the prepared exec plan", () => {
         security,
         code: "23456789",
         expiresAtUnixMs: 123_000,
+        nowUnixMs: 1_000,
         locale,
       });
       expect(result.status).toBe("supported");
@@ -132,10 +244,8 @@ describe("generic WeChat presentation of the prepared exec plan", () => {
       expect(result.text).toContain("C:\\Reference");
       expect(result.text).toMatch(locale === "en-US" ? /Read\/write/ : /读写/);
       expect(result.text).toMatch(locale === "en-US" ? /Read-only/ : /只读/);
-      expect(result.text).toMatch(
-        locale === "en-US" ? /until removed in Settings/ : /直到在设置中移除/,
-      );
-      expect(result.text).toMatch(locale === "en-US" ? /command runs once/ : /当前命令仅批准一次/);
+      expect(result.text).not.toMatch(/until removed in Settings|直到在设置中移除/);
+      expect(result.text).not.toMatch(/command runs once|当前命令仅批准一次/);
       expect(result.text).not.toMatch(/^(?:Reply |回复 )?2[:：]/m);
     },
   );

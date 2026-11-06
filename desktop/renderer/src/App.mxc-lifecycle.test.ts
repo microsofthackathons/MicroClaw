@@ -55,6 +55,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   let activityWrapper: ReturnType<typeof shallowMount> | undefined;
 
   beforeEach(async () => {
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
     testUtilsConfig.global.components.ElSwitch = ElSwitch;
     vi.useFakeTimers();
     activityWrapper = undefined;
@@ -165,8 +166,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
           GatewayLoading: false,
           ElSwitch: {
             name: "ElSwitch",
-            props: ["modelValue", "loading", "disabled", "beforeChange"],
-            template: '<button :disabled="disabled" @click="beforeChange()"/>',
+            props: ["modelValue", "loading", "disabled"],
+            emits: ["update:modelValue"],
+            template:
+              '<button :disabled="disabled" @click="$emit(\'update:modelValue\', !modelValue)"/>',
           },
           ElRadio: true,
           ElRadioGroup: true,
@@ -198,7 +201,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
 
   async function requestFullActivation() {
     const settings = wrapper.findComponent(SettingsView);
-    await settings.get('[data-testid="mxc-sandbox-toggle"]').trigger("click");
+    if (!settings.findComponent({ name: "ElSwitch" }).props("modelValue")) {
+      await settings.get('[data-testid="mxc-sandbox-toggle"]').trigger("click");
+    }
+    await settings.get('[data-testid="mxc-apply-changes"]').trigger("click");
     await flushPromises();
     expect(settings.text()).not.toContain("Remote command approval");
   }
@@ -491,6 +497,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
           readOptions,
         });
         persist(transition.plan);
+        status = { ...status, requestedMode, desiredEnabled: request.enabled };
         return status;
       });
   }
@@ -562,13 +569,17 @@ describe("App MXC loading gate with the real Gateway store", () => {
     },
   );
 
-  it("toggles directly and auto-enrolls the eligible owner without durable consent", async () => {
+  it("confirms Apply and auto-enrolls the eligible owner without durable consent", async () => {
     const confirmation = vi.spyOn(ElMessageBox, "confirm");
     const bridge = useNativeMainBridge();
     await mountReadyApp();
     await requestFullActivation();
     expect(bridge).toHaveBeenCalledExactlyOnceWith({ enabled: true });
-    expect(confirmation).not.toHaveBeenCalled();
+    expect(confirmation).toHaveBeenCalledWith(
+      expect.stringContaining("restart the Gateway"),
+      "Apply changes",
+      expect.any(Object),
+    );
     expect(persist).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         action: "persist",
@@ -585,7 +596,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
   });
 
   it.each(["none", "multiple", "invalid", "disabled"] as const)(
-    "toggles directly and persists remote approvals disabled for %s canonical state",
+    "applies sandboxing and persists remote approvals disabled for %s canonical state",
     async (state) => {
       nativeOptions = {
         ...nativeOptions,
@@ -1190,15 +1201,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
       remoteDelivery: { state: "sent", replyMode: "simple-current-prompt", revision: 2 },
     });
     const dialog = wrapper.findComponent(PermissionDialog);
-    expect(dialog.get('[data-testid="mxc-phone-delivery"]').text()).toContain(
-      "reply 1 to allow once or 3 to deny",
-    );
-    expect(dialog.get('[data-testid="mxc-phone-delivery"]').text()).not.toMatch(
-      /CODE|turn.*off|enable again/,
-    );
+    expect(dialog.find('[data-testid="mxc-phone-delivery"]').exists()).toBe(false);
     expect(dialog.get(".perm-command-code").text()).toBe(first.commandText);
-    expect(dialog.get(".perm-mxc-value").text()).toBe(first.canonicalCwd);
-    expect(dialog.get(".perm-mxc-access").text()).toContain(String.raw`C:\Approved`);
+    expect(dialog.find(".perm-mxc-value").exists()).toBe(false);
+    expect(dialog.find(".perm-mxc-access").exists()).toBe(false);
     approvalResolved({
       requestId: "first",
       status: "accepted",

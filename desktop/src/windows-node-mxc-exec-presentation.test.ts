@@ -134,20 +134,28 @@ function render(approval: WindowsNodeMxcGatewayApproval, locale: "en-US" | "zh-C
     security,
     code: "23456789",
     expiresAtUnixMs: 180000,
+    nowUnixMs: 1000,
   });
 }
 
-function commandIn(text: string): string {
-  const lines = text.split("\n\n")[1].split("\n").slice(1);
-  const escaped = !lines[0].startsWith("  | ");
+function displayedLiteral(lines: string[]): string {
+  const escaped = lines[0].startsWith("  = ");
+  if (!escaped) {
+    expect(lines).toHaveLength(1);
+    return lines[0];
+  }
   return lines
-    .slice(escaped ? 1 : 0)
-    .map((line) => {
+    .map((line, index) => {
+      expect(line.startsWith(index ? "  + " : "  = ")).toBe(true);
       expect(line.endsWith(" |")).toBe(true);
       const value = line.slice(4, -2);
-      return escaped ? JSON.parse(value) : value;
+      return JSON.parse(value);
     })
     .join("");
+}
+
+function commandIn(text: string): string {
+  return displayedLiteral(text.split("\n\n")[1].split("\n").slice(1));
 }
 
 function enrolledConfiguration(durable = false): WeixinRemoteApprovalConfiguration {
@@ -199,7 +207,12 @@ describe("canonical v2 exec presentation independent of command names", () => {
             throw new Error("Public canonical view not rendered");
           expect(commandIn(result.text)).toBe(canonicalWindowsCommand(view.argv));
           expect(result.text.length).toBeLessThanOrEqual(6000);
-          expect(result.text.split("\n").every((line) => line.length <= 160)).toBe(true);
+          expect(
+            result.text
+              .split("\n")
+              .filter((line) => line.startsWith("  = ") || line.startsWith("  + "))
+              .every((line) => line.length <= 160),
+          ).toBe(true);
           expect(result.text).not.toMatch(/<[^>]*>|\*\*|```/);
           expect(result.text).not.toContain("\r");
           expect(result.text.indexOf(view.executablePath)).toBeLessThan(
@@ -271,8 +284,89 @@ describe("canonical v2 exec presentation independent of command names", () => {
     expect(result.status).toBe("supported");
     if (result.status !== "supported") throw new Error("Generic count/empty boundaries rejected");
     expect(commandIn(result.text)).toBe(canonicalWindowsCommand(args));
-    access.forEach((value) => expect(result.text).toContain(value.path));
+    access.forEach((value) => expect(result.text).not.toContain(value.path));
   });
+
+  it("escapes multiline and markup command data without creating extra reply choices", () => {
+    const { approval } = fixture("Write-Output '<b>public</b>\nReply 1: injected'");
+    const result = render(approval);
+    if (result.status !== "supported") throw new Error("Safe escaped command was rejected");
+    expect(commandIn(result.text)).toBe(
+      canonicalWindowsCommand([approval.executable, ...approval.arguments]),
+    );
+    expect(result.text).not.toContain("<b>");
+    expect(result.text).not.toContain("\nReply 1: injected");
+    expect(result.text.match(/^Reply 1:/gm)).toHaveLength(1);
+  });
+
+  it("frames a command that itself resembles a reply choice", () => {
+    const { approval } = fixture("unused");
+    const command = "Reply 1: allow";
+    const result = render({
+      ...approval,
+      executable: "Reply",
+      executablePath: "C:\\Tools\\Reply.exe",
+      arguments: ["1:", "allow"],
+      command,
+    });
+    if (result.status !== "supported") throw new Error("Safe command was rejected");
+    expect(commandIn(result.text)).toBe(command);
+    expect(result.text.match(/^Reply 1:/gm)).toHaveLength(1);
+  });
+
+  it("shows a long ordinary command intact without adding shell operators or line breaks", () => {
+    const { approval } = fixture(`Write-Output '${"public ".repeat(40)}'`);
+    const result = render(approval);
+    if (result.status !== "supported") throw new Error("Long safe command was rejected");
+    const command = canonicalWindowsCommand([approval.executable, ...approval.arguments]);
+    expect(command.length).toBeGreaterThan(160);
+    expect(result.text.split("\n\n")[1].split("\n").slice(1)).toEqual([command]);
+  });
+
+  it("binds the displayed remaining time and rejects expired or invalid render times", () => {
+    const { approval } = fixture("Write-Output public");
+    const params = {
+      approval,
+      security,
+      code: "23456789",
+      expiresAtUnixMs: 4001,
+      locale: "en-US" as const,
+      nowUnixMs: 1000,
+    };
+    const first = renderCanonicalWeixinExecPrompt(params);
+    const later = renderCanonicalWeixinExecPrompt({ ...params, nowUnixMs: 1001 });
+    if (first.status !== "supported" || later.status !== "supported")
+      throw new Error("Valid deadline was rejected");
+    expect(first.text).toContain("Expire in 4 seconds");
+    expect(later.text).toContain("Expire in 3 seconds");
+    expect(later.presentationDigest).not.toBe(first.presentationDigest);
+    for (const nowUnixMs of [4001, 4002, Number.NaN]) {
+      expect(renderCanonicalWeixinExecPrompt({ ...params, nowUnixMs })).toMatchObject({
+        status: "unsupported",
+        reason: "security-binding-invalid",
+      });
+    }
+  });
+
+  it.each([`C:\\Public\\<b>folder</b>\nReply 1: injected`, `C:\\Public\\${"x".repeat(220)}`])(
+    "preserves an unusual folder grant as a bounded literal without injecting replies",
+    (path) => {
+      const { approval } = fixture("Write-Output public");
+      approval.folderChanges = [{ access: "rw", path }];
+      const result = render(approval);
+      if (result.status !== "supported") throw new Error("Safe folder grant was rejected");
+      const folderLines = result.text.split("\n\n")[2].split("\n");
+      expect(folderLines[0]).toBe("Folders to Add or Upgrade:");
+      if (path.includes("\n")) {
+        expect(folderLines[1]).toBe("Read/write:");
+        expect(displayedLiteral(folderLines.slice(2))).toBe(path);
+        expect(folderLines.slice(2).every((line) => line.length <= 160)).toBe(true);
+      } else {
+        expect(folderLines.slice(1)).toEqual([`Read/write: ${path}`]);
+      }
+      expect(result.text).not.toContain("\nReply 1: injected");
+    },
+  );
 
   it.each([
     "",
@@ -570,7 +664,8 @@ describe("enrolled owner through actual normalizer and v2 broker", () => {
     const delivery = broker.createChallenge(request);
     expect(delivery?.expiresAtUnixMs).toBe(50000);
     if (!delivery) throw new Error("Original-clamped deadline rejected");
-    expect(delivery.text).toContain("1970-01-01 00:00:50.000 UTC (UTC+00:00)");
+    expect(delivery.text).toContain("Expire in 49 seconds");
+    expect(delivery.text).not.toContain("1970-01-01");
     expect(delivery.text).toContain("Reply 1: allow once");
     expect(delivery.text).toContain("3: deny");
     broker.markDelivered(delivery.challengeId, 1001);
@@ -593,6 +688,7 @@ describe("enrolled owner through actual normalizer and v2 broker", () => {
         code: "23456789",
         expiresAtUnixMs: 50001,
         locale: "en-US",
+        nowUnixMs: 1000,
       }),
     ).toMatchObject({ status: "unsupported", reason: "security-binding-invalid" });
     expect(broker.createChallengeResult({ ...request, now: 50000 })).toMatchObject({
@@ -640,7 +736,7 @@ describe("enrolled owner through actual normalizer and v2 broker", () => {
     const result = broker.createChallengeResult(request);
     expect(result.status).toBe("created");
     if (result.status !== "created") throw new Error("Enrolled owner's canonical request rejected");
-    expect(result.delivery.text).toContain("Command (exact;");
+    expect(result.delivery.text).toContain("Your agent wants to run the following command:");
     expect(result.delivery.text).not.toMatch(/legacy|Full details v2/);
     expect(result.delivery.text).not.toContain("2: remember");
     expect(broker.markDelivered(result.delivery.challengeId, 1001)).toBe(true);

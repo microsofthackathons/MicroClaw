@@ -201,10 +201,10 @@ describe("WeChat stock CMD approvals", () => {
     const delivery = broker.createChallenge(request)!;
 
     expect(delivery.text).toContain("mkdir C:\\Work\\child");
-    expect(delivery.text).toContain("New persistent folder grants:");
+    expect(delivery.text).toContain("Folders to Add or Upgrade:");
     expect(delivery.text).toContain("C:\\Work");
     expect(delivery.text).toContain("Read/write:");
-    expect(delivery.text).toContain("command runs once");
+    expect(delivery.text).not.toContain("command runs once");
     expect(
       broker.resolveCandidate(candidate(delivery.replyCode, { requests: request.requests })),
     ).toMatchObject({ status: "approved", decision: "allow-once" });
@@ -225,12 +225,12 @@ describe("WeChat stock CMD approvals", () => {
     expect(request.requests).toEqual(before);
   });
 
-  it("discloses a read-only declaration without inferring broader access from the command", () => {
+  it("keeps a read-only declaration bound without displaying it as a new folder grant", () => {
     const request = cmdInput("mkdir C:\\Work\\child");
     request.requests[0].approval.declaredAccess = [{ access: "ro", path: "C:\\Work" }];
     const delivery = configuredBroker().createChallenge(request)!;
-    expect(delivery.text).toContain("Read-only:");
-    expect(delivery.text).not.toContain("New persistent folder grants:");
+    expect(delivery.text).not.toContain("Read-only:");
+    expect(delivery.text).not.toContain("Folders to Add or Upgrade:");
     expect(request.requests[0].approval.declaredAccess).toEqual([
       { access: "ro", path: "C:\\Work" },
     ]);
@@ -249,8 +249,8 @@ describe("WeChat stock CMD approvals", () => {
       expect(delivery).not.toBeNull();
       expect(delivery.text).toContain("Test-Path");
       expect(delivery.text).toContain("C:\\Work\\a folder");
-      expect(delivery.text).toContain("C:\\Windows\\System32\\cmd.exe");
-      expect(delivery.text).toContain(locale === "en-US" ? "Read-only:" : "只读：");
+      expect(delivery.text).not.toContain("C:\\Windows\\System32\\cmd.exe");
+      expect(delivery.text).not.toContain(locale === "en-US" ? "Read-only:" : "只读：");
       expect(delivery.text).not.toMatch(/^(?:Reply |回复 )?2[:：]/m);
       expect(delivery.text).not.toMatch(/powershell\.exe|initialization/);
       expect(request).toEqual(before);
@@ -272,7 +272,7 @@ describe("WeChat stock CMD approvals", () => {
     expect(delivery.text).toContain("C:\\Work\\child");
     expect(delivery.text).toContain("Read/write:");
     expect(delivery.text).toContain("Force");
-    expect(delivery.text).toContain("this command runs once");
+    expect(delivery.text).not.toContain("this command runs once");
     expect(delivery.text).not.toContain("2: remember");
   });
 
@@ -352,7 +352,7 @@ describe("WeChat combined folder approvals", () => {
       expect(delivery.text).toContain("C:\\Reference");
       expect(delivery.text).toContain(locale === "en-US" ? "Read/write:" : "读写：");
       expect(delivery.text).toContain(locale === "en-US" ? "Read-only:" : "只读：");
-      expect(delivery.text).toContain(
+      expect(delivery.text).not.toContain(
         locale === "en-US" ? "until removed in Settings" : "直到在设置中移除",
       );
       expect(delivery.text).toContain(locale === "en-US" ? "Reply 1: allow" : "回复 1：允许");
@@ -532,6 +532,74 @@ describe("WeChat Windows Node command consent", () => {
 });
 
 describe("WeChat remote approval broker", () => {
+  it.each([
+    { desktop: undefined, gateway: undefined, expiry: 121_000, seconds: 120 },
+    { desktop: 1_001, gateway: undefined, expiry: 1_001, seconds: 1 },
+    { desktop: 1_550, gateway: 10_000, expiry: 1_550, seconds: 1 },
+    { desktop: 60_001, gateway: 45_001, expiry: 45_001, seconds: 45 },
+    { desktop: 200_000, gateway: 150_000, expiry: 121_000, seconds: 120 },
+  ])(
+    "displays the remaining time from the clamped deadline %#",
+    ({ desktop, gateway, expiry, seconds }) => {
+      const request = input();
+      request.expiresAtUnixMs = desktop;
+      request.requests = [{ approval: { ...approval, expiresAtUnixMs: gateway } }];
+      const broker = configuredBroker();
+      const delivery = broker.createChallenge(request);
+      if (!delivery) throw new Error("Unexpired challenge was rejected");
+      expect(delivery.expiresAtUnixMs).toBe(expiry);
+      expect(delivery.text.split("\n").at(-1)).toBe(`Expire in ${seconds} seconds`);
+      expect(
+        broker.resolveCandidate(
+          candidate(delivery.replyCode, { requests: request.requests, now: expiry }),
+        ),
+      ).toMatchObject({
+        status: "rejected",
+        reason: "expired",
+        acknowledgement: "⏰ Microclaw Permission Expired",
+      });
+    },
+  );
+
+  it.each([999, 1000])("does not create a challenge at expired deadline %i", (expiry) => {
+    const request = input();
+    request.expiresAtUnixMs = expiry;
+    expect(configuredBroker().createChallengeResult(request)).toMatchObject({
+      status: "rejected",
+      reason: "security-binding-invalid",
+    });
+  });
+
+  it.each([
+    ["en-US", "⏰ Microclaw Permission Expired"],
+    ["zh-CN", "⏰ Microclaw 权限已过期"],
+  ] as const)("uses the concise %s expiry notice", (locale, expected) => {
+    const request = { ...input(), locale };
+    const broker = configuredBroker();
+    const delivery = broker.createChallenge(request);
+    if (!delivery) throw new Error("Challenge was rejected");
+    expect(broker.expireChallenge(delivery.challengeId, delivery.expiresAtUnixMs)).toMatchObject({
+      acknowledgement: expected,
+    });
+  });
+
+  it.each([
+    ["en-US", "1", "✅ Microclaw Permission Approved"],
+    ["en-US", "3", "❌ Microclaw Permission Denied"],
+    ["zh-CN", "1", "✅ Microclaw 权限已批准"],
+    ["zh-CN", "3", "❌ Microclaw 权限已拒绝"],
+  ] as const)("uses concise %s acknowledgements for choice %s", (locale, choice, expected) => {
+    const request = { ...input(), locale };
+    const broker = configuredBroker();
+    const delivery = broker.createChallenge(request);
+    if (!delivery) throw new Error("Challenge was rejected");
+    expect(
+      broker.resolveCandidate(
+        candidate(delivery.replyCode, { text: `${choice} ${delivery.replyCode}` }),
+      ),
+    ).toMatchObject({ acknowledgement: expected });
+  });
+
   it("does not expose mutable owner authority through configuration snapshots", () => {
     const broker = configuredBroker();
     const snapshot = broker.getConfiguration();
@@ -1021,7 +1089,7 @@ describe("WeChat remote approval broker", () => {
     expect(broker.createChallenge(unsafe)).not.toBeNull();
   });
 
-  it("wraps ordinary arguments and declarations while bounding complete prompts and request sets", () => {
+  it("keeps ordinary arguments intact while bounding complete prompts and request sets", () => {
     const broker = configuredBroker();
     const tooManyArguments = input();
     tooManyArguments.requests = [
@@ -1062,8 +1130,8 @@ describe("WeChat remote approval broker", () => {
         },
       },
     ];
-    const wrapped = broker.createChallenge(oversizedLine)!;
-    expect(wrapped.text.split("\n").every((line) => line.length <= 160)).toBe(true);
+    const longCommand = broker.createChallenge(oversizedLine)!;
+    expect(longCommand.text).toContain(`\n${oversizedLine.requests[0].approval.command}\n`);
     const tooLong = input();
     tooLong.requests = [
       {
@@ -1083,7 +1151,7 @@ describe("WeChat remote approval broker", () => {
     expect(broker.createChallenge(tooManyRequests)).toBeNull();
   });
 
-  it("renders truthful English and Chinese exact-scope decision copy", () => {
+  it("renders concise English and Chinese decision copy without hidden plan details", () => {
     for (const locale of ["en-US", "zh-CN"] as const) {
       const request = { ...input(), locale };
       const prompt = configuredBroker().createChallenge(request)!.text;
@@ -1091,10 +1159,9 @@ describe("WeChat remote approval broker", () => {
       expect(prompt).toMatch(/3[:：]/);
       expect(prompt).not.toMatch(/^(?:Reply |回复 )?2[:：]/m);
       expect(prompt).not.toContain(approval.executableSha256);
-      expect(prompt).toContain(approval.executablePath);
-      expect(prompt).toMatch(
-        locale === "zh-CN" ? /完整技术详情见桌面/ : /Technical details: Desktop/,
-      );
+      expect(prompt).toContain(approval.command);
+      expect(prompt).not.toContain(approval.executablePath);
+      expect(prompt).not.toMatch(/完整技术详情见桌面|Technical details: Desktop/);
     }
   });
 

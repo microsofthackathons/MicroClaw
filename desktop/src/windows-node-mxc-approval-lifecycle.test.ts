@@ -180,77 +180,103 @@ describe("authoritative MXC permission lifecycle", () => {
     expect(mxcApprovalDeadline(1_000, 121_000)).toBe(61_000);
   });
 
-  it.each(["en-US", "zh-CN"] as const)(
-    "makes receipts about accepted permission, not command success (%s)",
-    (locale) => {
-      const text = renderMxcApprovalTerminal(
-        { status: "accepted", decision: "allow-always", origin: "wechat", durableSaved: true },
-        locale,
-      );
-      expect(text).toMatch(
-        locale === "en-US" ? /not command execution success/ : /不代表命令执行成功/,
-      );
-      expect(text).toContain("wechat");
+  it.each([
+    {
+      locale: "en-US",
+      approved: "✅ Microclaw Permission Approved",
+      denied: "❌ Microclaw Permission Denied",
+      expired: "⏰ Microclaw Permission Expired",
+      failed: "❌ Microclaw Permission Failed",
+      cancelled: "❌ Microclaw Permission Cancelled",
+      unconfirmed: "⚠️ Permission outcome unconfirmed.",
+      folders: "⚠️ Folder permissions were already saved.",
+      durable: "⚠️ Remembered permission could not be saved; only this request was approved.",
     },
-  );
-
-  it.each(["en-US", "zh-CN"] as const)(
-    "reports saved folders independently of command success (%s)",
-    (locale) => {
-      for (const origin of ["wechat", "timeout"] as const) {
-        const text = renderMxcApprovalTerminal(
-          { status: "accepted", decision: origin === "wechat" ? "allow-once" : "deny", origin },
+    {
+      locale: "zh-CN",
+      approved: "✅ Microclaw 权限已批准",
+      denied: "❌ Microclaw 权限已拒绝",
+      expired: "⏰ Microclaw 权限已过期",
+      failed: "❌ Microclaw 权限处理失败",
+      cancelled: "❌ Microclaw 权限审批已取消",
+      unconfirmed: "⚠️ 权限结果未确认。",
+      folders: "⚠️ 文件夹权限已保存。",
+      durable: "⚠️ 无法保存永久权限，仅本次获得批准。",
+    },
+  ] as const)(
+    "renders concise and accurate %s permission receipts",
+    ({ locale, approved, denied, expired, failed, cancelled, unconfirmed, folders, durable }) => {
+      for (const origin of ["desktop", "wechat", "gateway"] as const) {
+        expect(
+          renderMxcApprovalTerminal({ status: "accepted", decision: "allow-once", origin }, locale),
+        ).toBe(approved);
+        expect(
+          renderMxcApprovalTerminal({ status: "accepted", decision: "deny", origin }, locale),
+        ).toBe(denied);
+      }
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "accepted", decision: "allow-always", origin: "desktop", durableSaved: true },
+          locale,
+        ),
+      ).toBe(approved);
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "accepted", decision: "allow-once", origin: "wechat" },
           locale,
           true,
-        );
-        expect(text).toMatch(locale === "en-US" ? /folder grants were saved/ : /文件夹权限已保存/);
-        expect(text).toMatch(
-          locale === "en-US" ? /not command execution success/ : /不代表命令执行成功/,
-        );
-        expect(text).not.toMatch(/no new permission granted|未授予新权限/);
-      }
+        ),
+      ).toBe(approved);
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "accepted", decision: "deny", origin: "timeout" },
+          locale,
+        ),
+      ).toBe(expired);
       expect(
         renderMxcApprovalTerminal(
           { status: "unconfirmed", origin: "wechat", reason: "resolution-failed" },
           locale,
         ),
-      ).not.toMatch(/folder grants were saved|文件夹权限已保存/);
-    },
-  );
-
-  it.each(["en-US", "zh-CN"] as const)(
-    "distinguishes expiry from operator denial and an accepted user decision (%s)",
-    (locale) => {
-      const expired = renderMxcApprovalTerminal(
-        { status: "accepted", decision: "deny", origin: "timeout" },
-        locale,
-      );
-      expect(expired).toMatch(
-        locale === "en-US" ? /expired; no timely valid decision/ : /已过期，未及时收到有效决策/,
-      );
-      expect(expired).not.toMatch(
-        /Permission decision accepted|denied \(timeout\)|权限决策已接受|操作者已拒绝/,
-      );
-      const denied = renderMxcApprovalTerminal(
-        { status: "accepted", decision: "deny", origin: "wechat" },
-        locale,
-      );
-      expect(denied).toMatch(locale === "en-US" ? /denied by operator/ : /操作者已拒绝/);
-      const gateway = renderMxcApprovalTerminal(
-        { status: "accepted", decision: "deny", origin: "gateway" },
-        locale,
-      );
-      expect(gateway).toMatch(
-        locale === "en-US" ? /operator identity not established/ : /无法确认操作者身份/,
-      );
-      const unknown = renderMxcApprovalTerminal(
-        { status: "unconfirmed", origin: "timeout", reason: "resolution-failed" },
-        locale,
-      );
-      expect(unknown).toMatch(
-        locale === "en-US" ? /execution outcome unconfirmed/ : /执行结果未确认/,
-      );
-      expect(unknown).not.toMatch(/no new permission granted|未授予新权限/);
+      ).toBe(`${failed}\n${unconfirmed}`);
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "unconfirmed", origin: "timeout", reason: "resolution-failed" },
+          locale,
+        ),
+      ).toBe(`${expired}\n${unconfirmed}`);
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "cancelled", origin: "gateway", reason: "gateway-stopped" },
+          locale,
+        ),
+      ).toBe(cancelled);
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "accepted", decision: "deny", origin: "timeout" },
+          locale,
+          true,
+        ),
+      ).toBe(`${expired}\n${folders}`);
+      expect(
+        renderMxcApprovalTerminal(
+          { status: "unconfirmed", origin: "wechat", reason: "resolution-failed" },
+          locale,
+          true,
+        ),
+      ).toBe(`${failed}\n${unconfirmed}\n${folders}`);
+      expect(
+        renderMxcApprovalTerminal(
+          {
+            status: "accepted",
+            decision: "allow-once",
+            origin: "desktop",
+            durableSaved: false,
+            warning: "durable-persistence-failed",
+          },
+          locale,
+        ),
+      ).toBe(`${approved}\n${durable}`);
     },
   );
 
