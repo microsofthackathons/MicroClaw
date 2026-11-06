@@ -17,7 +17,11 @@ export type ChatSessionRuntime = ChatSessionRuntimeBase &
 
 export interface ChatHistoryResult {
   sessionKey?: string;
+  sessionId?: string;
   messages?: unknown[];
+  olderCursor?: string;
+  hasMore?: boolean;
+  nextOffset?: number;
   thinkingLevel?: string;
   sessionInfo?: ChatSessionRuntime;
 }
