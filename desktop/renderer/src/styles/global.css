@@ -17,6 +17,19 @@
   --accent-light: rgba(30, 31, 37, 0.1);
   --accent-selected: #d4a843;
   --accent-selected-bg: rgba(212, 168, 67, 0.12);
+  --settings-action-bg: #ffffff;
+  --settings-action-hover: #f5f6f8;
+  --settings-action-active: #e8eaef;
+  --settings-action-border: #d0d3da;
+  --settings-action-fg: #1e1f25;
+  --settings-action-primary: #1d1d1f;
+  --settings-action-primary-hover: #333336;
+  --settings-action-primary-active: #09090b;
+  --settings-action-primary-fg: #ffffff;
+  --settings-action-danger: #c42b1c;
+  --settings-action-danger-hover: #a4262c;
+  --settings-action-danger-active: #8f1f18;
+  --settings-action-focus: rgba(0, 103, 192, 0.4);
   --border: #e8eaef;
   --border-strong: #d0d3da;
   --border-row: rgba(60, 60, 67, 0.05);
@@ -24,7 +37,7 @@
   --msg-user-bg: #1e293b;
   --msg-user-text: #ffffff;
   --msg-ai-bg: transparent;
-  --danger: var(--smtc-status-danger-foreground);
+  --danger: var(--smtc-status-danger-foreground, #dc2626);
   --success: #10b981;
   --warning: #f59e0b;
   /* ── Semantic surface/action tokens (design-system baseline) ── */
@@ -88,6 +101,38 @@ body,
   --el-border-color: var(--border);
   --el-color-primary: var(--accent);
   --el-border-radius-base: 8px;
+  /*
+    Off-state switch track. Element Plus defaults this to --el-border-color,
+    which in this theme is a near-white gray — an off (but enabled) switch
+    then reads as disabled. Use a clearly visible neutral so "off" still
+    looks interactive. Disabled switches remain distinct via reduced opacity.
+  */
+  --el-switch-off-color: #c2c8d4;
+}
+
+/*
+  Off-state switch. Element Plus defaults the off track to --el-border-color,
+  a near-white gray in this theme, so an off (but enabled) switch reads as
+  disabled. Render the off state as an outlined pill: a white (light theme)
+  track with a visible gray border and a solid gray knob on the left, so the
+  switch stays legible without looking filled/checked. Disabled switches remain
+  distinct via Element Plus's reduced opacity (.el-switch.is-disabled { opacity: .6 }).
+*/
+html .el-switch:not(.is-checked) .el-switch__core {
+  background-color: #ffffff;
+  border-color: #8e8e93;
+}
+html .el-switch:not(.is-checked) .el-switch__core .el-switch__action {
+  background-color: #636366;
+  border: none;
+}
+html.dark .el-switch:not(.is-checked) .el-switch__core {
+  background-color: transparent;
+  border-color: #8e8e93;
+}
+html.dark .el-switch:not(.is-checked) .el-switch__core .el-switch__action {
+  background-color: #a1a1aa;
+  border: none;
 }
 
 /* Scrollbar styling */
@@ -116,6 +161,12 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
 }
 
+html:lang(zh-CN) .settings-view .section-label,
+html:lang(zh-CN) .settings-view .sub-label,
+html:lang(zh-CN) .channels-view.embedded .settings-group-title {
+  letter-spacing: 0;
+}
+
 /* Dark theme */
 html.dark {
   --bg-primary: #18181b;
@@ -135,13 +186,26 @@ html.dark {
   --accent-light: rgba(255, 255, 255, 0.12);
   --accent-selected: #d4a843;
   --accent-selected-bg: rgba(212, 168, 67, 0.2);
+  --settings-action-bg: #27272a;
+  --settings-action-hover: #3f3f46;
+  --settings-action-active: #52525b;
+  --settings-action-border: #52525b;
+  --settings-action-fg: #f5f5f5;
+  --settings-action-primary: #f5f5f5;
+  --settings-action-primary-hover: #ffffff;
+  --settings-action-primary-active: #d4d4d8;
+  --settings-action-primary-fg: #18181b;
+  --settings-action-danger: #ff6b5f;
+  --settings-action-danger-hover: #ff8178;
+  --settings-action-danger-active: #e85248;
+  --settings-action-focus: rgba(96, 165, 250, 0.55);
   --border: #3f3f46;
   --border-strong: #52525b;
   --border-row: rgba(255, 255, 255, 0.06);
   --border-light: #3f3f46;
   --msg-user-bg: #334155;
   --msg-ai-bg: transparent;
-  --danger: var(--smtc-status-danger-foreground);
+  --danger: var(--smtc-status-danger-foreground, #ef4444);
   --success: #22c55e;
   --warning: #f59e0b;
   --surface-page: var(--bg-primary);
@@ -187,6 +251,8 @@ html.dark {
   --el-color-primary-dark-2: #e2bb5e;
   --el-mask-color: rgba(0, 0, 0, 0.6);
   --el-dialog-bg-color: var(--bg-secondary);
+  /* Visible off-state track on dark backgrounds (see light-theme note). */
+  --el-switch-off-color: #52525b;
 }
 
 /* Light theme explicit */

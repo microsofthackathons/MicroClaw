@@ -128,6 +128,21 @@
           </div>
         </div>
 
+        <div v-if="hasData" class="usage-sources" data-testid="usage-sources">
+          <div v-for="source in usageSources" :key="source.source" class="usage-source-row">
+            <span>{{ sourceLabel(source.source) }}</span>
+            <span>{{ formatTokens(source.tokens) }}</span>
+          </div>
+          <p class="usage-accounting-hint">{{ t("usage.accountingHint") }}</p>
+          <p
+            v-if="data.backgroundUsageAvailable === false"
+            class="usage-accounting-warning"
+            role="status"
+          >
+            {{ t("usage.backgroundUnavailable") }}
+          </p>
+        </div>
+
         <div class="chip-row">
           <template v-if="loading && !hasData">
             <span class="chip"><span class="skeleton skeleton-sm"></span></span>
@@ -148,21 +163,6 @@
         </div>
       </section>
 
-      <!-- Skills -->
-      <section class="panel-section">
-        <div class="section-head">
-          <span class="section-title">Skills</span>
-          <button class="section-add" :title="t('usage.openSkills')" @click="goSkillSettings">
-            +
-          </button>
-        </div>
-
-        <div v-if="skillChips.length" class="skill-grid">
-          <span v-for="s in skillChips" :key="s" class="skill-chip">{{ s }}</span>
-        </div>
-        <div v-else class="skill-empty">{{ t("usage.noSkills") }}</div>
-      </section>
-
       <!-- Gateway-offline sticky banner -->
       <div v-if="gatewayOffline" class="gateway-banner">
         <span class="gateway-banner-text">{{ t("usage.gatewayOffline") }}</span>
@@ -171,9 +171,6 @@
         </button>
       </div>
     </div>
-    <button v-if="hasMoreSkills" class="view-more-btn" @click="goSkillSettings">
-      {{ t("usage.viewMoreSkills") }}
-    </button>
   </aside>
 </template>
 
@@ -186,7 +183,7 @@ import { useChatStore } from "@/stores/chat";
 import { t } from "@/i18n";
 import mascotHero from "@/assets/book.gif";
 import mascotCrash from "@/assets/crash.gif";
-import mascotAvatar from "@/assets/normal.png";
+import mascotAvatar from "@/assets/main-avatar.png";
 
 const mascotSmall = mascotAvatar; // small avatar in header (still shot)
 
@@ -197,18 +194,16 @@ const { isOpen, close } = useUsagePanel();
 
 // --- State ---
 const data = ref<any>(null);
-const skills = ref<Array<{ name?: string; id?: string; enabled?: boolean }>>([]);
 const loading = ref(false);
 const modelErrored = ref(false);
 
-const MAX_SKILL_CHIPS = 9;
 const agentName = computed(() => t("app.name"));
 
 // --- Derived ---
 const gatewayOffline = computed(() => !gateway.ready || gateway.status !== "running");
 const hasData = computed(() => !!data.value);
 // A model error is any chat-flow error that points at the model endpoint /
-// auth / quota / rate-limit / network. `aborted` and `empty_response` are
+// auth / quota / rate-limit / network. `aborted` requests are
 // not model-offline conditions.
 const chatModelError = computed(() => {
   const code = chatStore.lastError?.code;
@@ -259,24 +254,21 @@ const counts = computed(() => {
   const d = data.value;
   if (!d) return { requests: 0, sessions: 0, toolCalls: 0 };
   return {
-    requests: d.aggregates?.messages?.total || 0,
+    requests: d.requestCount ?? d.aggregates?.messages?.total ?? 0,
     sessions: d.sessions?.length || 0,
     toolCalls: d.aggregates?.tools?.totalCalls || 0,
   };
 });
 
-const skillChips = computed(() =>
-  skills.value
-    .filter((s) => s.enabled !== false)
-    .map((s) => s.name || s.id || "")
-    .filter(Boolean)
-    .slice(0, MAX_SKILL_CHIPS),
+const usageSources = computed<Array<{ source: string; tokens: number }>>(
+  () => data.value?.usageSources ?? [],
 );
 
-const hasMoreSkills = computed(() => {
-  const enabledCount = skills.value.filter((s) => s.enabled !== false).length;
-  return enabledCount > MAX_SKILL_CHIPS;
-});
+function sourceLabel(source: string): string {
+  if (source === "session") return t("usage.sourceSession");
+  if (source === "memory") return t("usage.sourceMemory");
+  return t("usage.sourceBackground");
+}
 
 // --- Helpers ---
 function formatTokens(n: number): string {
@@ -301,24 +293,6 @@ async function loadData() {
   }
 }
 
-async function loadSkills() {
-  try {
-    const res = await (window as any).openclaw.skills.list();
-    const all: any[] = [];
-    if (Array.isArray(res?.builtin)) all.push(...res.builtin);
-    if (Array.isArray(res?.custom)) all.push(...res.custom);
-    if (Array.isArray(res?.managed)) all.push(...res.managed);
-    skills.value = all;
-  } catch {
-    skills.value = [];
-  }
-}
-
-function goSkillSettings() {
-  close();
-  router.push("/settings/skills");
-}
-
 function goSettings() {
   close();
   router.push("/settings");
@@ -329,7 +303,6 @@ watch(isOpen, (open) => {
   if (open) {
     // Delay data loading until slide-in animation completes
     setTimeout(() => {
-      loadSkills();
       if (!gatewayOffline.value) loadData();
     }, 300);
   }
@@ -340,7 +313,6 @@ const stopGatewayWatch = watch(
   (online, wasOnline) => {
     if (isOpen.value && online && !wasOnline) {
       loadData();
-      loadSkills();
     }
   },
 );
@@ -656,6 +628,30 @@ html.dark .usage-backdrop {
   color: var(--text-muted);
 }
 
+.usage-sources {
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+.usage-source-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  color: var(--text-secondary);
+}
+
+.usage-accounting-hint,
+.usage-accounting-warning {
+  margin: 8px 0 0;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.usage-accounting-warning {
+  color: var(--el-color-warning, #b26a00);
+}
+
 .section-add {
   width: 26px;
   height: 26px;
@@ -734,54 +730,6 @@ html.dark .usage-backdrop {
   border-radius: 999px;
   font-size: 12px;
   color: var(--text-secondary);
-}
-
-/* ── Skill grid ── */
-.skill-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.skill-chip {
-  padding: 6px 12px;
-  background: #f3f3f5;
-  border: 1px solid #d8d8d8;
-  border-radius: 999px;
-  font-size: 12px;
-  color: #1d1d1f;
-  transition: background 0.15s;
-}
-
-.skill-chip:hover {
-  background: var(--bg-tertiary);
-}
-
-.skill-empty {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 8px 0;
-}
-
-.view-more-btn {
-  margin: 0 var(--usage-drawer-padding) var(--usage-drawer-padding);
-  padding: 10px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  font-size: 13px;
-  color: #555;
-  flex-shrink: 0;
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-  font-family: inherit;
-}
-
-.view-more-btn:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
 }
 
 /* ── Skeleton loading ── */
@@ -901,19 +849,6 @@ html.dark .stat-card-wide {
 html.dark .chip {
   background: var(--bg-tertiary);
   border-color: var(--border);
-  color: var(--text-secondary);
-}
-
-html.dark .skill-chip {
-  background: var(--bg-tertiary);
-  border-color: var(--border);
-  color: var(--text-primary);
-}
-html.dark .skill-chip:hover {
-  background: var(--bg-hover, var(--bg-tertiary));
-}
-
-html.dark .view-more-btn {
   color: var(--text-secondary);
 }
 

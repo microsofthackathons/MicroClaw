@@ -17,6 +17,7 @@ const weixinAccountSchema = z.object({
 /** Top-level weixin config schema (token is stored in credentials file, not config). */
 export const WeixinConfigSchema = weixinAccountSchema.extend({
   accounts: z.record(z.string(), weixinAccountSchema).optional(),
-  /** Default URL for `openclaw openclaw-weixin logs-upload`. Set via `openclaw config set channels.openclaw-weixin.logUploadUrl <url>`. */
-  logUploadUrl: z.string().optional(),
+  replyProgressMessages: z.boolean().default(true),
+  /** ISO 8601; bumped on each successful login to refresh gateway config from disk. */
+  channelConfigUpdatedAt: z.string().optional(),
 });

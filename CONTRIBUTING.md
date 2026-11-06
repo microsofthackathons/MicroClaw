@@ -26,7 +26,7 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
 2. If you've added code that should be tested, add tests.
 3. Ensure the test suite passes:
    ```bash
-   npm test          # runs tests across desktop, renderer, studio-backend
+   npm test          # runs tests across desktop and renderer
    ```
 4. Make sure your code builds:
    ```bash
@@ -38,15 +38,14 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
    npm run format:check    # Prettier formatting check
    npm run format          # auto-fix formatting issues
    ```
-   To lint a single package, use one of `npm run lint:main`,
-   `lint:renderer`, `lint:studio-backend`, `lint:weixin`.
+   To lint a single package, use one of `npm run lint:main`, `lint:renderer`, `lint:weixin`.
 6. Update documentation if your changes affect it.
 7. Submit a pull request.
 
 ### Development Setup
 
 1. Clone the repository
-2. Install Node.js 22+
+2. Install Node.js 26.1+ (recommended), or 24.16+ on the 24.x line. OpenClaw 2026.10.3 requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported.
 3. Install dependencies:
    ```bash
    cd desktop && npm install
@@ -69,8 +68,8 @@ See the [README](README.md) for full architecture details and project structure.
 
 - **ESLint** catches code-quality issues (unused vars, unsafe `any`, etc.).
   Enforced on every PR via `.github/workflows/pr-build.yml`; a failing lint
-  check blocks merge. Four packages are checked: `desktop/`,
-  `desktop/renderer/`, `desktop/studio-backend/`, and `plugins/openclaw-weixin/`.
+  check blocks merge. Three packages are checked: `desktop/`, `desktop/renderer/`,
+  and `plugins/openclaw-weixin/`.
   From the repo root run `npm run lint`.
 - **Prettier** enforces consistent code formatting (indentation, quotes,
   line breaks). Configuration lives in `.prettierrc.json` at the repo root.

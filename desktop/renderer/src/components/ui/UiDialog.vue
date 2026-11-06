@@ -1,10 +1,11 @@
 <template>
-  <div
-    v-if="modelValue"
-    class="ui-dialog-overlay"
-    @mousedown.self="onOverlayMouseDown"
-  >
-    <section class="ui-dialog" :class="[`ui-dialog--${size}`, `ui-dialog--${variant}`]" role="dialog" aria-modal="true">
+  <div v-if="modelValue" class="ui-dialog-overlay" @mousedown.self="onOverlayMouseDown">
+    <section
+      class="ui-dialog"
+      :class="[`ui-dialog--${size}`, `ui-dialog--${variant}`]"
+      role="dialog"
+      aria-modal="true"
+    >
       <header
         v-if="$slots.header || title || showClose"
         class="ui-dialog__header"

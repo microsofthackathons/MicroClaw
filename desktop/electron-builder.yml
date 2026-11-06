@@ -5,12 +5,40 @@ copyright: Copyright © 2026 MicroClaw
 directories:
   output: release
 
+afterSign: scripts/update-signed-windows-node-manifest.mjs
+afterPack: scripts/finalize-packaged-weixin-resource.mjs
+
 win:
   target:
     - target: nsis
       arch:
         - x64
   icon: assets/microclaw.ico
+  signExts:
+    # These are unmodified third-party MXC binaries. MicroClaw-owned helpers,
+    # including microclaw-mxc-host-prep.exe, remain eligible for product signing.
+    - "!mxc-diagnostic-console.exe"
+    - "!winhttp-proxy-shim.exe"
+    - "!wxc-exec.exe"
+    - "!wxc-host-prep.exe"
+    - "!wxc-test-proxy.exe"
+    - "!wxc-windows-sandbox-daemon.exe"
+    - "!wxc-windows-sandbox-guest.exe"
+
+appx:
+  artifactName: MicroClawDesktop-${version}-${arch}.msix
+  identityName: MicroClaw.Test
+  publisher: CN=MicroClaw Test
+  publisherDisplayName: MicroClaw
+  applicationId: MicroClaw
+  displayName: MicroClaw
+  languages:
+    - en-US
+    - zh-CN
+  minVersion: 10.0.19041.0
+  maxVersionTested: 10.0.26100.0
+  capabilities:
+    - runFullTrust
 
 nsis:
   oneClick: false
@@ -20,31 +48,38 @@ nsis:
   shortcutName: OpenClaw
 
 extraResources:
+  - from: src/openclaw-archive-loader.mjs
+    to: openclaw-archive-loader.mjs
+  - from: dist/github-copilot-auth-worker.js
+    to: github-copilot-auth-worker.js
+  - from: src/openclaw-approval-replay-compat.mjs
+    to: openclaw-approval-replay-compat.mjs
+  - from: src/openclaw-fs-safe-compat.mjs
+    to: openclaw-fs-safe-compat.mjs
+  - from: src/openclaw-state-owner-compat.mjs
+    to: openclaw-state-owner-compat.mjs
+  - from: src/openclaw-local-model-compat.mjs
+    to: openclaw-local-model-compat.mjs
+  - from: src/local-model-sources.json
+    to: local-model-sources.json
+  - from: ../NOTICE
+    to: NOTICE
   - from: resources/node.exe
     to: node.exe
   - from: resources/openclaw/
     to: openclaw/
-  - from: studio-backend/
-    to: studio-backend/
-  - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
-    to: AppContainerLauncher.exe
-  - from: ../appcontainer/sandbox-preload.js
-    to: sandbox-preload.js
-  - from: ../appcontainer/sandbox-state.js
-    to: sandbox-state.js
-  - from: ../appcontainer/sandbox-permission.js
-    to: sandbox-permission.js
-  - from: ../appcontainer/sandbox-fs-hooks.js
-    to: sandbox-fs-hooks.js
-  - from: ../appcontainer/sandbox-cp-hooks.js
-    to: sandbox-cp-hooks.js
-  - from: ../appcontainer/sandbox-sensitive.js
-    to: sandbox-sensitive.js
-  - from: ../appcontainer/path-extraction.js
-    to: path-extraction.js
+  - from: resources/openclaw.asar
+    to: openclaw.asar
+  - from: resources/windows-node/
+    to: windows-node/
+  - from: resources/openclaw-weixin/
+    to: openclaw-weixin/
+  - from: ../skills/rednote-publisher/
+    to: agent-skills/rednote-publisher/
 
 files:
   - dist/**/*
+  - "!dist/{tool-sandbox,sensitive-shield,sensitive-shield.test,sandbox-logic.test,sandbox-fs-hooks.test,path-extraction.test,openclaw-boot-probe.test,openclaw-sqlite-sandbox.integration.test}.{js,js.map}"
   - renderer/dist/**/*
   - assets/**/*
   - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,README,readme}"

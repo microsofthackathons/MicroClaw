@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
-import { normalizeAccountId } from "openclaw/plugin-sdk";
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import { resolveStateDir } from "../storage/state-dir.js";
+import { resolveFrameworkAllowFromPath } from "./pairing.js";
+import { logger } from "../util/logger.js";
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
@@ -55,28 +58,6 @@ export function listIndexedWeixinAccountIds(): string[] {
   }
 }
 
-/** Add accountId to the persistent index (no-op if already present). */
-export function registerWeixinAccountId(accountId: string): void {
-  const dir = resolveWeixinStateDir();
-  fs.mkdirSync(dir, { recursive: true });
-
-  const existing = listIndexedWeixinAccountIds();
-  if (existing.includes(accountId)) return;
-
-  const updated = [...existing, accountId];
-  fs.writeFileSync(resolveAccountIndexPath(), JSON.stringify(updated, null, 2), "utf-8");
-}
-
-/** Remove accountId from the persistent index. */
-export function unregisterWeixinAccountId(accountId: string): void {
-  const existing = listIndexedWeixinAccountIds();
-  const updated = existing.filter((id) => id !== accountId);
-  if (updated.length === existing.length) return; // not found
-  const dir = resolveWeixinStateDir();
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(resolveAccountIndexPath(), JSON.stringify(updated, null, 2), "utf-8");
-}
-
 // ---------------------------------------------------------------------------
 // Account store (per-account credential files)
 // ---------------------------------------------------------------------------
@@ -96,6 +77,22 @@ function resolveAccountsDir(): string {
 
 function resolveAccountPath(accountId: string): string {
   return path.join(resolveAccountsDir(), `${accountId}.json`);
+}
+
+function atomicWriteFile(filePath: string, data: string | Buffer): void {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tempPath = path.join(dir, `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(tempPath, data);
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Already promoted or never created.
+    }
+  }
 }
 
 /**
@@ -129,19 +126,17 @@ function readAccountFile(filePath: string): WeixinAccountData | null {
   return null;
 }
 
-/** Load account data by ID, with compatibility fallbacks. */
-export function loadWeixinAccount(accountId: string): WeixinAccountData | null {
-  // Primary: try given accountId (normalized IDs written after this change).
+function loadStoredWeixinAccountFile(accountId: string): WeixinAccountData | null {
   const primary = readAccountFile(resolveAccountPath(accountId));
   if (primary) return primary;
-
-  // Compatibility: if the given ID is normalized, derive the old raw filename
-  // (e.g. "b0f5860fdecb-im-bot" → "b0f5860fdecb@im.bot") for existing installs.
   const rawId = deriveRawAccountId(accountId);
-  if (rawId) {
-    const compat = readAccountFile(resolveAccountPath(rawId));
-    if (compat) return compat;
-  }
+  return rawId ? readAccountFile(resolveAccountPath(rawId)) : null;
+}
+
+/** Load account data by ID, with compatibility fallbacks. */
+export function loadWeixinAccount(accountId: string): WeixinAccountData | null {
+  const stored = loadStoredWeixinAccountFile(accountId);
+  if (stored) return stored;
 
   // Legacy fallback: read token from old single-account credentials file.
   const token = loadLegacyToken();
@@ -179,7 +174,7 @@ export function saveWeixinAccount(
   };
 
   const filePath = resolveAccountPath(accountId);
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+  atomicWriteFile(filePath, JSON.stringify(data, null, 2));
   try {
     fs.chmodSync(filePath, 0o600);
   } catch {
@@ -187,13 +182,293 @@ export function saveWeixinAccount(
   }
 }
 
-/** Remove account data file. */
-export function clearWeixinAccount(accountId: string): void {
-  try {
-    fs.unlinkSync(resolveAccountPath(accountId));
-  } catch {
-    // ignore if not found
+export interface ReplaceWeixinAccountResult {
+  accountId: string;
+  userId: string;
+  replacedAccounts: Array<{ accountId: string; userId?: string }>;
+}
+
+const accountChangeListeners = new Set<() => void>();
+
+export function onWeixinAccountChanged(listener: () => void): () => void {
+  accountChangeListeners.add(listener);
+  return () => accountChangeListeners.delete(listener);
+}
+
+export function watchWeixinAccountState(listener: () => void): () => void {
+  const watchers: Array<ReturnType<typeof fs.watch>> = [];
+  for (const directory of [resolveWeixinStateDir(), resolveAccountsDir()]) {
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      watchers.push(
+        fs.watch(directory, { persistent: false }, () => {
+          listener();
+        }),
+      );
+    } catch (error) {
+      logger.warn(`watchWeixinAccountState: failed to watch ${directory}: ${String(error)}`);
+    }
   }
+  return () => {
+    for (const watcher of watchers) watcher.close();
+  };
+}
+
+interface FileSnapshot {
+  path: string;
+  contents: Buffer | null;
+}
+
+function snapshotFile(filePath: string): FileSnapshot {
+  return {
+    path: filePath,
+    contents: fs.existsSync(filePath) ? fs.readFileSync(filePath) : null,
+  };
+}
+
+function restoreSnapshots(snapshots: FileSnapshot[]): void {
+  for (const snapshot of snapshots) {
+    if (snapshot.contents === null) {
+      try {
+        fs.unlinkSync(snapshot.path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      continue;
+    }
+    atomicWriteFile(snapshot.path, snapshot.contents);
+  }
+}
+
+function accountArtifactPaths(accountId: string): string[] {
+  const dir = resolveAccountsDir();
+  return [
+    path.join(dir, `${accountId}.json`),
+    path.join(dir, `${accountId}.sync.json`),
+    path.join(dir, `${accountId}.context-tokens.json`),
+    resolveFrameworkAllowFromPath(accountId),
+  ];
+}
+
+function ensureFrameworkAllowFromContains(accountId: string, userId: string): void {
+  const filePath = resolveFrameworkAllowFromPath(accountId);
+  let allowFrom: string[] = [];
+  if (fs.existsSync(filePath)) {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as {
+      version?: unknown;
+      allowFrom?: unknown;
+    };
+    if (
+      parsed.version !== 1 ||
+      !Array.isArray(parsed.allowFrom) ||
+      parsed.allowFrom.some((value) => typeof value !== "string" || !value.trim())
+    ) {
+      throw new Error(`WeChat allowFrom state is invalid for account ${accountId}`);
+    }
+    allowFrom = parsed.allowFrom.map((value) => value.trim());
+  }
+  if (!allowFrom.includes(userId)) allowFrom.push(userId);
+  atomicWriteFile(filePath, JSON.stringify({ version: 1, allowFrom }, null, 2));
+}
+
+function readStrictAccountIndex(): string[] {
+  const filePath = resolveAccountIndexPath();
+  if (!fs.existsSync(filePath)) return [];
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown;
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some(
+      (id) =>
+        typeof id !== "string" ||
+        id.trim() !== id ||
+        id.length === 0 ||
+        id.includes("..") ||
+        !/^[A-Za-z0-9._@-]{1,160}$/.test(id),
+    )
+  ) {
+    throw new Error("WeChat account index is invalid");
+  }
+  return [...new Set(parsed)];
+}
+
+/** Fail closed when a running provider no longer owns the sole authenticated account. */
+export function isActiveWeixinAccount(
+  accountId: string,
+  expectedToken?: string,
+  expectedWirePeer?: string,
+): boolean {
+  try {
+    const normalizedId = normalizeAccountId(accountId);
+    const indexedIds = readStrictAccountIndex();
+    if (indexedIds.length !== 1 || normalizeAccountId(indexedIds[0]) !== normalizedId) {
+      return false;
+    }
+    if (expectedWirePeer !== undefined &&
+      (accountId !== normalizedId || indexedIds[0] !== normalizedId)) return false;
+    const account = expectedWirePeer === undefined
+      ? loadStoredWeixinAccountFile(indexedIds[0])
+      : readAccountFile(resolveAccountPath(normalizedId));
+    const token = account?.token?.trim();
+    return Boolean(
+      account && token &&
+        account.userId?.trim() &&
+        (expectedToken === undefined || token === expectedToken.trim()) &&
+        (expectedWirePeer === undefined || account.userId === expectedWirePeer),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Commit one authenticated WeChat identity and remove every other indexed account.
+ * The previous index and account artifacts are restored if any write or cleanup fails.
+ */
+export function replaceWeixinAccount(
+  input: {
+    accountId: string;
+    token: string;
+    baseUrl?: string;
+    userId: string;
+  },
+  onClearContextTokens?: (accountId: string) => void,
+): ReplaceWeixinAccountResult {
+  const accountId = normalizeAccountId(input.accountId);
+  const token = input.token.trim();
+  const userId = input.userId.trim();
+  if (!accountId || !token || !userId) {
+    throw new Error("A complete WeChat account ID, token, and user ID are required");
+  }
+
+  const existingIds = readStrictAccountIndex();
+  const cleanupIds = existingIds.filter((id) => id !== accountId);
+  const aliasIds = cleanupIds.filter((id) => normalizeAccountId(id) === accountId);
+  const removedIds = cleanupIds.filter((id) => normalizeAccountId(id) !== accountId);
+  const replacedAccounts = removedIds.map((id) => ({
+    accountId: id,
+    ...(loadWeixinAccount(id)?.userId?.trim()
+      ? { userId: loadWeixinAccount(id)!.userId!.trim() }
+      : {}),
+  }));
+  const indexPath = resolveAccountIndexPath();
+  const snapshots = [
+    snapshotFile(indexPath),
+    ...accountArtifactPaths(accountId).map(snapshotFile),
+    ...cleanupIds.flatMap((id) => accountArtifactPaths(id).map(snapshotFile)),
+  ];
+
+  try {
+    saveWeixinAccount(accountId, {
+      token,
+      baseUrl: input.baseUrl,
+      userId,
+    });
+    const targetPaths = accountArtifactPaths(accountId);
+    for (const aliasId of aliasIds) {
+      const aliasPaths = accountArtifactPaths(aliasId);
+      for (let index = 1; index < aliasPaths.length; index += 1) {
+        if (fs.existsSync(aliasPaths[index]) && !fs.existsSync(targetPaths[index])) {
+          atomicWriteFile(targetPaths[index], fs.readFileSync(aliasPaths[index]));
+        }
+      }
+    }
+    ensureFrameworkAllowFromContains(accountId, userId);
+    for (const cleanupId of cleanupIds) {
+      clearWeixinAccount(cleanupId, { strict: true });
+    }
+    atomicWriteFile(indexPath, JSON.stringify([accountId], null, 2));
+  } catch (error) {
+    try {
+      restoreSnapshots(snapshots);
+    } catch (rollbackError) {
+      throw new Error(
+        `WeChat account replacement failed and rollback was incomplete: ${String(error)}; rollback: ${String(rollbackError)}`,
+        { cause: rollbackError },
+      );
+    }
+    throw error;
+  }
+
+  for (const cleanupId of cleanupIds) {
+    try {
+      onClearContextTokens?.(cleanupId);
+    } catch (error) {
+      logger.warn(
+        `replaceWeixinAccount: in-memory context cleanup failed account=${cleanupId}: ${String(error)}`,
+      );
+    }
+  }
+  logger.info(`replaceWeixinAccount: active=${accountId} replaced=${removedIds.length}`);
+  for (const listener of [...accountChangeListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      logger.warn(`replaceWeixinAccount: account-change listener failed: ${String(error)}`);
+    }
+  }
+  return { accountId, userId, replacedAccounts };
+}
+
+/**
+ * Remove all files associated with an account:
+ *   - accounts/{accountId}.json                  (credentials)
+ *   - accounts/{accountId}.sync.json             (getUpdates sync buf)
+ *   - accounts/{accountId}.context-tokens.json   (context tokens on disk)
+ *   - credentials/openclaw-weixin-{accountId}-allowFrom.json (authorized users)
+ */
+export function clearWeixinAccount(accountId: string, options: { strict?: boolean } = {}): void {
+  for (const filePath of accountArtifactPaths(accountId)) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if (options.strict) throw error;
+      logger.warn(`clearWeixinAccount: failed to remove ${filePath}: ${String(error)}`);
+    }
+  }
+}
+
+export function disconnectWeixinAccount(
+  accountId: string,
+  onClearContextTokens?: (accountId: string) => void,
+): { cleared: boolean; loggedOut: boolean } {
+  const normalizedId = normalizeAccountId(accountId);
+  if (!/^[A-Za-z0-9._@-]{1,160}$/.test(normalizedId) || normalizedId.includes("..")) {
+    throw new Error("A safe WeChat account ID is required");
+  }
+  const indexedIds = readStrictAccountIndex();
+  const removedIds = [...new Set([normalizedId, ...indexedIds.filter(
+    (id) => normalizeAccountId(id) === normalizedId,
+  )])];
+  const indexPath = resolveAccountIndexPath();
+  const snapshots = [
+    snapshotFile(indexPath),
+    ...removedIds.flatMap((id) => accountArtifactPaths(id).map(snapshotFile)),
+  ];
+  try {
+    for (const removedId of removedIds) clearWeixinAccount(removedId, { strict: true });
+    atomicWriteFile(indexPath, JSON.stringify(
+      indexedIds.filter((id) => normalizeAccountId(id) !== normalizedId), null, 2,
+    ));
+  } catch (error) {
+    restoreSnapshots(snapshots);
+    throw error;
+  }
+  for (const removedId of removedIds) {
+    try {
+      onClearContextTokens?.(removedId);
+    } catch (error) {
+      logger.warn(`disconnectWeixinAccount: context cleanup failed: ${String(error)}`);
+    }
+  }
+  for (const listener of [...accountChangeListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      logger.warn(`disconnectWeixinAccount: account-change listener failed: ${String(error)}`);
+    }
+  }
+  return { cleared: true, loggedOut: true };
 }
 
 /**
@@ -210,35 +485,85 @@ function resolveConfigPath(): string {
  * Read `routeTag` from openclaw.json (for callers without an `OpenClawConfig` object).
  * Checks per-account `channels.<id>.accounts[accountId].routeTag` first, then section-level
  * `channels.<id>.routeTag`. Matches `feat_weixin_extension` behavior; channel key is `"openclaw-weixin"`.
+ *
+ * The config is cached after the first read since routeTag does not change at runtime.
  */
-export function loadConfigRouteTag(accountId?: string): string | undefined {
+let cachedRouteTagSection: Record<string, unknown> | null | undefined;
+
+function loadRouteTagSection(): Record<string, unknown> | null {
+  if (cachedRouteTagSection !== undefined) return cachedRouteTagSection;
   try {
     const configPath = resolveConfigPath();
-    if (!fs.existsSync(configPath)) return undefined;
+    if (!fs.existsSync(configPath)) {
+      cachedRouteTagSection = null;
+      return null;
+    }
     const raw = fs.readFileSync(configPath, "utf-8");
     const cfg = JSON.parse(raw) as Record<string, unknown>;
     const channels = cfg.channels as Record<string, unknown> | undefined;
-    const section = channels?.["openclaw-weixin"] as Record<string, unknown> | undefined;
-    if (!section) return undefined;
-    if (accountId) {
-      const accounts = section.accounts as Record<string, Record<string, unknown>> | undefined;
-      const tag = accounts?.[accountId]?.routeTag;
-      if (typeof tag === "number") return String(tag);
-      if (typeof tag === "string" && tag.trim()) return tag.trim();
-    }
-    if (typeof section.routeTag === "number") return String(section.routeTag);
-    return typeof section.routeTag === "string" && section.routeTag.trim()
-      ? section.routeTag.trim()
-      : undefined;
+    const section = (channels?.["openclaw-weixin"] as Record<string, unknown>) ?? null;
+    cachedRouteTagSection = section;
+    return section;
   } catch {
-    return undefined;
+    cachedRouteTagSection = null;
+    return null;
   }
 }
 
+export function loadConfigRouteTag(accountId?: string): string | undefined {
+  const section = loadRouteTagSection();
+  if (!section) return undefined;
+  if (accountId) {
+    const accounts = section.accounts as Record<string, Record<string, unknown>> | undefined;
+    const tag = accounts?.[accountId]?.routeTag;
+    if (typeof tag === "number") return String(tag);
+    if (typeof tag === "string" && tag.trim()) return tag.trim();
+  }
+  if (typeof section.routeTag === "number") return String(section.routeTag);
+  return typeof section.routeTag === "string" && section.routeTag.trim()
+    ? section.routeTag.trim()
+    : undefined;
+}
+
 /**
- * No-op stub — config reload is now handled externally via `openclaw gateway restart`.
+ * Read `botAgent` from `channels.openclaw-weixin.botAgent` in openclaw.json.
+ * Returns the raw configured string (caller is responsible for sanitization)
+ * or undefined when not set. Reuses the cached channel section.
  */
-export async function triggerWeixinChannelReload(): Promise<void> {}
+export function loadConfigBotAgent(): string | undefined {
+  const section = loadRouteTagSection();
+  if (!section) return undefined;
+  const value = section.botAgent;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/**
+ * Bump `channels.openclaw-weixin.channelConfigUpdatedAt` in openclaw.json on each successful login
+ * so the gateway reloads config from disk (no empty `accounts: {}` placeholder).
+ */
+export async function triggerWeixinChannelReload(): Promise<boolean> {
+  try {
+    const { mutateConfigFile } = await import("openclaw/plugin-sdk/config-mutation");
+    await mutateConfigFile({
+      mutate(cfg) {
+        const channels = (cfg.channels ?? {}) as Record<string, unknown>;
+        const existing = (channels["openclaw-weixin"] as Record<string, unknown> | undefined) ?? {};
+        cfg.channels = {
+          ...channels,
+          "openclaw-weixin": {
+            ...existing,
+            channelConfigUpdatedAt: new Date().toISOString(),
+          },
+        };
+      },
+    });
+    logger.info("triggerWeixinChannelReload: wrote channel config to openclaw.json");
+    return true;
+  } catch (err) {
+    logger.warn(`triggerWeixinChannelReload: failed to update config: ${String(err)}`);
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Account resolution (merge config + stored credentials)
@@ -265,6 +590,8 @@ type WeixinAccountConfig = {
 
 type WeixinSectionConfig = WeixinAccountConfig & {
   accounts?: Record<string, WeixinAccountConfig>;
+  /** Written on each successful login; see triggerWeixinChannelReload. */
+  channelConfigUpdatedAt?: string;
 };
 
 /** List accountIds from the index file (written at QR login). */

@@ -40,7 +40,7 @@ If any condition fails, use local primitives.
 ## 4. Dialog Migration Priority
 
 Current order:
-1. `ModelSetupDialog` - already aligned with local primitive strategy.
+1. `ModelSetupDialog` - uses local `UiButton` for the four main onboarding/footer actions. Its current provider catalog, connection-only editor, inline layout, local/Copilot flows, and config mutation checks remain authoritative. Existing Element Plus inputs/selects and the current modal/region shell are retained until their full behavior and label associations have equivalent primitive coverage.
 2. `SettingsView` Add/Edit custom model dialogs - deferred as explicit TODO (no implementation change in this PR).
 3. `Integrity` dialog in `App.vue` - keep stable now, migrate later.
 4. `PermissionDialog` - keep business-first structure, only token/consistency improvements.
@@ -84,3 +84,11 @@ Why deferred:
 Exit criteria for enabling this TODO:
 - local dev run is stable and regression checklist can be executed end-to-end.
 - explicit reviewer sign-off for dialog behavior parity (open/close, form submit, keyboard paths).
+
+## 8. Storybook and Integration Boundary
+
+- Storybook 10.6.5 is used with the current Vite 8 toolchain; the original Storybook 8 framework peer range only supports Vite 4–6.
+- Docs and accessibility addons are explicit. Controls/actions come from Storybook core; the old essentials/interactions bundles are not carried forward.
+- `UiInput` and `UiDialog` remain component examples and future migration building blocks. Their stories are not evidence of full product accessibility, focus management, or Electron behavior.
+- The six F35 activation checks are ported to the current provider fixtures alongside every existing model setup test. Empty keys now follow the current disabled-until-valid-catalog contract, rather than the older preset-only validation path.
+- Main's App, ChatView and GatewayLoading implementations are preserved, including native window controls, startup diagnostics, and permission/integrity lifecycles. Preview-only swallowed errors and removed Studio lifecycle code are not reintroduced.

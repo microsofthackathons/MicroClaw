@@ -1,14 +1,17 @@
 # Build outputs and dependency directories
 **/node_modules/
 **/dist/
+**/storybook-static/
 **/release/
 **/coverage/
 **/build/
+**/obj/
 desktop/release/
 desktop/dist/
 build/
 
 # Generated/vendored content
+third_party/openclaw-windows-node/source/
 **/*.min.js
 **/*.min.css
 **/package-lock.json
@@ -50,9 +53,8 @@ skills/**/_meta.json
 # Studio backend test fixtures (if any get added later)
 desktop/studio-backend/data/
 
-# Plugin docs and changelog that have specific formatting
-plugins/openclaw-weixin/CHANGELOG*.md
-plugins/openclaw-weixin/README*.md
+# Mirrored third-party plugin source with targeted MicroClaw SDK compatibility patches.
+plugins/openclaw-weixin/
 
 # Top-level legal / generated text
 LICENSE

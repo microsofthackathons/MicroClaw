@@ -12,8 +12,20 @@ const router = createRouter({
       redirect: "/chat",
     },
     {
+      path: "/studio",
+      redirect: "/chat",
+    },
+    {
+      path: "/skills",
+      redirect: "/settings/skills",
+    },
+    {
       path: "/chat/market",
-      name: "agent-market",
+      redirect: "/chat/catalog",
+    },
+    {
+      path: "/chat/catalog",
+      name: "agent-catalog",
       component: () => import("@/views/AgentMarketView.vue"),
     },
     {
@@ -38,8 +50,7 @@ const router = createRouter({
     },
     {
       path: "/phone",
-      name: "phone",
-      component: () => import("@/views/ChannelsView.vue"),
+      redirect: "/settings/channels",
     },
   ],
 });

@@ -1,7 +1,10 @@
 <template>
   <label
     class="ui-input"
-    :class="[`ui-input--${size}`, { 'ui-input--invalid': invalid, 'ui-input--toggle': showPassword } ]"
+    :class="[
+      `ui-input--${size}`,
+      { 'ui-input--invalid': invalid, 'ui-input--toggle': showPassword },
+    ]"
   >
     <span v-if="$slots.label" class="ui-input__label"><slot name="label" /></span>
     <span class="ui-input__wrap">

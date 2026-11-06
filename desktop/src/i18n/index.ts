@@ -7,10 +7,16 @@
 import zhCN from "./zh-CN";
 import enUS from "./en-US";
 
+export type SupportedLocale = "zh-CN" | "en-US";
+
 const messages: Record<string, Record<string, string>> = {
   "zh-CN": zhCN,
   "en-US": enUS,
 };
+
+export function resolveSupportedLocale(osLocale: string): SupportedLocale {
+  return osLocale.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+}
 
 export function t(lang: string, key: string): string {
   return messages[lang]?.[key] ?? messages["en-US"]?.[key] ?? key;

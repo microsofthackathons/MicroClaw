@@ -1,0 +1,238 @@
+import { createPinia, setActivePinia } from "pinia";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setLocale } from "@/i18n";
+import { useAgentStore } from "./agents";
+
+describe("agent store", () => {
+  const agentsList = vi.fn();
+  const agentsAdd = vi.fn();
+  const agentsRemove = vi.fn();
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    setLocale("en-US");
+    agentsList.mockReset().mockResolvedValue({ agents: [{ id: "main", name: "Assistant" }] });
+    agentsAdd.mockReset();
+    agentsRemove.mockReset();
+    window.openclaw = {
+      agents: {
+        list: agentsList,
+        add: agentsAdd,
+        remove: agentsRemove,
+      },
+    } as unknown as typeof window.openclaw;
+  });
+
+  it("shows only the OpenClaw roster in the sidebar", async () => {
+    const store = useAgentStore();
+
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
+
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "custom", name: "Custom Agent" },
+      ],
+    });
+    await store.fetchAgents();
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "custom"]);
+  });
+
+  it("hides legacy compatibility aliases from the sidebar", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "office-artisan", name: "Office Artisan" },
+        { id: "painter", name: "Office Artisan" },
+        { id: "dr-pulse", name: "Dr. Pulse" },
+        { id: "master", name: "Dr. Pulse" },
+        { id: "market-sentinel", name: "Market Sentinel" },
+        { id: "leopard", name: "Market Sentinel" },
+        { id: "creative-muse", name: "Creative Muse" },
+        { id: "singer", name: "Creative Muse" },
+      ],
+    });
+
+    await store.fetchAgents();
+
+    expect(store.agents.map((agent) => agent.id)).toEqual([
+      "main",
+      "office-artisan",
+      "dr-pulse",
+      "market-sentinel",
+      "creative-muse",
+    ]);
+  });
+
+  it("adds Master Archive to OpenClaw before showing it in the sidebar", async () => {
+    const store = useAgentStore();
+    const marketAgent = store.marketAgents.find((entry) => entry.id === "master-archive");
+
+    expect(marketAgent).toMatchObject({
+      name: "Master Archive",
+      isAdded: false,
+      tags: ["File Organization", "Batch Conversion", "Document Digests"],
+    });
+    expect(marketAgent?.quickTasks).toHaveLength(3);
+
+    agentsAdd.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+    await store.addAgent("master-archive");
+
+    expect(agentsAdd).toHaveBeenCalledWith("master-archive");
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "master-archive"]);
+    expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(true);
+  });
+
+  it("presents the Code Geek engineering scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "code-geek")).toMatchObject({
+      name: "Code Geek",
+      description: "Expert engineering for app prototypes, code audits, and build failures",
+      tags: ["App Prototyping", "Code Audits", "Build Diagnostics"],
+      isAdded: false,
+    });
+  });
+
+  it("presents the Office Artisan validated Office scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "office-artisan")).toMatchObject({
+      name: "Office Artisan",
+      description:
+        "Validated Word reports, Excel analysis & PowerPoint presentations from source material",
+      tags: ["Word Reports", "Excel Analysis", "Presentation Decks"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "office-artisan")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Turn these materials into a formal Word report" }),
+      expect.objectContaining({ title: "Analyze this workbook and create a chart summary" }),
+      expect.objectContaining({ title: "Turn this report into a presentation deck" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "painter")).toBe(false);
+  });
+
+  it("presents the Intel Analyst research scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "intel-analyst")).toMatchObject({
+      name: "Intel Analyst",
+      description: "Personal intelligence briefs, trend monitoring & evidence-based research",
+      tags: ["Morning Briefs", "Trend Monitoring", "Deep Research"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.some((entry) => entry.id === "growth-hacker")).toBe(false);
+  });
+
+  it("presents the Dr. Pulse safety-first Windows scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "dr-pulse")).toMatchObject({
+      name: "Dr. Pulse",
+      description: "Evidence-led Windows diagnostics, guided tuning & scenario preparation",
+      tags: ["System Health", "Guided Tuning", "Scenario Prep"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "dr-pulse")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Diagnose my Windows PC before proposing repairs" }),
+      expect.objectContaining({ title: "Tune this Windows setting or peripheral" }),
+      expect.objectContaining({ title: "Prepare my PC for deep work or a video call" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "master")).toBe(false);
+  });
+
+  it("presents the Market Sentinel non-advisory financial scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "market-sentinel")).toMatchObject({
+      name: "Market Sentinel",
+      description:
+        "Sourced A-share briefs, filing tracking & watchlist monitoring without investment advice",
+      tags: ["Market Briefs", "Filing Tracker", "Watchlist Signals"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.find((entry) => entry.id === "market-sentinel")?.quickTasks).toEqual([
+      expect.objectContaining({ title: "Prepare today's A-share market brief" }),
+      expect.objectContaining({ title: "Track earnings and company announcements" }),
+      expect.objectContaining({ title: "Monitor my watchlist and indicator changes" }),
+    ]);
+    expect(store.marketAgents.some((entry) => entry.id === "leopard")).toBe(false);
+  });
+
+  it("presents the Creative Muse platform content scenarios", () => {
+    const store = useAgentStore();
+
+    expect(store.marketAgents.find((entry) => entry.id === "creative-muse")).toMatchObject({
+      name: "Creative Muse",
+      description:
+        "A Rednote studio from topic ideas and material kits to publish-ready visual packages",
+      tags: ["Topic Discovery", "Material Kits", "Visual Packages"],
+      isAdded: false,
+    });
+    expect(store.marketAgents.some((entry) => entry.id === "singer")).toBe(false);
+  });
+
+  it("keeps the roster unchanged when Add fails", async () => {
+    const store = useAgentStore();
+    agentsAdd.mockRejectedValueOnce(new Error("Gateway restart failed"));
+
+    await expect(store.addAgent("master-archive")).rejects.toThrow("Gateway restart failed");
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
+    expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(false);
+  });
+
+  it("removes an agent and selects main when the removed agent was active", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+    await store.fetchAgents();
+    store.selectAgent("master-archive");
+    agentsRemove.mockResolvedValueOnce({
+      agents: [{ id: "main", name: "Assistant" }],
+    });
+
+    await store.removeAgent("master-archive");
+
+    expect(agentsRemove).toHaveBeenCalledWith("master-archive");
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main"]);
+    expect(store.currentAgentId).toBe("main");
+    expect(store.marketAgents.find((agent) => agent.id === "master-archive")?.isAdded).toBe(false);
+  });
+
+  it("keeps the installed agent when Remove fails", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [
+        { id: "main", name: "Assistant" },
+        { id: "master-archive", name: "Master Archive" },
+      ],
+    });
+    await store.fetchAgents();
+    agentsRemove.mockRejectedValueOnce(new Error("Gateway restart failed"));
+
+    await expect(store.removeAgent("master-archive")).rejects.toThrow("Gateway restart failed");
+    expect(store.agents.map((agent) => agent.id)).toEqual(["main", "master-archive"]);
+  });
+
+  it("preserves the last real roster when refresh fails", async () => {
+    const store = useAgentStore();
+    agentsList.mockResolvedValueOnce({
+      agents: [{ id: "custom", name: "Custom Agent" }],
+    });
+    await store.fetchAgents();
+    agentsList.mockRejectedValueOnce(new Error("Gateway not connected"));
+    await store.fetchAgents();
+
+    expect(store.agents.map((agent) => agent.id)).toEqual(["custom"]);
+  });
+});

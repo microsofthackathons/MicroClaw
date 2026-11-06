@@ -1,29 +1,32 @@
 <template>
-  <div class="chat-messages" :class="{ 'chat-messages--studio-mode': studioMode }">
+  <div class="chat-messages">
     <!-- Loading (only shown on initial load, not background refresh) -->
     <div v-if="chatStore.loading && chatStore.messages.length === 0" class="chat-empty">
       <div class="chat-empty__hint">{{ t("chat.loading") }}</div>
     </div>
 
     <!-- Empty state -->
-    <div v-else-if="chatStore.messages.length === 0 && !chatStore.streaming" class="chat-empty">
-      <template v-if="!studioMode">
-        <div class="chat-empty__logo">
-          <svg
-            width="32"
-            height="32"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#fff"
-            stroke-width="2.2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-          </svg>
-        </div>
-        <div class="chat-empty__title">MicroClaw</div>
-      </template>
+    <div
+      v-else-if="
+        chatStore.messages.length === 0 && !chatStore.streaming && !chatStore.activityStatus
+      "
+      class="chat-empty"
+    >
+      <div class="chat-empty__logo">
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#fff"
+          stroke-width="2.2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+        </svg>
+      </div>
+      <div class="chat-empty__title">MicroClaw</div>
       <div class="chat-empty__hint">{{ t("chat.emptyHint") }}</div>
     </div>
 
@@ -168,13 +171,17 @@
           </div>
 
           <div
-            v-for="(msg, idx) in group.messages"
+            v-for="{ msg, idx, segments } in getVisibleMessages(group)"
             :key="group.key + '-' + idx"
             class="chat-bubble"
+            :data-perf-run-id="performanceEnabled ? msg.performanceRunId : undefined"
             :class="[
               group.normalizedRole,
+              {
+                'chat-bubble--image-only':
+                  group.normalizedRole === 'user' && isImageOnlyMessage(msg),
+              },
               { editable: group.normalizedRole === 'user' && !isEditingMessage(group, idx) },
-              { 'hidden-msg': group.normalizedRole === 'assistant' && isToolMessage(msg) },
             ]"
             @dblclick.prevent="
               group.normalizedRole === 'user' &&
@@ -190,27 +197,7 @@
                 <!-- Thinking/reasoning content — skip per-message rendering; merged at group level below -->
                 <!-- Normal text content -->
                 <div class="chat-content-wrapper">
-                  <button class="chat-copy-btn" @click="copyMessage(getMessageText(msg))">
-                    {{ justCopied ? "&#x2713;" : ""
-                    }}<svg
-                      v-if="!justCopied"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
-                  </button>
-                  <template
-                    v-for="(seg, si) in getMessageSegments(msg, group.key + '-' + idx)"
-                    :key="si"
-                  >
+                  <template v-for="(seg, si) in segments" :key="si">
                     <div
                       v-if="seg.type === 'intermediate'"
                       class="context-panel"
@@ -286,14 +273,61 @@
                   </button>
                 </div>
               </div>
-              <div v-else class="chat-text chat-text--user">
-                {{ getMessageText(msg) }}
-              </div>
+              <template v-else>
+                <ChatAttachments
+                  v-if="chatStore.getMessageAttachments(msg).length"
+                  class="chat-message-attachments"
+                  :attachments="chatStore.getMessageAttachments(msg)"
+                />
+                <div v-if="getMessageText(msg)" class="chat-text chat-text--user">
+                  {{ getMessageText(msg) }}
+                </div>
+              </template>
             </template>
+            <button
+              v-if="!isToolMessage(msg) && !isEditingMessage(group, idx)"
+              class="chat-copy-btn"
+              :title="
+                copiedMessageKey === group.key + '-' + idx ? t('chat.copied') : t('chat.copy')
+              "
+              :aria-label="
+                copiedMessageKey === group.key + '-' + idx ? t('chat.copied') : t('chat.copy')
+              "
+              @click.stop="copyMessage(getMessageText(msg), group.key + '-' + idx)"
+              @dblclick.stop
+            >
+              <span v-if="copiedMessageKey === group.key + '-' + idx">&#x2713;</span>
+              <svg
+                v-else
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
     </template>
+
+    <div
+      v-if="chatStore.activityStatus"
+      class="chat-activity"
+      data-testid="chat-activity"
+      :data-phase="chatStore.activityStatus"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="exec-panel__spinner" aria-hidden="true"></span>
+      {{ t(activityLabel) }}
+    </div>
 
     <!-- Streaming: single group with one avatar -->
     <div v-if="chatStore.streaming" class="chat-group assistant">
@@ -347,7 +381,7 @@
             <div v-if="execPanelOpen" class="exec-panel__body">
               <div
                 v-for="tool in chatStore.streamToolCalls"
-                :key="tool.id"
+                :key="`${tool.kind ?? 'tool'}:${tool.id}`"
                 class="exec-step"
                 :class="{ done: tool.done, 'exec-step--error': tool.isError }"
               >
@@ -416,14 +450,45 @@
         </div>
 
         <!-- Text output (hidden entirely when plan progress panel is visible during streaming) -->
-        <div v-if="displayStreamText && !streamHasPlan" class="chat-bubble assistant streaming">
+        <div
+          v-if="displayStreamText && !streamHasPlan"
+          class="chat-bubble assistant streaming"
+          :data-perf-run-id="performanceEnabled ? chatStore.chatRunId : undefined"
+        >
           <div class="chat-text" v-html="renderMarkdown(displayStreamText)"></div>
+          <button
+            class="chat-copy-btn"
+            :title="copiedMessageKey === 'streaming' ? t('chat.copied') : t('chat.copy')"
+            :aria-label="copiedMessageKey === 'streaming' ? t('chat.copied') : t('chat.copy')"
+            @click.stop="copyMessage(displayStreamText, 'streaming')"
+          >
+            <span v-if="copiedMessageKey === 'streaming'">&#x2713;</span>
+            <svg
+              v-else
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>
 
     <!-- Error -->
-    <div v-if="chatStore.lastError" class="chat-error" role="alert">
+    <div
+      v-if="displayedError"
+      class="chat-error"
+      :class="{ 'chat-error--waiting': isWaiting }"
+      :role="isWaiting ? 'status' : 'alert'"
+    >
       <div class="chat-error__header">
         <svg
           class="chat-error__icon"
@@ -441,18 +506,22 @@
           <line x1="12" y1="16" x2="12.01" y2="16" />
         </svg>
         <span class="chat-error__title">{{
-          t("chat.error." + chatStore.lastError.code + ".title")
+          t("chat.error." + displayedError.code + ".title")
         }}</span>
       </div>
       <div class="chat-error__body">
-        {{ t("chat.error." + chatStore.lastError.code + ".hint") }}
+        {{ t("chat.error." + displayedError.code + ".hint") }}
       </div>
-      <details v-if="chatStore.lastError.raw" class="chat-error__details">
+      <details v-if="displayedError.raw" class="chat-error__details">
         <summary>{{ t("chat.error.showDetails") }}</summary>
-        <pre class="chat-error__raw">{{ chatStore.lastError.raw }}</pre>
+        <pre class="chat-error__raw">{{ displayedError.raw }}</pre>
       </details>
-      <div class="chat-error__actions">
-        <button class="chat-error__btn chat-error__btn--primary" @click="openModelSettings">
+      <div v-if="displayedError.code !== 'agent_initializing'" class="chat-error__actions">
+        <button
+          v-if="!isWaiting"
+          class="chat-error__btn chat-error__btn--primary"
+          @click="openModelSettings"
+        >
           {{ t("chat.error.openSettings") }}
         </button>
         <button class="chat-error__btn" @click="chatStore.lastError = null">
@@ -466,7 +535,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useChatStore } from "@/stores/chat";
+import { useChatStore, type ChatMessage } from "@/stores/chat";
+import { useAgentStore } from "@/stores/agents";
 import {
   renderMarkdown,
   stripAnsi,
@@ -481,18 +551,31 @@ import {
   stripPlanMarkers,
 } from "@/composables/usePlanProgress";
 import PlanProgressPanel from "./PlanProgress.vue";
+import ChatAttachments from "./ChatAttachments.vue";
 import searchGif from "@/assets/openclaw_search_preview_transparent.gif";
 import bookGif from "@/assets/book.gif";
 import binocularsGif from "@/assets/binoculars.gif";
 import mapGif from "@/assets/map.gif";
-import avatarImg from "@/assets/normal.png";
-
-defineProps<{
-  studioMode?: boolean;
-}>();
+import defaultAvatar from "@/assets/main-avatar.png";
 
 const chatStore = useChatStore();
+const performanceEnabled = Boolean(window.openclaw.features?.performance);
+const agentStore = useAgentStore();
 const router = useRouter();
+
+const displayedError = computed(() => chatStore.agentPreparationError ?? chatStore.lastError);
+const isWaiting = computed(
+  () =>
+    displayedError.value?.code === "response_delayed" ||
+    displayedError.value?.code === "agent_initializing",
+);
+
+/** Avatar of the agent bound to the current session (falls back to the default). */
+const avatarImg = computed(() => {
+  const agentId = chatStore.currentSessionAgentId;
+  const agent = agentStore.agents.find((a) => a.id === agentId);
+  return agent?.avatar || defaultAvatar;
+});
 
 function openModelSettings() {
   router.push({ name: "settings", params: { section: "models" } });
@@ -500,7 +583,7 @@ function openModelSettings() {
 
 const execPanelOpen = ref(true);
 const openHistoryPanels = ref(new Set<string>());
-const justCopied = ref(false);
+const copiedMessageKey = ref<string | null>(null);
 
 // ── Edit-message state ──
 const editingGroupKey = ref<string | null>(null);
@@ -579,6 +662,15 @@ watch(
 );
 
 const hasRunningTools = computed(() => chatStore.streamToolCalls.some((t) => !t.done));
+const activityLabel = computed(() =>
+  chatStore.activityStatus === "waiting-approval"
+    ? "chat.activityWaitingApproval"
+    : chatStore.activityStatus === "running-tool"
+      ? "chat.activityRunningTool"
+      : chatStore.activityStatus === "connection-unknown"
+        ? "chat.activityConnectionUnknown"
+        : "chat.activityWorking",
+);
 
 // ── Plan progress for history messages ──
 const _historyPlanCache = new Map<string, ReturnType<typeof parsePlanProgress>>();
@@ -615,6 +707,15 @@ function getHistoryPlan(group: MessageGroup) {
 function getMessageText(msg: unknown): string {
   const text = chatStore.extractText(msg) || "";
   return stripAnsi(collapseInlineJson(stripPlanMarkers(text)));
+}
+
+function isImageOnlyMessage(msg: unknown): boolean {
+  const attachments = chatStore.getMessageAttachments(msg);
+  return (
+    !getMessageText(msg) &&
+    attachments.length > 0 &&
+    attachments.every((attachment) => attachment.type === "image")
+  );
 }
 
 /** Wrap top-level inline JSON objects/arrays in a collapsible <details> block. */
@@ -826,7 +927,18 @@ function isHistoryPanelOpen(key: string): boolean {
   return openHistoryPanels.value.has(key);
 }
 
-function getMessageSegments(msg: unknown, _key: string): MessageSegment[] {
+function getVisibleMessages(
+  group: MessageGroup,
+): { msg: ChatMessage; idx: number; segments: MessageSegment[] }[] {
+  return group.messages.flatMap((msg, idx) => {
+    if (group.normalizedRole === "user") return [{ msg, idx, segments: [] }];
+    if (isToolMessage(msg)) return [];
+    const segments = getMessageSegments(msg).filter((segment) => segment.content.trim());
+    return segments.length > 0 ? [{ msg, idx, segments }] : [];
+  });
+}
+
+function getMessageSegments(msg: unknown): MessageSegment[] {
   const m = msg as Record<string, unknown>;
 
   if (Array.isArray(m.content)) {
@@ -861,11 +973,13 @@ function getGroupThinkingBlocks(group: MessageGroup): string[] {
   return parts;
 }
 
-async function copyMessage(content: string) {
+async function copyMessage(content: string, messageKey: string) {
   try {
     await navigator.clipboard.writeText(content);
-    justCopied.value = true;
-    setTimeout(() => (justCopied.value = false), 1500);
+    copiedMessageKey.value = messageKey;
+    setTimeout(() => {
+      if (copiedMessageKey.value === messageKey) copiedMessageKey.value = null;
+    }, 1500);
   } catch {
     /* Clipboard not available */
   }
@@ -902,7 +1016,7 @@ function cancelEdit() {
 
 async function confirmEdit() {
   const text = editText.value.trim();
-  if (!text || !chatStore.wsConnected) return;
+  if (!text || !chatStore.wsConnected || chatStore.sending || chatStore.streaming) return;
   cancelEdit();
   await chatStore.sendMessage(text);
 }
@@ -922,7 +1036,7 @@ function handleEditKeydown(e: KeyboardEvent) {
 .chat-group {
   display: flex;
   align-items: flex-start;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
   gap: 10px;
 }
 
@@ -943,34 +1057,72 @@ function handleEditKeydown(e: KeyboardEvent) {
 .chat-group-messages {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-width: min(720px, 85%);
+  gap: 8px;
+  min-width: 0;
+  max-width: min(720px, calc(100% - 80px));
 }
 
 .chat-group.user .chat-group-messages {
   align-items: flex-end;
+  max-width: min(720px, calc(100% - 40px));
 }
 
 /* ── Bubble ── */
 .chat-bubble {
   position: relative;
   display: inline-block;
+  align-self: flex-start;
+  width: fit-content;
+  min-width: 0;
   max-width: 100%;
+  margin: 0;
   word-wrap: break-word;
   transition: border-color 0.15s;
 }
 
+.chat-bubble::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 40px;
+}
+
 /* User bubble: dark rounded pill */
 .chat-bubble.user {
+  align-self: flex-end;
   background: var(--msg-user-bg);
   color: var(--msg-user-text);
-  border-radius: 18px;
+  border-radius: 20px;
   padding: 12px 18px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.chat-bubble.user::after {
+  right: 100%;
+  left: auto;
 }
 
 .chat-bubble.user .chat-text--user {
   cursor: default;
+}
+
+.chat-bubble.user .chat-message-attachments {
+  margin-bottom: 8px;
+}
+
+.chat-bubble.user.chat-bubble--image-only {
+  padding: 0;
+  background: transparent;
+  border-radius: 14px;
+}
+
+.chat-bubble.user.chat-bubble--image-only .chat-message-attachments {
+  margin-bottom: 0;
+}
+
+.chat-bubble.user.chat-bubble--image-only.editable:hover {
+  filter: none;
 }
 
 .chat-bubble.user.editable {
@@ -979,7 +1131,6 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 .chat-bubble.user.editable:hover {
   filter: brightness(1.15);
-  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.15);
 }
 
 /* ── Edit mode ── */
@@ -1061,9 +1212,11 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 /* Text content card inside assistant bubble */
 .chat-bubble.assistant .chat-text {
+  width: fit-content;
+  max-width: 100%;
   background: var(--bg-assistant-card);
   padding: 12px 16px;
-  border-radius: 14px;
+  border-radius: 20px;
 }
 
 .chat-bubble.assistant.streaming {
@@ -1071,41 +1224,74 @@ function handleEditKeydown(e: KeyboardEvent) {
   padding-left: 0;
 }
 
-/* Hide tool-related messages (rendered in group-level exec panel) */
-.chat-bubble.hidden-msg {
-  display: none;
-}
-
 /* ── Copy button ── */
 .chat-content-wrapper {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.chat-content-wrapper > .context-panel {
+  align-self: stretch;
 }
 
 .chat-copy-btn {
   position: absolute;
-  top: auto;
-  bottom: 0;
-  right: 0;
+  top: 50%;
+  left: calc(100% + 6px);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  transform: translateY(-50%);
   border: none;
   background: transparent;
   color: var(--text-muted);
-  border-radius: 4px;
-  padding: 2px 6px;
+  border-radius: 50%;
+  padding: 0;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s;
+  transition:
+    opacity 0.12s,
+    background-color 0.12s;
 }
 
-.chat-content-wrapper:hover .chat-copy-btn {
+.chat-bubble.user > .chat-copy-btn {
+  right: calc(100% + 6px);
+  left: auto;
+}
+
+.chat-bubble:hover > .chat-copy-btn,
+.chat-bubble:focus-within > .chat-copy-btn,
+.chat-copy-btn:hover,
+.chat-copy-btn:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 
 .chat-copy-btn:hover {
   color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.chat-copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (hover: none) {
+  .chat-copy-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* ── Chat text / Markdown ── */
@@ -1293,6 +1479,13 @@ function handleEditKeydown(e: KeyboardEvent) {
   gap: 8px;
   color: var(--danger);
   font-weight: 600;
+}
+.chat-error--waiting {
+  background: rgba(74, 144, 217, 0.06);
+  border-color: rgba(74, 144, 217, 0.2);
+}
+.chat-error--waiting .chat-error__header {
+  color: var(--text-secondary);
 }
 .chat-error__icon {
   flex-shrink: 0;
@@ -1490,6 +1683,20 @@ function handleEditKeydown(e: KeyboardEvent) {
   border-radius: 50%;
   animation: exec-spin 0.8s linear infinite;
   margin-left: auto;
+}
+
+.chat-activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px 44px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chat-activity .exec-panel__spinner {
+  margin-left: 0;
+  flex-shrink: 0;
 }
 
 @keyframes exec-spin {
@@ -1759,180 +1966,5 @@ function handleEditKeydown(e: KeyboardEvent) {
 .thinking-block__text :deep(ul) {
   margin: 2px 0;
   padding-left: 1.2em;
-}
-
-/* ══════════════════════════════════════════
-   Compact mode overrides (Studio overlay)
-   ══════════════════════════════════════════ */
-
-.chat-messages--studio-mode {
-  font-family: "Cascadia Code", "Consolas", monospace;
-}
-
-.chat-messages--studio-mode .chat-group {
-  margin-bottom: 8px;
-}
-
-.chat-messages--studio-mode .chat-group-messages {
-  max-width: 95%;
-}
-
-.chat-messages--studio-mode .chat-bubble.user {
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: rgba(59, 93, 138, 0.6);
-  border: 1px solid rgba(90, 130, 180, 0.4);
-  color: #e0eaff;
-  box-shadow: none;
-}
-
-.chat-messages--studio-mode .chat-bubble.assistant {
-  padding: 4px 0;
-  font-size: 12px;
-}
-
-.chat-messages--studio-mode .chat-bubble.assistant .chat-text {
-  background: rgba(20, 24, 38, 0.85);
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(80, 90, 120, 0.4);
-}
-
-.chat-messages--studio-mode .chat-bubble.assistant.streaming {
-  border-left-width: 2px;
-  padding-left: 8px;
-}
-
-.chat-messages--studio-mode .chat-text {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #d5ddf3;
-}
-
-.chat-messages--studio-mode .chat-group.user .chat-text {
-  color: #e0eaff;
-}
-
-.chat-messages--studio-mode .chat-text :deep(pre) {
-  background: rgba(0, 0, 0, 0.3);
-  padding: 6px 8px;
-  font-size: 11px;
-  border: 1px solid rgba(80, 90, 110, 0.3);
-}
-
-.chat-messages--studio-mode .chat-text :deep(code) {
-  font-size: 11px;
-  font-family: "Cascadia Code", "Consolas", monospace;
-}
-
-.chat-messages--studio-mode .chat-text :deep(p) {
-  margin: 4px 0;
-}
-
-.chat-messages--studio-mode .chat-text :deep(p:first-child) {
-  margin-top: 0;
-}
-
-.chat-messages--studio-mode .chat-text :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.chat-messages--studio-mode .chat-text :deep(ul),
-.chat-messages--studio-mode .chat-text :deep(ol) {
-  padding-left: 1.5em;
-  margin: 4px 0 8px;
-}
-
-.chat-messages--studio-mode .chat-copy-btn {
-  display: none;
-}
-
-.chat-messages--studio-mode .chat-empty {
-  padding-bottom: 20px;
-}
-
-.chat-messages--studio-mode .chat-empty__hint {
-  font-size: 12px;
-  color: #6b7a99;
-}
-
-.chat-messages--studio-mode .exec-panel {
-  border-radius: 6px;
-}
-
-.chat-messages--studio-mode .exec-panel__header {
-  padding: 6px 10px;
-}
-
-.chat-messages--studio-mode .exec-panel__title {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .exec-panel__count {
-  font-size: 10px;
-}
-
-.chat-messages--studio-mode .exec-panel__body {
-  padding: 2px 10px 8px;
-}
-
-.chat-messages--studio-mode .exec-step {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .exec-step__name {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .exec-step__meta {
-  font-size: 10px;
-  padding-left: 22px;
-}
-
-.chat-messages--studio-mode .exec-step__result {
-  font-size: 9px;
-  padding-left: 22px;
-  max-height: 120px;
-}
-
-.chat-messages--studio-mode .context-panel {
-  border-radius: 6px;
-}
-
-.chat-messages--studio-mode .context-panel__header {
-  padding: 6px 10px;
-}
-
-.chat-messages--studio-mode .context-panel__title {
-  font-size: 11px;
-}
-
-.chat-messages--studio-mode .context-panel__body {
-  padding: 6px 10px 8px;
-}
-
-.chat-messages--studio-mode .context-panel__text {
-  font-size: 11px;
-  max-height: 200px;
-}
-
-/* Compact reading dots */
-.chat-messages--studio-mode .chat-reading-dots span {
-  width: 5px;
-  height: 5px;
-  background: #8899bb;
-}
-
-/* Compact edit */
-.chat-messages--studio-mode .chat-edit-input {
-  font-size: 12px;
-  padding: 6px 8px;
-  border-radius: 6px;
-}
-
-.chat-messages--studio-mode .chat-edit-btn {
-  font-size: 11px;
-  padding: 3px 10px;
 }
 </style>

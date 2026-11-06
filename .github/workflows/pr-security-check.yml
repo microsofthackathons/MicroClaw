@@ -6,7 +6,7 @@
 #
 # Covers all three language stacks:
 #   - JavaScript / TypeScript (Electron + Vue)
-#   - C# / .NET 9 (AppContainerLauncher)
+#   - C# / .NET (native Windows Node + MXC helpers)
 #   - Python (Deployer / Installer)
 #
 # Each job only runs when its relevant files are changed (path filtering).
@@ -40,8 +40,8 @@ jobs:
       csharp: ${{ steps.filter.outputs.csharp }}
       python: ${{ steps.filter.outputs.python }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -52,8 +52,10 @@ jobs:
               - 'skills/**'
               - 'plugins/**'
             csharp:
-              - 'appcontainer/**'
-              - 'MicroClaw.sln'
+              - 'windows-node-host/**'
+              - 'windows-node-host.Tests/**'
+              - 'mxc-host-prep.Tests/**'
+              - 'third_party/mxc-host-prep-patch/**'
             python:
               - 'deployer/**'
               - 'requirements.txt'
@@ -72,12 +74,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 26
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
 
       # Install dependencies
       - name: Install root dependencies
@@ -114,7 +116,7 @@ jobs:
         working-directory: desktop/renderer
         run: npm run test
 
-  # ── C# / .NET 9 ────────────────────────────────────────────────
+  # ── C# / .NET 10 ──────────────────────────────────────────────
   security-and-build-csharp:
     name: C# - Audit & Build
     needs: changes
@@ -123,21 +125,31 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup .NET 9 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          dotnet-version: "9.0.x"
+          submodules: recursive
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.0.x"
 
       - name: Restore NuGet packages
-        run: dotnet restore appcontainer/AppContainerLauncher.csproj
+        run: |
+          dotnet restore windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
+          dotnet restore mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
       # Security: check for known vulnerable NuGet packages
       - name: Check for vulnerable NuGet packages
         shell: pwsh
         run: |
-          $output = dotnet list appcontainer/AppContainerLauncher.csproj package --vulnerable --include-transitive 2>&1
+          $output = dotnet list windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj package --vulnerable --include-transitive --no-restore 2>&1
+          Write-Host $output
+          if ($output -match "has the following vulnerable packages") {
+            Write-Host "::error::Vulnerable NuGet packages detected!"
+            exit 1
+          }
+          $output = dotnet list mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj package --vulnerable --include-transitive --no-restore 2>&1
           Write-Host $output
           if ($output -match "has the following vulnerable packages") {
             Write-Host "::error::Vulnerable NuGet packages detected!"
@@ -146,8 +158,11 @@ jobs:
           Write-Host "No vulnerable NuGet packages found."
 
       # Build
-      - name: Build AppContainerLauncher
-        run: dotnet build appcontainer/AppContainerLauncher.csproj -c Release --no-restore
+      - name: Test bundled Windows Node host
+        run: dotnet test windows-node-host.Tests/MicroClaw.WindowsNodeHost.Tests.csproj -c Release --no-restore -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
+
+      - name: Test MicroClaw MXC host-prep patch
+        run: dotnet test mxc-host-prep.Tests/MicroClaw.MxcHostPrep.Tests.csproj -c Release --no-restore -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false
 
   # ── Python ──────────────────────────────────────────────────────
   security-check-python:
@@ -158,10 +173,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.x"
 

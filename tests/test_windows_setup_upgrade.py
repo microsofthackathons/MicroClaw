@@ -1,0 +1,3164 @@
+import base64
+import json
+import os
+import platform
+import subprocess
+import sys
+import tempfile
+import unittest
+import unittest.mock
+import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+from deployer.openclaw_upgrade import UpgradeBackupMode, UpgradePhase, process_started_at
+from deployer.openclaw_version import NODE_FALLBACK_VERSION, OPENCLAW_TARGET_VERSION
+from deployer.uninstaller_bundle import UninstallerBundleError
+from deployer.windows_setup import (
+    _OPENCLAW_RPC_TIMEOUT,
+    MIRROR_HUAWEI,
+    MIRROR_NPMMIRROR,
+    MIRROR_OFFICIAL,
+    MIRRORS,
+    ActiveGateway,
+    ActiveInstallation,
+    NodeInstallBlocked,
+    WeixinPluginPolicy,
+    WindowsSetup,
+    _ProcessInfo,
+    _WindowsKillOnCloseJob,
+)
+
+
+class _Config:
+    def __init__(self, values=None):
+        self.values = values or {}
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+class _Log:
+    def __getattr__(self, _name):
+        return lambda _message: None
+
+
+class WindowsSetupMirrorSelectionTests(unittest.TestCase):
+    def test_constructor_does_not_probe_without_registry_override(self):
+        with unittest.mock.patch.object(
+            WindowsSetup,
+            "_probe_fastest_mirror",
+        ) as probe:
+            setup = WindowsSetup(_Config(), _Log())
+
+        probe.assert_not_called()
+        self.assertTrue(setup._mirror_probe_pending)
+        self.assertEqual(setup._mirror_name, MIRROR_NPMMIRROR)
+
+    def test_explicit_registry_selects_mirror_without_probe(self):
+        with unittest.mock.patch.object(
+            WindowsSetup,
+            "_probe_fastest_mirror",
+        ) as probe:
+            setup = WindowsSetup(
+                _Config({"npm.registry": MIRRORS[MIRROR_OFFICIAL]["npm_registry"]}),
+                _Log(),
+            )
+
+        probe.assert_not_called()
+        self.assertFalse(setup._mirror_probe_pending)
+        self.assertEqual(setup._mirror_name, MIRROR_OFFICIAL)
+
+    def test_download_selection_probes_once(self):
+        setup = WindowsSetup(_Config(), _Log())
+        setup._probe_fastest_mirror = unittest.mock.Mock(return_value=MIRROR_OFFICIAL)
+
+        setup._select_download_mirror()
+        setup._select_download_mirror()
+
+        setup._probe_fastest_mirror.assert_called_once_with()
+        self.assertFalse(setup._mirror_probe_pending)
+        self.assertEqual(setup._mirror_name, MIRROR_OFFICIAL)
+        self.assertEqual(
+            setup._node_download_base,
+            MIRRORS[MIRROR_OFFICIAL]["node_download_base"],
+        )
+
+
+class WindowsSetupUpgradeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        self.appdata = self.root / "AppData" / "Roaming"
+        self.local_appdata = self.root / "AppData" / "Local"
+        self.program_files = self.root / "Program Files"
+        self.home.mkdir(parents=True)
+        self.appdata.mkdir(parents=True)
+        self.local_appdata.mkdir(parents=True)
+        self.program_files.mkdir(parents=True)
+
+        self.env_patch = unittest.mock.patch.dict(
+            os.environ,
+            {
+                "APPDATA": str(self.appdata),
+                "LOCALAPPDATA": str(self.local_appdata),
+                "ProgramFiles": str(self.program_files),
+            },
+            clear=False,
+        )
+        self.home_patch = unittest.mock.patch(
+            "deployer.windows_setup.Path.home", return_value=self.home
+        )
+        self.desktop_dir_patch = unittest.mock.patch(
+            "deployer.windows_setup.DEFAULT_DESKTOP_DIR", self.root / ".microclaw"
+        )
+        self.env_patch.start()
+        self.home_patch.start()
+        self.desktop_dir_patch.start()
+
+        self.ws = WindowsSetup.__new__(WindowsSetup)
+        self.ws.cfg = _Config({"gateway.port": 18789, "openclaw.channel": "stable"})
+        self.ws.log = _Log()
+        self.ws.node_dir = self.program_files / "nodejs"
+        self.ws._node_bin = None
+        self.ws._desktop_runtime_root = None
+        self.ws._git_bin = None
+        self.ws._mirror_probe_pending = False
+        self.ws._rollback_actions = []
+        self.ws._openclaw_transaction = None
+        self.ws._openclaw_upgrade_required = True
+        self.ws._weixin_plugin_mutation_required = False
+        self.ws._weixin_policy_snapshot = None
+        self.ws._weixin_policy_restore_pending = False
+        self.ws._weixin_registration_verified = False
+        self.ws._install_manifest_path = (
+            self.root / ".microclaw" / "install-state" / "install-manifest.json"
+        )
+        self.ws._bundled_install_manifest = None
+        self.ws._persisted_install_manifest = None
+        self.ws._uninstaller_current_for_upgrade = None
+        self.process_job = unittest.mock.Mock()
+        self.ws._create_process_lifetime_job = unittest.mock.Mock(return_value=self.process_job)
+        self.ws.progress_callback = None
+        self.ws.weixin_plugin_enabled = True
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+
+    def tearDown(self):
+        self.desktop_dir_patch.stop()
+        self.home_patch.stop()
+        self.env_patch.stop()
+        self.temp.cleanup()
+
+    def _write_package(self, prefix: Path, version: str) -> Path:
+        package = prefix / "node_modules" / "openclaw"
+        package.mkdir(parents=True)
+        (package / "openclaw.mjs").write_text("", encoding="utf-8")
+        (package / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+        return package
+
+    @staticmethod
+    def _install_manifest(**overrides):
+        return {
+            "schema": 2,
+            "desktopArchiveSha256": "desktop",
+            "installerBundleId": "installer",
+            "managedSkillsId": "skills",
+            "openClawVersion": OPENCLAW_TARGET_VERSION,
+            "mxcSchema": 1,
+            **overrides,
+        }
+
+    def test_npm_setup_skips_matching_committed_registry(self):
+        bundled = self._install_manifest()
+        self.ws._bundled_install_manifest = bundled
+        self.ws._persisted_install_manifest = {
+            **bundled,
+            "npmRegistry": "https://registry.example",
+        }
+        self.ws.cfg = _Config({"npm.registry": "HTTPS://Registry.Example/"})
+        self.ws._get_npm_path = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.setup_npm_mirror())
+
+        self.ws._get_npm_path.assert_not_called()
+
+    def test_commit_persists_build_identity_and_runtime_registry(self):
+        bundled = self._install_manifest()
+        self.ws._bundled_install_manifest = bundled
+        self.ws.cfg = _Config({"npm.registry": "HTTPS://Registry.Example/"})
+        transaction = unittest.mock.Mock(
+            backup_root=self.root / "backups",
+            backup_dir=self.root / "backups" / "current",
+        )
+        self.ws._openclaw_transaction = transaction
+
+        with unittest.mock.patch("deployer.windows_setup.prune_previous_committed_backups"):
+            self.assertTrue(self.ws.commit_openclaw_upgrade())
+
+        transaction.commit.assert_called_once_with()
+        persisted = json.loads(self.ws._install_manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["installerBundleId"], "installer")
+        self.assertEqual(persisted["npmRegistry"], "https://registry.example")
+        self.assertIsNone(self.ws._openclaw_transaction)
+
+    def _write_weixin_payload(self, root: Path, marker: str = "same") -> None:
+        files = {
+            "package.json": json.dumps(
+                {"name": "@tencent-weixin/openclaw-weixin", "version": "2.4.6"}
+            ),
+            "openclaw.plugin.json": json.dumps({"id": "openclaw-weixin", "version": "2.4.6"}),
+            "dist/index.js": marker,
+            "node_modules/zod/package.json": json.dumps({"version": "4.4.3"}),
+            "node_modules/qrcode-terminal/package.json": json.dumps({"version": "0.12.0"}),
+        }
+        for relative, content in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+
+    def _weixin_inspection(
+        self,
+        installed: Path,
+        *,
+        enabled: bool = True,
+        status: str = "loaded",
+        activated: bool = True,
+        tracked: bool = True,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "plugin": {
+                "id": "openclaw-weixin",
+                "version": "2.4.6",
+                "rootDir": str(installed),
+                "enabled": enabled,
+                "status": status,
+                "activated": activated,
+            }
+        }
+        if tracked:
+            payload["install"] = {
+                "installPath": str(installed),
+                "version": "2.4.6",
+            }
+        return payload
+
+    @staticmethod
+    def _plugin_process(output: str = "") -> unittest.mock.Mock:
+        process = unittest.mock.Mock(returncode=0)
+        process.communicate.return_value = (output, None)
+        return process
+
+    def test_target_version_is_current(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+
+        installation = self.ws._detect_openclaw_installation()
+
+        self.assertEqual(installation.version, OPENCLAW_TARGET_VERSION)
+        self.assertTrue(self.ws.check_openclaw_windows())
+        self.assertEqual(self.ws.install_prefix, prefix)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object behavior")
+    def test_kill_on_close_job_terminates_assigned_process(self):
+        process = subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 30"],
+            creationflags=0x08000000 | 0x00000004,
+        )
+        job = _WindowsKillOnCloseJob.attach(process)
+
+        job.resume(process)
+        job.close()
+        process.wait(timeout=5)
+
+        self.assertIsNotNone(process.returncode)
+
+    def test_other_version_requires_upgrade(self):
+        self._write_package(self.home / ".openclaw-node", "2026.7.1-1")
+
+        self.assertFalse(self.ws.check_openclaw_windows())
+
+    def test_previous_stable_version_requires_upgrade(self):
+        self._write_package(self.home / ".openclaw-node", "2026.10.2")
+
+        self.assertFalse(self.ws.check_openclaw_windows())
+
+    def test_source_installer_requires_compatible_staged_weixin_runtime(self):
+        project = self.root / "project"
+        source = project / "plugins" / "openclaw-weixin"
+        self._write_weixin_payload(source)
+        staged = project / "dist" / "openclaw-weixin"
+        with unittest.mock.patch(
+            "deployer.windows_setup.__file__", str(project / "deployer" / "windows_setup.py")
+        ):
+            self.assertIsNone(self.ws._find_bundled_weixin_plugin())
+            self._write_weixin_payload(staged)
+            self.assertIsNone(self.ws._find_bundled_weixin_plugin())
+            package = {
+                "version": "2.4.6",
+                "microclaw": {"sdkCompatibility": OPENCLAW_TARGET_VERSION},
+            }
+            (staged / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            self.assertEqual(self.ws._find_bundled_weixin_plugin(), staged)
+            (staged / "dist" / "index.js").unlink()
+            self.assertIsNone(self.ws._find_bundled_weixin_plugin())
+
+    def test_source_installer_rejects_malformed_weixin_metadata(self):
+        project = self.root / "project"
+        staged = project / "dist" / "openclaw-weixin"
+        staged.mkdir(parents=True)
+        with unittest.mock.patch(
+            "deployer.windows_setup.__file__", str(project / "deployer" / "windows_setup.py")
+        ):
+            for content in ("not json", "[]", '{"microclaw": "invalid"}'):
+                with self.subTest(content=content):
+                    (staged / "package.json").write_text(content, encoding="utf-8")
+                    self.assertIsNone(self.ws._find_bundled_weixin_plugin())
+
+    def test_detection_matches_desktop_search_order_and_tracks_all_shims(self):
+        legacy_prefix = self.home / ".openclaw-node"
+        appdata_prefix = self.appdata / "npm"
+        self._write_package(appdata_prefix, OPENCLAW_TARGET_VERSION)
+        package = self._write_package(legacy_prefix, "2026.3.12")
+        (legacy_prefix / "openclaw.cmd").write_text("@old", encoding="utf-8")
+
+        installation = self.ws._detect_openclaw_installation()
+
+        self.assertEqual(installation.package_dir, package)
+        self.assertEqual(
+            installation.shim_paths,
+            tuple(legacy_prefix / name for name in ("openclaw", "openclaw.cmd", "openclaw.ps1")),
+        )
+
+    def _write_state_owner(self, **overrides):
+        lock_dir = self.home / "AppData" / "Local" / "OpenClaw" / "locks" / "openclaw-state-owners"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_dir / "state.9e5d199184d7d285.lock"
+        payload = {
+            "pid": 4321,
+            "role": "gateway",
+            "stateDir": str(self.home / ".openclaw"),
+            "createdAt": "2026-10-14T13:48:35.000Z",
+            "startTime": 1791985683134,
+            "processNamespace": {"platform": "win32", "host": platform.node()},
+        }
+        payload.update(overrides)
+        lock_path.write_text(json.dumps(payload), encoding="utf-8")
+        return lock_path
+
+    def test_state_owner_detects_orphaned_gateway_without_port_or_legacy_lock(self):
+        lock_path = self._write_state_owner()
+        os.utime(lock_path, (1791985683, 1791985683))
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={4321: _ProcessInfo(0, "node.exe", "node openclaw.mjs gateway")}
+        )
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime.fromtimestamp(1791985683.134, UTC),
+            ),
+        ):
+            self.assertEqual(
+                self.ws.get_active_installation(),
+                ActiveInstallation(
+                    pids=(4321,),
+                    gateway=ActiveGateway(pid=4321, port=18789, lock_path=None),
+                ),
+            )
+            self.assertFalse(self.ws._gateway_is_stopped_for_upgrade())
+        self.assertTrue(lock_path.exists())
+
+    def test_state_owner_rejects_reused_pid_even_one_second_after_recorded_start(self):
+        lock_path = self._write_state_owner()
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime.fromtimestamp(1791985684.134, UTC),
+            ),
+        ):
+            self.assertIsNone(self.ws._find_active_state_owner())
+        self.assertTrue(lock_path.exists())
+
+    def test_state_owner_rejects_unverified_or_out_of_scope_records(self):
+        cases = (
+            {"pid": True},
+            {"pid": -1},
+            {"startTime": None},
+            {"startTime": True},
+            {"startTime": float("nan")},
+            {"startTime": float("inf")},
+            {"stateDir": str(self.home / "other-state")},
+            {"stateDir": None},
+            {"role": "sqlite-maintenance"},
+            {"stateOwnerKind": "schema"},
+            {"processNamespace": {"platform": "win32", "host": "another-host"}},
+            {"processNamespace": {"platform": "linux", "host": platform.node()}},
+            {"processNamespace": "invalid"},
+        )
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime.fromtimestamp(1791985683.134, UTC),
+            ),
+        ):
+            for payload in cases:
+                with self.subTest(payload=payload):
+                    self._write_state_owner(**payload)
+                    self.assertIsNone(self.ws._find_active_state_owner())
+
+    def test_state_owner_rejects_dead_or_uninspectable_process_without_removing_lock(self):
+        lock_path = self._write_state_owner()
+        for alive, started in ((False, None), (True, None)):
+            with (
+                self.subTest(alive=alive),
+                unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=alive),
+                unittest.mock.patch(
+                    "deployer.windows_setup.process_started_at", return_value=started
+                ),
+            ):
+                self.assertIsNone(self.ws._find_active_state_owner())
+                self.assertTrue(lock_path.exists())
+
+    def test_state_owner_does_not_authorize_termination_of_unrelated_process(self):
+        self._write_state_owner()
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={4321: _ProcessInfo(0, "unrelated.exe", "unrelated.exe")}
+        )
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime.fromtimestamp(1791985683.134, UTC),
+            ),
+        ):
+            active = self.ws.get_active_installation()
+            self.assertEqual(active.pids, ())
+            self.ws._run = unittest.mock.Mock()
+            self.assertFalse(self.ws.stop_active_installation_for_upgrade(active))
+            self.ws._run.assert_not_called()
+
+    def test_confirmed_state_owner_shutdown_keeps_ownership_record_for_runtime_reclamation(self):
+        lock_path = self._write_state_owner()
+        active = ActiveInstallation(
+            pids=(4321,), gateway=ActiveGateway(pid=4321, port=18789, lock_path=None)
+        )
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=None)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=False):
+            self.assertTrue(self.ws.stop_active_installation_for_upgrade(active))
+        self.assertTrue(lock_path.exists())
+        self.ws._run.assert_any_call(
+            ["taskkill", "/PID", "4321", "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+    @unittest.skipUnless(os.name == "nt", "Windows process identity")
+    def test_state_owner_matches_real_windows_process_creation_time(self):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], creationflags=0x08000000
+        )
+        try:
+            started = process_started_at(process.pid)
+            self.assertIsNotNone(started)
+            lock_path = self._write_state_owner(
+                pid=process.pid, startTime=int(started.timestamp() * 1000)
+            )
+            self.assertEqual(self.ws._find_active_state_owner()["pid"], process.pid)
+            self.assertTrue(lock_path.exists())
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+        self.assertIsNone(self.ws._find_active_state_owner())
+
+    def test_detects_a_live_gateway_lock(self):
+        lock_dir = self.local_appdata / "Temp" / "openclaw"
+        lock_dir.mkdir(parents=True)
+        lock = lock_dir / "gateway.12345678.lock"
+        lock.write_text(
+            json.dumps(
+                {
+                    "pid": 4321,
+                    "createdAt": "2026-07-20T00:00:00Z",
+                    "configPath": str(self.home / ".openclaw" / "openclaw.json"),
+                    "port": 18789,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=True)
+        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True):
+            self.assertEqual(self.ws._find_active_gateway_lock()["pid"], 4321)
+
+    def test_reused_live_pid_does_not_activate_a_stale_gateway_lock(self):
+        lock_dir = self.local_appdata / "Temp" / "openclaw"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "gateway.12345678.lock").write_text(
+            json.dumps(
+                {
+                    "pid": 4321,
+                    "createdAt": "2026-07-20T00:00:00Z",
+                    "configPath": str(self.home / ".openclaw" / "openclaw.json"),
+                    "port": 18789,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime(2026, 7, 21, tzinfo=UTC),
+            ),
+        ):
+            self.assertIsNone(self.ws._find_active_gateway_lock())
+
+    def test_live_gateway_pid_is_detected_before_its_port_opens(self):
+        lock_dir = self.local_appdata / "Temp" / "openclaw"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "gateway.12345678.lock").write_text(
+            json.dumps(
+                {
+                    "pid": 4321,
+                    "createdAt": "2026-07-20T00:00:00Z",
+                    "configPath": str(self.home / ".openclaw" / "openclaw.json"),
+                    "port": 18789,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=True),
+            unittest.mock.patch(
+                "deployer.windows_setup.process_started_at",
+                return_value=datetime(2026, 7, 20, 0, 0, 2, tzinfo=UTC),
+            ),
+        ):
+            self.assertEqual(self.ws._find_active_gateway_lock()["pid"], 4321)
+
+    def test_prepare_refuses_a_live_gateway_even_when_target_is_installed(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=True)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+
+        self.assertFalse(self.ws.prepare_openclaw_upgrade())
+        self.assertIsNone(self.ws._openclaw_transaction)
+
+    def test_active_gateway_uses_listening_pid_when_lock_is_missing(self):
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=True)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._find_listening_pid = unittest.mock.Mock(return_value=4321)
+
+        gateway = self.ws.get_active_gateway()
+
+        self.assertEqual(gateway, ActiveGateway(pid=4321, port=18789, lock_path=None))
+
+    def test_finds_microclaw_ancestor_for_gateway(self):
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={
+                100: _ProcessInfo(50, "MicroClawDesktop.exe", "MicroClawDesktop.exe"),
+                200: _ProcessInfo(100, "node.exe", "node helper.js"),
+                300: _ProcessInfo(200, "node.exe", "node openclaw.mjs gateway"),
+            }
+        )
+
+        self.assertEqual(self.ws._find_managing_desktop_pid(300), 100)
+
+    def test_active_installation_detects_desktop_without_a_gateway(self):
+        self.ws.get_active_gateway = unittest.mock.Mock(return_value=None)
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={
+                100: _ProcessInfo(50, "MicroClawDesktop.exe", "MicroClawDesktop.exe"),
+                200: _ProcessInfo(100, "MicroClawDesktop.exe", "MicroClawDesktop.exe --type=gpu"),
+            }
+        )
+
+        self.assertEqual(
+            self.ws.get_active_installation(),
+            ActiveInstallation(pids=(100,), gateway=None),
+        )
+
+    def test_unverified_port_owner_is_not_selected_for_termination(self):
+        gateway = ActiveGateway(pid=300, port=18789, lock_path=None)
+        self.ws.get_active_gateway = unittest.mock.Mock(return_value=gateway)
+        self.ws._process_snapshot = unittest.mock.Mock(
+            return_value={
+                300: _ProcessInfo(50, "unrelated-server.exe", "unrelated-server.exe"),
+            }
+        )
+
+        self.assertEqual(
+            self.ws.get_active_installation(),
+            ActiveInstallation(pids=(), gateway=gateway),
+        )
+
+    def test_confirmed_upgrade_stop_targets_only_the_managing_process_tree(self):
+        gateway = ActiveGateway(
+            pid=300,
+            port=18789,
+            lock_path=self.local_appdata / "Temp" / "openclaw" / "gateway.lock",
+        )
+        active = ActiveInstallation(pids=(100,), gateway=gateway)
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=None)
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=False):
+            self.assertTrue(self.ws.stop_active_installation_for_upgrade(active))
+
+        self.ws._run.assert_any_call(
+            ["taskkill", "/PID", "100", "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertFalse(
+            any(
+                "/IM" in call.args[0] or "node.exe" in call.args[0]
+                for call in self.ws._run.call_args_list
+            )
+        )
+        self.ws.get_active_installation.assert_called_once_with()
+
+    def test_upgrade_stop_rejects_restarted_desktop_after_pid_exits(self):
+        active = ActiveInstallation(pids=(100,), gateway=None)
+        restarted = ActiveInstallation(pids=(200,), gateway=None)
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=restarted)
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.process_is_alive", return_value=False):
+            self.assertFalse(self.ws.stop_active_installation_for_upgrade(active))
+
+        self.ws.get_active_installation.assert_called_once_with()
+
+    def test_unknown_port_owner_is_never_terminated(self):
+        gateway = ActiveGateway(pid=300, port=18789, lock_path=None)
+        active = ActiveInstallation(pids=(), gateway=gateway)
+        self.ws.get_active_installation = unittest.mock.Mock(return_value=active)
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertFalse(self.ws.stop_active_installation_for_upgrade(active))
+
+        self.ws._run.assert_not_called()
+
+    def test_prepare_uses_managed_state_transaction_for_unchanged_installation(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._same_version_weixin_requires_full_backup = unittest.mock.Mock(return_value=False)
+        self.ws._uninstaller_install_is_current = unittest.mock.Mock(return_value=True)
+        transaction = unittest.mock.Mock()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ) as create:
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        create.assert_called_once()
+        self.assertEqual(
+            create.call_args.kwargs["backup_mode"],
+            UpgradeBackupMode.MANAGED_STATE,
+        )
+        managed_paths = create.call_args.kwargs["managed_paths"]
+        self.assertNotIn(Path("MicroClawInstaller.exe"), managed_paths)
+        self.assertNotIn(Path("_internal"), managed_paths)
+        self.assertTrue(self.ws._uninstaller_current_for_upgrade)
+        transaction.backup.assert_called_once()
+
+    def test_prepare_includes_uninstaller_when_bundle_differs(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._uninstaller_install_is_current = unittest.mock.Mock(return_value=False)
+        transaction = unittest.mock.Mock()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ) as create:
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        managed_paths = create.call_args.kwargs["managed_paths"]
+        self.assertIn(Path("MicroClawInstaller.exe"), managed_paths)
+        self.assertIn(Path("_internal"), managed_paths)
+        self.assertFalse(self.ws._uninstaller_current_for_upgrade)
+
+    def test_prepare_invalidates_committed_install_manifest_after_backup(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        transaction = unittest.mock.Mock()
+        marker = self.ws._install_manifest_path
+        marker.parent.mkdir(parents=True)
+        marker.write_text("committed", encoding="utf-8")
+        self.assertTrue(self.ws.prepare_openclaw_update())
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ):
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        transaction.backup.assert_called_once()
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.ws.install_prefix, prefix)
+        self.assertFalse(self.ws._openclaw_upgrade_required)
+        self.assertIs(self.ws._openclaw_transaction, transaction)
+
+    def test_prepare_backup_failure_logs_traceback_without_invalidating_committed_state(self):
+        self._write_package(self.home / ".openclaw-node", OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._rollback_openclaw_transaction = unittest.mock.Mock(return_value=True)
+        self.ws.log = unittest.mock.Mock()
+        transaction = unittest.mock.Mock()
+        transaction.backup.side_effect = PermissionError("backup publication denied")
+        marker = self.ws._install_manifest_path
+        marker.parent.mkdir(parents=True)
+        marker.write_text("committed", encoding="utf-8")
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ):
+            self.assertFalse(self.ws.prepare_openclaw_upgrade())
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "committed")
+        self.ws._rollback_openclaw_transaction.assert_called_once_with(transaction)
+        self.ws.log.debug.assert_called_once()
+        diagnostic = self.ws.log.debug.call_args.args[0]
+        self.assertIn("Traceback", diagnostic)
+        self.assertIn("transaction.backup()", diagnostic)
+        self.assertIn("backup publication denied", diagnostic)
+        self.assertIsNone(self.ws._openclaw_transaction)
+
+    def test_prepare_ignores_weixin_state_for_same_version_installation(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+        self.ws._same_version_weixin_requires_full_backup = unittest.mock.Mock(return_value=True)
+        transaction = unittest.mock.Mock()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ) as create:
+            self.assertTrue(self.ws.prepare_openclaw_upgrade())
+
+        self.assertEqual(create.call_args.kwargs["backup_mode"], UpgradeBackupMode.MANAGED_STATE)
+        self.ws._same_version_weixin_requires_full_backup.assert_not_called()
+        transaction.backup.assert_called_once()
+
+    def test_managed_backup_refuses_to_run_before_core_update(self):
+        prefix = self.home / ".openclaw-node"
+        self._write_package(prefix, "2026.3.12")
+        state = self.home / ".openclaw"
+        state.mkdir()
+        (state / "openclaw.json").write_text("{}", encoding="utf-8")
+        transaction = unittest.mock.Mock()
+        self.ws._is_tcp_port_open = unittest.mock.Mock(return_value=False)
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(return_value=None)
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ) as create:
+            self.assertFalse(self.ws.prepare_openclaw_upgrade())
+
+        create.assert_not_called()
+        transaction.backup.assert_not_called()
+
+    def test_interrupted_upgrade_is_rolled_back_before_new_preparation(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.phase = UpgradePhase.INSTALLING
+        transaction.manifest.source_version = None
+
+        def rollback():
+            transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+
+        transaction.rollback.side_effect = rollback
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.load",
+            return_value=transaction,
+        ) as load:
+            self.assertTrue(self.ws.recover_interrupted_openclaw_upgrade())
+
+        load.assert_called_once_with(self.root / ".microclaw")
+        transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+
+    def test_interrupted_recovery_health_checks_the_restored_gateway(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.phase = UpgradePhase.INSTALLING
+        transaction.manifest.source_version = "2026.3.12"
+        process = unittest.mock.Mock()
+
+        def rollback():
+            transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+
+        transaction.rollback.side_effect = rollback
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.load",
+            return_value=transaction,
+        ):
+            self.assertTrue(self.ws.recover_interrupted_openclaw_upgrade())
+
+        self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
+        transaction.complete_rollback.assert_called_once()
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+
+    def test_recovery_releases_its_lock_if_gateway_starts_before_restore(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.phase = UpgradePhase.INSTALLING
+        self.ws._find_active_gateway_lock = unittest.mock.Mock(side_effect=[None, {"pid": 4321}])
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.load",
+            return_value=transaction,
+        ):
+            self.assertFalse(self.ws.recover_interrupted_openclaw_upgrade())
+
+        transaction.close.assert_called_once()
+        transaction.rollback.assert_not_called()
+
+    def test_prepare_rechecks_gateway_after_acquiring_upgrade_lock(self):
+        self._write_package(self.home / ".openclaw-node", OPENCLAW_TARGET_VERSION)
+        transaction = unittest.mock.Mock()
+        self.ws._gateway_is_stopped_for_upgrade = unittest.mock.Mock(
+            side_effect=[True, True, True, False]
+        )
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.OpenClawUpgradeTransaction.create",
+            return_value=transaction,
+        ):
+            self.assertFalse(self.ws.prepare_openclaw_upgrade())
+
+        transaction.close.assert_called_once()
+        transaction.backup.assert_not_called()
+        self.assertIsNone(self.ws._openclaw_transaction)
+
+    def test_registry_tls_failure_retries_next_registry(self):
+        self.ws.cfg = _Config({"npm.registry": "https://registry.npmmirror.com"})
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
+        self.ws._install_openclaw_from_registry = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(
+                    installed_version=None,
+                    returncode=1,
+                    output="ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
+                ),
+                SimpleNamespace(
+                    installed_version=OPENCLAW_TARGET_VERSION,
+                    returncode=0,
+                    output="installed",
+                ),
+            ]
+        )
+
+        self.assertTrue(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
+        self.assertEqual(self.ws._install_openclaw_from_registry.call_count, 2)
+        self.assertEqual(
+            self.ws._successful_npm_registry,
+            self.ws._install_openclaw_from_registry.call_args.args[1],
+        )
+
+    def test_registry_policy_or_missing_package_retries_next_registry(self):
+        self.ws.cfg = _Config({"npm.registry": "https://packagefeedproxy.microsoft.io/npm/"})
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
+
+        for output in (
+            "npm error code E404\nnpm error 404 Not Found - GET",
+            "npm error code E403\nnpm error 403 Forbidden by package policy",
+            "npm error code ETARGET\nnpm error notarget No matching version found",
+        ):
+            with self.subTest(output=output):
+                self.ws._install_openclaw_from_registry = unittest.mock.Mock(
+                    side_effect=[
+                        SimpleNamespace(
+                            installed_version=None,
+                            returncode=1,
+                            output=output,
+                        ),
+                        SimpleNamespace(
+                            installed_version=OPENCLAW_TARGET_VERSION,
+                            returncode=0,
+                            output="installed",
+                        ),
+                    ]
+                )
+
+                self.assertTrue(
+                    self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm")
+                )
+                self.assertEqual(self.ws._install_openclaw_from_registry.call_count, 2)
+
+    def test_non_network_npm_failure_does_not_change_registry(self):
+        self.ws.cfg = _Config()
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
+        self.ws._install_openclaw_from_registry = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                installed_version=None,
+                returncode=1,
+                output="EINTEGRITY sha512 mismatch",
+            )
+        )
+
+        self.assertFalse(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
+        self.assertEqual(self.ws._install_openclaw_from_registry.call_count, 1)
+
+    def test_inconclusive_registry_probes_still_allow_npm_to_install(self):
+        self.ws.cfg = _Config()
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: []
+        self.ws._install_openclaw_from_registry = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                installed_version=OPENCLAW_TARGET_VERSION, returncode=0, output="installed"
+            )
+        )
+
+        self.assertTrue(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
+        self.ws._install_openclaw_from_registry.assert_called_once()
+
+    def test_inconclusive_registry_probes_report_actual_npm_network_failures(self):
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: []
+        self.ws._install_openclaw_from_registry = unittest.mock.Mock(
+            return_value=SimpleNamespace(installed_version=None, returncode=1, output="ETIMEDOUT")
+        )
+
+        self.assertFalse(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
+        self.assertEqual(
+            self.ws._install_openclaw_from_registry.call_count,
+            len(self.ws._npm_registry_candidates()),
+        )
+
+    def test_unconfirmed_registry_remains_available_after_reachable_mirror_fails(self):
+        registry = MIRRORS[MIRROR_HUAWEI]["npm_registry"]
+        self.ws._reachable_npm_registries = lambda candidates, **_kw: [registry]
+        self.ws._install_openclaw_from_registry = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(installed_version=None, returncode=1, output="E404"),
+                SimpleNamespace(
+                    installed_version=OPENCLAW_TARGET_VERSION, returncode=0, output="installed"
+                ),
+            ]
+        )
+
+        self.assertTrue(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
+        attempts = self.ws._install_openclaw_from_registry.call_args_list
+        self.assertEqual(attempts[0].args[1], registry)
+        self.assertEqual(attempts[1].args[1], self.ws._npm_registry_candidates()[0])
+
+    def test_git_download_bases_start_with_selected_and_are_deduped(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        bases = self.ws._git_download_bases()
+
+        names = [name for name, _base in bases]
+        urls = [base for _name, base in bases]
+        self.assertEqual(names[0], MIRROR_NPMMIRROR)
+        self.assertIn(MIRROR_OFFICIAL, names)
+        # No duplicate download bases (official + huawei share the GitHub base).
+        self.assertEqual(len(urls), len(set(urls)))
+
+    def test_git_download_falls_through_blocked_mirror(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        attempted: list[str] = []
+        blocked_base = MIRRORS[MIRROR_NPMMIRROR]["git_mirror_base"]
+
+        def fake_download(url, dest):
+            attempted.append(url)
+            if url.startswith(blocked_base):
+                raise OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+            Path(dest).write_bytes(b"git")
+
+        self.ws._download_with_progress = fake_download
+
+        with tempfile.TemporaryDirectory() as directory:
+            dl_path = Path(directory) / "PortableGit.7z.exe"
+            self.assertTrue(
+                self.ws._download_git_installer("2.53.0", "PortableGit.7z.exe", dl_path)
+            )
+            self.assertTrue(dl_path.exists())
+
+        self.assertGreater(len(attempted), 1)
+        self.assertFalse(attempted[-1].startswith(blocked_base))
+
+    def test_git_download_fails_when_all_mirrors_blocked(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        self.ws._download_with_progress = unittest.mock.Mock(
+            side_effect=OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            dl_path = Path(directory) / "PortableGit.7z.exe"
+            self.assertFalse(
+                self.ws._download_git_installer("2.53.0", "PortableGit.7z.exe", dl_path)
+            )
+
+    def test_node_upgrade_does_not_claim_or_delete_existing_installation(self):
+        self._write_package(self.ws.node_dir, "2026.7.1-1")
+        (self.ws.node_dir / "node.exe").write_bytes(b"old Node")
+        self._mock_successful_node_install()
+
+        self.assertTrue(self.ws.install_node_windows())
+
+        self.ws._mark_node_owned_by_microclaw.assert_not_called()
+        self.assertEqual(self.ws._rollback_actions, [])
+        self.assertTrue((self.ws.node_dir / "node_modules" / "openclaw").is_dir())
+
+    def test_new_node_installation_is_owned_and_has_rollback(self):
+        self._mock_successful_node_install()
+
+        self.assertTrue(self.ws.install_node_windows())
+
+        self.ws._mark_node_owned_by_microclaw.assert_called_once_with(self.ws.node_dir)
+        self.assertEqual(len(self.ws._rollback_actions), 1)
+
+    def _mock_successful_node_install(self):
+        self.ws._mirror_name = MIRROR_OFFICIAL
+        self.ws._select_download_mirror = unittest.mock.Mock()
+        self.ws._resolve_target_node_version = lambda: NODE_FALLBACK_VERSION
+        self.ws._download_and_verify_node_msi = lambda _version, _path: True
+        self.ws._get_arch = lambda: "x64"
+        self.ws._get_node_version = lambda _path: f"v{NODE_FALLBACK_VERSION}"
+        self.ws._mark_node_owned_by_microclaw = unittest.mock.Mock()
+
+        def install(_cmd, **_kwargs):
+            self.ws.node_dir.mkdir(parents=True, exist_ok=True)
+            (self.ws.node_dir / "node.exe").write_bytes(b"new Node")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.ws._run = install
+
+    def test_resolve_target_node_version_bumps_to_installed_major(self):
+        # The MSI refuses to install an older major over an existing newer one.
+        self.ws.node_version = "26"
+        self.ws._installed_node_major = lambda: 27
+        self.ws._resolve_latest_version = lambda major: {
+            "26": "26.1.0",
+            "27": "27.0.0",
+        }[major]
+
+        self.assertEqual(self.ws._resolve_target_node_version(), "27.0.0")
+
+    def test_resolve_target_node_version_keeps_default_when_no_newer(self):
+        self.ws.node_version = "26"
+        self.ws._resolve_latest_version = lambda major: "26.1.0" if major == "26" else "wrong"
+
+        self.ws._installed_node_major = lambda: None
+        self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+
+        self.ws._installed_node_major = lambda: 20
+        self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+
+    def test_resolve_target_migrates_unsupported_configured_lines(self):
+        self.ws._installed_node_major = lambda: None
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value="26.1.0")
+        for target in ("22", "23", "25", "invalid"):
+            with self.subTest(target=target):
+                self.ws.node_version = target
+                self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+                self.ws._resolve_latest_version.assert_called_with("26")
+
+    def test_resolve_target_keeps_supported_node_24_line(self):
+        self.ws.node_version = "24"
+        self.ws._installed_node_major = lambda: 24
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value="24.16.0")
+        self.assertEqual(self.ws._resolve_target_node_version(), "24.16.0")
+        self.ws._resolve_latest_version.assert_called_once_with("24")
+
+    def test_resolve_target_skips_installed_node_25_line(self):
+        self.ws.node_version = "24"
+        self.ws._installed_node_major = lambda: 25
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value="26.1.0")
+        self.assertEqual(self.ws._resolve_target_node_version(), "26.1.0")
+        self.ws._resolve_latest_version.assert_called_once_with("26")
+
+    def test_resolve_target_refuses_unsupported_resolution(self):
+        self.ws.node_version = "26"
+        self.ws._installed_node_major = lambda: None
+        for version in ("26.0.0", "25.9.0", "24.15.0", "26.1.0-rc.1"):
+            with self.subTest(version=version):
+                self.ws._resolve_latest_version = unittest.mock.Mock(return_value=version)
+                with self.assertRaises(NodeInstallBlocked):
+                    self.ws._resolve_target_node_version()
+
+    def test_resolve_target_refuses_fallback_major_downgrade(self):
+        self.ws.node_version = "26"
+        self.ws._installed_node_major = lambda: 27
+        self.ws._resolve_latest_version = unittest.mock.Mock(return_value=NODE_FALLBACK_VERSION)
+        with self.assertRaisesRegex(NodeInstallBlocked, "refusing to downgrade"):
+            self.ws._resolve_target_node_version()
+
+    def test_version_index_skips_unsupported_or_malformed_releases(self):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            [{"version": v} for v in ("v26.2.0-rc.1", "v26.0.0", "vv26.1.0", "v26.1.0")]
+        ).encode()
+        with unittest.mock.patch("urllib.request.urlopen", return_value=response):
+            self.assertEqual(self.ws._resolve_latest_version("26"), "26.1.0")
+
+    def test_version_resolution_uses_supported_fallback_offline(self):
+        self.ws._node_download_base = MIRRORS[MIRROR_OFFICIAL]["node_download_base"]
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            self.assertEqual(self.ws._resolve_latest_version("26"), NODE_FALLBACK_VERSION)
+
+    def test_managed_node_requires_supported_version(self):
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_text("", encoding="utf-8")
+        self.ws._get_npm_path = unittest.mock.Mock(return_value="npm.cmd")
+        with unittest.mock.patch("deployer.windows_setup.shutil.which", return_value=None):
+            for version in ("v22.22.3", "v24.15.9", "v25.9.0", "v26.0.0", "v26.1.0-rc.1"):
+                with self.subTest(version=version):
+                    self.ws._get_node_version = unittest.mock.Mock(return_value=version)
+                    self.assertFalse(self.ws.check_node_windows())
+            for version in ("v24.16.0", "v26.1.0"):
+                with self.subTest(version=version):
+                    self.ws._get_node_version = unittest.mock.Mock(return_value=version)
+                    self.assertTrue(self.ws.check_node_windows())
+
+    def test_install_node_rejects_unsupported_version_before_download(self):
+        self.ws._mirror_name = MIRROR_OFFICIAL
+        self.ws._resolve_target_node_version = lambda: "26.0.0"
+        self.ws._download_and_verify_node_msi = unittest.mock.Mock()
+        self.assertFalse(self.ws.install_node_windows())
+        self.ws._download_and_verify_node_msi.assert_not_called()
+
+    def test_installed_node_major_reads_highest(self):
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.shutil.which", return_value="C:/node/node.exe"
+            ),
+            unittest.mock.patch("deployer.windows_setup._STANDARD_NODE_DIRS", ()),
+        ):
+            self.ws._get_node_version = lambda _path: "v24.14.0"
+            self.assertEqual(self.ws._installed_node_major(), 24)
+
+    def test_installed_node_major_none_when_absent(self):
+        with (
+            unittest.mock.patch("deployer.windows_setup.shutil.which", return_value=None),
+            unittest.mock.patch("deployer.windows_setup._STANDARD_NODE_DIRS", ()),
+        ):
+            self.assertIsNone(self.ws._installed_node_major())
+
+    def test_install_node_raises_blocked_on_launch_condition(self):
+        # A downgrade-blocked MSI (exit 1603, "later version already installed")
+        # is deterministic: raise NodeInstallBlocked so the pipeline stops
+        # instead of re-prompting UAC on every retry.
+        self.ws._mirror_name = MIRROR_OFFICIAL
+        self.ws.node_version = "26"
+        self.ws._resolve_target_node_version = lambda: "26.1.0"
+        self.ws._download_and_verify_node_msi = lambda _version, _path: True
+        self.ws._get_arch = lambda: "x64"
+
+        fake_tmp = self.root / "node_tmp"
+        fake_tmp.mkdir()
+
+        def fake_run(_cmd, **_kwargs):
+            (fake_tmp / "msi-install.log").write_text(
+                "Product: Node.js -- A later version of Node.js is already installed.",
+                encoding="utf-16-le",
+            )
+            return SimpleNamespace(returncode=1603, stdout="", stderr="")
+
+        self.ws._run = fake_run
+
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.tempfile.mkdtemp", return_value=str(fake_tmp)
+            ),
+            self.assertRaises(NodeInstallBlocked),
+        ):
+            self.ws.install_node_windows()
+
+    def test_automatic_registry_fallbacks_are_https(self):
+        self.ws.cfg = _Config()
+
+        self.assertTrue(
+            all(registry.startswith("https://") for registry in self.ws._npm_registry_candidates())
+        )
+
+    def test_node_download_bases_start_with_selected_and_are_deduped(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        bases = self.ws._node_download_bases()
+
+        names = [name for name, _base in bases]
+        urls = [base for _name, base in bases]
+        # Selected mirror is tried first, then the fallback order.
+        self.assertEqual(names[0], MIRROR_NPMMIRROR)
+        self.assertIn(MIRROR_OFFICIAL, names)
+        self.assertIn(MIRROR_HUAWEI, names)
+        # No duplicate download bases.
+        self.assertEqual(len(urls), len(set(urls)))
+
+    def test_node_download_falls_through_blocked_mirror(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        attempted: list[str] = []
+        blocked_base = MIRRORS[MIRROR_NPMMIRROR]["node_download_base"]
+
+        def fake_download(url, dest):
+            attempted.append(url)
+            if url.startswith(blocked_base):
+                raise OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+            Path(dest).write_bytes(b"msi")
+
+        self.ws._download_with_progress = fake_download
+        self.ws._verify_node_sha256 = lambda version, path: True
+
+        with tempfile.TemporaryDirectory() as directory:
+            msi_path = Path(directory) / "node.msi"
+            self.assertTrue(self.ws._download_and_verify_node_msi("22.23.1", msi_path))
+            self.assertTrue(msi_path.exists())
+
+        # It tried the blocked mirror first, then fell through to a working one.
+        self.assertGreater(len(attempted), 1)
+        self.assertFalse(self.ws._node_download_base.startswith(blocked_base))
+
+    def test_node_download_fails_when_all_mirrors_blocked(self):
+        self.ws._mirror_name = MIRROR_NPMMIRROR
+        self.ws._download_with_progress = unittest.mock.Mock(
+            side_effect=OSError("SSLV3_ALERT_HANDSHAKE_FAILURE")
+        )
+        self.ws._verify_node_sha256 = unittest.mock.Mock(return_value=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            msi_path = Path(directory) / "node.msi"
+            self.assertFalse(self.ws._download_and_verify_node_msi("22.23.1", msi_path))
+
+        # Verification is never reached when every download fails.
+        self.ws._verify_node_sha256.assert_not_called()
+
+    def test_install_uses_prepared_prefix(self):
+        prepared = self.home / ".openclaw-node"
+        self.ws.install_prefix = prepared
+        self.ws._get_npm_path = unittest.mock.Mock(return_value="npm.cmd")
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._install_openclaw_with_registry_fallback = unittest.mock.Mock(return_value=True)
+        self.ws._patch_pi_ai_usage_streaming = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_openclaw_windows())
+
+        self.ws._install_openclaw_with_registry_fallback.assert_called_once_with(prepared)
+
+    def test_run_openclaw_json_uses_cold_start_tolerant_timeout(self):
+        # Each RPC probe cold-starts the OpenClaw CLI; the timeout must be well
+        # above the CLI boot time and the client must share the compile cache.
+        self.ws._find_openclaw_cmd = lambda: ["openclaw.cmd"]
+        self.ws._get_env = lambda: {}
+        self.ws._load_openclaw_state_env = lambda _state: {}
+        process = unittest.mock.Mock(returncode=0)
+        process.communicate.return_value = ('{"ok": true}', "")
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            result = self.ws._run_openclaw_json(["gateway", "call", "config.get", "--json"])
+
+        self.assertEqual(result, {"ok": True})
+        process.communicate.assert_called_once_with(timeout=_OPENCLAW_RPC_TIMEOUT)
+        self.assertGreaterEqual(_OPENCLAW_RPC_TIMEOUT, 60)
+        self.assertIn("NODE_COMPILE_CACHE", popen.call_args.kwargs["env"])
+        self.ws._create_process_lifetime_job.assert_called_once_with(process)
+        self.process_job.resume.assert_called_once_with(process)
+        self.process_job.close.assert_called_once()
+
+    def test_run_openclaw_json_timeout_terminates_process_tree(self):
+        self.ws._find_openclaw_cmd = lambda: ["openclaw.cmd"]
+        self.ws._get_env = lambda: {}
+        self.ws._load_openclaw_state_env = lambda _state: {}
+        self.ws._terminate_process_tree = unittest.mock.Mock()
+        process = unittest.mock.Mock(returncode=None)
+        process.communicate.side_effect = subprocess.TimeoutExpired(
+            "openclaw", _OPENCLAW_RPC_TIMEOUT
+        )
+
+        with (
+            unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process),
+            self.assertRaisesRegex(RuntimeError, "timed out"),
+        ):
+            self.ws._run_openclaw_json(["plugins", "inspect", "openclaw-weixin", "--json"])
+        self.ws._terminate_process_tree.assert_called_once_with(process, self.process_job)
+
+    def test_migrate_openclaw_state_runs_target_doctor_with_state_environment(self):
+        preload = self.root / ".microclaw" / "resources" / "openclaw-state-owner-compat.mjs"
+        preload.parent.mkdir(parents=True)
+        preload.write_text("export {};", encoding="utf-8")
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={"PATH": "test"})
+        self.ws._load_openclaw_state_env = unittest.mock.Mock(
+            return_value={"OPENCLAW_HOME": str(self.home)}
+        )
+
+        with unittest.mock.patch.object(
+            self.ws,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="ok", stderr=""),
+        ) as run:
+            self.assertTrue(self.ws.migrate_openclaw_state())
+
+        (command,) = run.call_args.args
+        self.assertEqual(command, ["openclaw.cmd", "doctor", "--fix"])
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(
+            run.call_args.kwargs["env"]["OPENCLAW_STATE_DIR"],
+            str(self.home / ".openclaw"),
+        )
+        self.assertNotIn("MICROCLAW_WINDOWS_STATE_OWNER_COMPAT", run.call_args.kwargs["env"])
+        self.assertNotIn("NODE_OPTIONS", run.call_args.kwargs["env"])
+
+    def test_same_version_desktop_update_does_not_migrate_unbacked_databases(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._openclaw_upgrade_required = False
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.migrate_openclaw_state())
+        self.ws._run.assert_not_called()
+
+    def test_same_version_migration_skip_rejects_runtime_version_drift(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, "2026.8.2")
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._openclaw_upgrade_required = False
+        self.ws._run = unittest.mock.Mock()
+
+        self.assertFalse(self.ws.migrate_openclaw_state())
+        self.ws._run.assert_not_called()
+
+    def test_migrate_openclaw_state_fails_closed_when_doctor_rejects_state(self):
+        preload = self.root / ".microclaw" / "resources" / "openclaw-state-owner-compat.mjs"
+        preload.parent.mkdir(parents=True)
+        preload.write_text("export {};", encoding="utf-8")
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._load_openclaw_state_env = unittest.mock.Mock(return_value={})
+
+        with unittest.mock.patch.object(
+            self.ws,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="migration failed"),
+        ):
+            self.assertFalse(self.ws.migrate_openclaw_state())
+
+    def test_migrate_openclaw_state_rejects_missing_compatibility_before_running_doctor(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, "2026.10.3")
+        self.ws.install_prefix = prefix
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._load_openclaw_state_env = unittest.mock.Mock(return_value={})
+        self.ws.log.error = unittest.mock.Mock()
+        with unittest.mock.patch.object(self.ws, "_run") as run:
+            self.assertFalse(self.ws.migrate_openclaw_state())
+        run.assert_not_called()
+        self.assertIn("compatibility preload is missing", self.ws.log.error.call_args.args[0])
+
+    def test_state_owner_compatibility_preserves_environment_and_skips_other_versions(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, "2026.10.3")
+        self.ws.install_prefix = prefix
+        installation = self.ws._detect_openclaw_installation()
+        preload = self.root / ".microclaw" / "resources" / "openclaw-state-owner-compat.mjs"
+        preload.parent.mkdir(parents=True)
+        preload.write_text("export {};", encoding="utf-8")
+        env = {"NODE_OPTIONS": "--max-old-space-size=1024", "PATH": "existing"}
+        result = self.ws._with_state_owner_compatibility(env, installation)
+        self.assertEqual(env, {"NODE_OPTIONS": "--max-old-space-size=1024", "PATH": "existing"})
+        self.assertEqual(result["PATH"], "existing")
+        self.assertEqual(result["MICROCLAW_OPENCLAW_PACKAGE_DIR"], str(installation.package_dir))
+        self.assertEqual(
+            result["NODE_OPTIONS"], f'--max-old-space-size=1024 --import "{preload.as_uri()}"'
+        )
+        previous = SimpleNamespace(version="2026.10.2")
+        self.assertIs(self.ws._with_state_owner_compatibility(env, previous), env)
+        current = SimpleNamespace(version=OPENCLAW_TARGET_VERSION)
+        self.assertIs(self.ws._with_state_owner_compatibility(env, current), env)
+
+    def test_validation_gateway_loads_state_owner_compatibility(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, "2026.10.3")
+        self.ws.install_prefix = prefix
+        preload = self.root / ".microclaw" / "resources" / "openclaw-state-owner-compat.mjs"
+        preload.parent.mkdir(parents=True)
+        preload.write_text("export {};", encoding="utf-8")
+        self.ws._resolve_validation_node = unittest.mock.Mock(return_value=Path("node.exe"))
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._load_openclaw_state_env = unittest.mock.Mock(return_value={})
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.ws._start_validation_gateway(expected_version="2026.10.3")
+        self.assertEqual(
+            popen.call_args.kwargs["env"]["NODE_OPTIONS"], f'--import "{preload.as_uri()}"'
+        )
+
+    def test_frozen_state_owner_compatibility_does_not_depend_on_desktop_rollback(self):
+        prefix = self.appdata / "npm"
+        self._write_package(prefix, "2026.10.3")
+        self.ws.install_prefix = prefix
+        installation = self.ws._detect_openclaw_installation()
+        bundle = self.root / "bundle"
+        preload = bundle / "deployer" / "assets" / "openclaw-state-owner-compat.mjs"
+        preload.parent.mkdir(parents=True)
+        preload.write_text("export {};", encoding="utf-8")
+        with (
+            unittest.mock.patch("deployer.windows_setup.sys.frozen", True, create=True),
+            unittest.mock.patch("deployer.windows_setup.sys._MEIPASS", str(bundle), create=True),
+        ):
+            env = self.ws._with_state_owner_compatibility({}, installation)
+        self.assertEqual(env["NODE_OPTIONS"], f'--import "{preload.as_uri()}"')
+
+    def test_installation_validation_does_not_start_gateway_or_query_health(self):
+        for valid_version in (False, True):
+            with self.subTest(valid_version=valid_version):
+                transaction = unittest.mock.Mock()
+                self.ws._openclaw_transaction = transaction
+                self.ws._validate_installed_version = unittest.mock.Mock(return_value=valid_version)
+                self.ws._start_validation_gateway = unittest.mock.Mock()
+                self.ws._validate_gateway_health = unittest.mock.Mock()
+                self.ws._run_openclaw_json = unittest.mock.Mock()
+
+                self.assertIs(self.ws.begin_openclaw_upgrade_validation(), valid_version)
+
+                transaction.mark_verifying.assert_called_once_with()
+                transaction.record_validation.assert_called_once_with("version", valid_version)
+                self.ws._validate_installed_version.assert_called_once_with()
+                self.ws._start_validation_gateway.assert_not_called()
+                self.ws._validate_gateway_health.assert_not_called()
+                self.ws._run_openclaw_json.assert_not_called()
+
+    def test_upgrade_validation_records_health_without_deep_rpc_checks_and_stops_gateway(self):
+        transaction = unittest.mock.Mock()
+        process = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=True)
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._run_openclaw_json = unittest.mock.Mock(
+            side_effect=AssertionError("Post-install validation must not launch CLI queries")
+        )
+        self.ws._validate_weixin_plugin = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.verify_openclaw_upgrade())
+
+        self.assertEqual(
+            [call.args for call in transaction.record_validation.call_args_list],
+            [
+                ("version", True),
+                ("health", True),
+            ],
+        )
+        self.ws._run_openclaw_json.assert_not_called()
+        self.ws._validate_weixin_plugin.assert_not_called()
+        transaction.mark_verifying.assert_called_once()
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+
+    def test_same_version_fast_path_runs_health_without_deep_rpc_checks(self):
+        self.ws._openclaw_upgrade_required = False
+        transaction = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        process = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=True)
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._run_openclaw_json = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.verify_openclaw_upgrade())
+
+        self.ws._validate_installed_version.assert_called_once()
+        self.ws._start_validation_gateway.assert_called_once()
+        self.ws._validate_gateway_health.assert_called_once()
+        self.ws._run_openclaw_json.assert_not_called()
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+        transaction.mark_verifying.assert_called_once()
+        self.assertEqual(
+            [call.args for call in transaction.record_validation.call_args_list],
+            [
+                ("version", True),
+                ("health", True),
+            ],
+        )
+
+    def test_running_gateway_validation_requires_health_without_cli_queries(self):
+        for upgrade_required in (False, True):
+            for healthy in (False, True):
+                with self.subTest(upgrade_required=upgrade_required, healthy=healthy):
+                    transaction = unittest.mock.Mock()
+                    self.ws._openclaw_transaction = transaction
+                    self.ws._openclaw_upgrade_required = upgrade_required
+                    self.ws._validate_gateway_health = unittest.mock.Mock(return_value=healthy)
+                    self.ws._run_openclaw_json = unittest.mock.Mock(
+                        side_effect=AssertionError(
+                            "Post-install validation must not launch CLI queries"
+                        )
+                    )
+
+                    self.assertIs(self.ws.validate_running_gateway(), healthy)
+
+                    self.ws._validate_gateway_health.assert_called_once_with()
+                    transaction.record_validation.assert_called_once_with("health", healthy)
+                    self.ws._run_openclaw_json.assert_not_called()
+
+    def test_running_gateway_validation_without_transaction_uses_health_only(self):
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._run_openclaw_json = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.validate_running_gateway())
+
+        self.ws._validate_gateway_health.assert_called_once_with()
+        self.ws._run_openclaw_json.assert_not_called()
+
+    def test_same_version_validation_excludes_weixin(self):
+        self.ws._openclaw_upgrade_required = False
+        self.ws._weixin_plugin_mutation_required = True
+        transaction = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        process = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=True)
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+        self.ws._validate_weixin_plugin = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.verify_openclaw_upgrade())
+
+        self.assertEqual(
+            [call.args for call in transaction.record_validation.call_args_list],
+            [
+                ("version", True),
+                ("health", True),
+            ],
+        )
+        self.ws._validate_weixin_plugin.assert_not_called()
+
+    def test_failed_validation_returns_false_without_rolling_back_inside_validator(self):
+        transaction = unittest.mock.Mock()
+        process = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_installed_version = unittest.mock.Mock(return_value=False)
+
+        self.assertFalse(self.ws.verify_openclaw_upgrade())
+
+        transaction.rollback.assert_not_called()
+        transaction.record_validation.assert_called_once_with("version", False)
+        self.ws._start_validation_gateway.assert_not_called()
+        self.ws._stop_validation_gateway.assert_not_called()
+
+    def test_rollback_restores_and_health_checks_previous_gateway(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = "2026.3.12"
+        transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+        process = unittest.mock.Mock()
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=process)
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.rollback_openclaw_upgrade())
+
+        transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+        transaction.mark_rollback_failed.assert_not_called()
+        self.ws._start_validation_gateway.assert_called_once_with(expected_version="2026.3.12")
+        self.ws._stop_validation_gateway.assert_called_once_with(process)
+
+    def test_backing_up_rollback_skips_gateway_health_check(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = "2026.3.12"
+        transaction.manifest.phase = UpgradePhase.BACKING_UP
+
+        def rollback():
+            transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+
+        transaction.rollback.side_effect = rollback
+        self.ws._start_validation_gateway = unittest.mock.Mock()
+
+        self.assertTrue(self.ws._rollback_openclaw_transaction(transaction))
+
+        transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+        transaction.mark_rollback_failed.assert_not_called()
+        self.ws._start_validation_gateway.assert_not_called()
+
+    def test_new_install_rollback_does_not_start_a_missing_previous_gateway(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = None
+        transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.rollback_openclaw_upgrade())
+
+        transaction.rollback.assert_called_once()
+        transaction.complete_rollback.assert_called_once()
+        self.ws._start_validation_gateway.assert_not_called()
+
+    def test_failed_rollback_health_check_discards_transaction(self):
+        transaction = unittest.mock.Mock()
+        transaction.manifest.source_version = "2026.3.12"
+        transaction.manifest.phase = UpgradePhase.ROLLING_BACK
+        self.ws._openclaw_transaction = transaction
+        self.ws._start_validation_gateway = unittest.mock.Mock(return_value=unittest.mock.Mock())
+        self.ws._stop_validation_gateway = unittest.mock.Mock()
+        self.ws._validate_gateway_health = unittest.mock.Mock(return_value=False)
+
+        self.assertFalse(self.ws.rollback_openclaw_upgrade())
+
+        # A failed post-rollback health check must not leave a permanent
+        # rollback-failed brick; the transaction is discarded so future
+        # installs are not blocked by the retained lock.
+        transaction.discard.assert_called_once()
+        transaction.complete_rollback.assert_not_called()
+
+    def test_weixin_install_skips_matching_bundled_payload(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        peer = installed / "node_modules" / "openclaw" / "package.json"
+        peer.parent.mkdir(parents=True)
+        peer.write_text("{}", encoding="utf-8")
+        config = installed.parents[1] / "openclaw.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {
+                            "openclaw-weixin": {
+                                "enabled": False,
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed, enabled=False, status="disabled")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
+        popen.assert_not_called()
+
+    def test_weixin_missing_entry_stays_on_fast_path_when_official_registration_matches(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": [],
+                        "deny": [],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed)
+        )
+
+        self.assertFalse(self.ws._same_version_weixin_requires_full_backup())
+
+        self.assertFalse(self.ws._weixin_policy_snapshot.entry_present)
+        self.assertTrue(self.ws._weixin_registration_verified)
+
+        self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
+
+    def test_weixin_matching_payload_repairs_missing_config_record(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["openclaw.cmd", "plugins", "install", "--force", str(bundled)],
+        )
+
+    def test_weixin_install_uses_force_without_deleting_existing_plugin(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        old_marker = installed / "old-only.txt"
+        old_marker.write_text("preserve until OpenClaw replaces it", encoding="utf-8")
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        command = popen.call_args.args[0]
+        self.assertEqual(
+            command,
+            ["openclaw.cmd", "plugins", "install", "--force", str(bundled)],
+        )
+        self.assertEqual(popen.call_args.kwargs["creationflags"], 0x08000000 | 0x00000004)
+        self.assertTrue(old_marker.exists())
+        process.communicate.assert_called_once_with(timeout=120)
+        self.ws._create_process_lifetime_job.assert_called_once_with(process)
+        self.process_job.resume.assert_called_once_with(process)
+        self.process_job.close.assert_called()
+        self.ws._run.assert_called_once()
+
+    def test_weixin_install_timeout_terminates_job_before_returning(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        process = unittest.mock.Mock(returncode=None, pid=4321)
+        process.communicate.side_effect = subprocess.TimeoutExpired("openclaw", 120)
+        process.poll.return_value = 1
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process):
+            self.assertFalse(self.ws.install_weixin_plugin())
+
+        self.process_job.close.assert_called()
+        process.wait.assert_called_once_with(timeout=15)
+
+    def test_weixin_force_install_restores_user_plugin_policy(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["other-plugin"],
+                        "deny": ["openclaw-weixin"],
+                        "entries": {
+                            "openclaw-weixin": {
+                                "enabled": False,
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={"TEST": "1"})
+        process = self._plugin_process()
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process):
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        restore = self.ws._run.call_args
+        self.assertEqual(
+            restore.args[0],
+            [
+                "openclaw.cmd",
+                "config",
+                "patch",
+                "--stdin",
+                "--replace-path",
+                "plugins.entries.openclaw-weixin",
+                "--replace-path",
+                "plugins.allow",
+                "--replace-path",
+                "plugins.deny",
+            ],
+        )
+        self.assertEqual(
+            json.loads(restore.kwargs["input"]),
+            {
+                "plugins": {
+                    "entries": {"openclaw-weixin": {"enabled": False}},
+                    "enabled": None,
+                    "allow": ["other-plugin"],
+                    "deny": ["openclaw-weixin"],
+                }
+            },
+        )
+        self.assertEqual(restore.kwargs["env"]["TEST"], "1")
+        self.assertEqual(
+            restore.kwargs["env"]["OPENCLAW_STATE_DIR"],
+            str(self.home / ".openclaw"),
+        )
+
+    def test_weixin_force_install_preserves_global_policy_without_existing_entry(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["other-plugin"],
+                        "deny": ["openclaw-weixin"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen", return_value=process):
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        patch = json.loads(self.ws._run.call_args.kwargs["input"])
+        self.assertEqual(
+            patch,
+            {
+                "plugins": {
+                    "entries": {"openclaw-weixin": None},
+                    "enabled": None,
+                    "allow": ["other-plugin"],
+                    "deny": ["openclaw-weixin"],
+                }
+            },
+        )
+        self.assertFalse(self.ws._weixin_policy_snapshot.expects_enabled)
+
+    def test_weixin_policy_treats_empty_allow_as_open_and_global_disable_as_closed(self):
+        state_dir = self.home / ".openclaw"
+        state_dir.mkdir()
+        config_path = state_dir / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": [],
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        policy = self.ws._read_weixin_plugin_policy(state_dir)
+
+        self.assertIsNotNone(policy)
+        self.assertTrue(policy.expects_enabled)
+
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "enabled": False,
+                        "allow": [],
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        policy = self.ws._read_weixin_plugin_policy(state_dir)
+
+        self.assertIsNotNone(policy)
+        self.assertFalse(policy.expects_enabled)
+
+    def test_weixin_policy_restore_retry_does_not_reinstall_or_reread_policy(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["other-plugin"],
+                        "deny": ["openclaw-weixin"],
+                        "entries": {"openclaw-weixin": {"enabled": False}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(returncode=1, stdout="", stderr="transient"),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertFalse(self.ws.install_weixin_plugin())
+            self.assertTrue(self.ws._weixin_policy_restore_pending)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "plugins": {
+                            "allow": ["openclaw-weixin"],
+                            "entries": {"openclaw-weixin": {"enabled": True}},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        popen.assert_called_once()
+        self.assertEqual(self.ws._run.call_count, 2)
+        first_patch = json.loads(self.ws._run.call_args_list[0].kwargs["input"])
+        second_patch = json.loads(self.ws._run.call_args_list[1].kwargs["input"])
+        self.assertEqual(first_patch, second_patch)
+        self.assertEqual(first_patch["plugins"]["allow"], ["other-plugin"])
+        self.assertEqual(first_patch["plugins"]["deny"], ["openclaw-weixin"])
+        self.assertFalse(self.ws._weixin_policy_restore_pending)
+
+    def test_weixin_matching_payload_with_missing_official_record_is_reinstalled(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed, tracked=False)
+        )
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        process = self._plugin_process()
+
+        with unittest.mock.patch(
+            "deployer.windows_setup.subprocess.Popen", return_value=process
+        ) as popen:
+            self.assertTrue(self.ws.install_weixin_plugin())
+
+        popen.assert_called_once()
+
+    def test_weixin_force_install_refuses_lightweight_transaction_after_state_changes(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled, marker="new")
+        self._write_weixin_payload(installed, marker="old")
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        transaction = unittest.mock.Mock()
+        transaction.manifest.backup_mode = UpgradeBackupMode.MANAGED_STATE
+        self.ws._openclaw_transaction = transaction
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertFalse(self.ws.install_weixin_plugin())
+
+        popen.assert_not_called()
+
+    def test_weixin_install_rechecks_cached_registration_before_fast_path(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self._write_weixin_payload(installed)
+        config_path = installed.parents[1] / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {"openclaw-weixin": {"enabled": True}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        transaction = unittest.mock.Mock()
+        transaction.manifest.backup_mode = UpgradeBackupMode.MANAGED_STATE
+        self.ws._openclaw_transaction = transaction
+        self.ws._weixin_registration_verified = True
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._find_openclaw_cmd = unittest.mock.Mock(return_value=["openclaw.cmd"])
+        self.ws._get_env = unittest.mock.Mock(return_value={})
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(installed, tracked=False)
+        )
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertFalse(self.ws.install_weixin_plugin())
+
+        self.ws._inspect_weixin_plugin.assert_called_once()
+        popen.assert_not_called()
+
+    def test_weixin_validation_accepts_user_disabled_plugin(self):
+        bundled = self.root / "bundled-weixin"
+        installed = self.home / ".openclaw" / "extensions" / "openclaw-weixin"
+        self._write_weixin_payload(bundled)
+        self.ws._find_bundled_weixin_plugin = unittest.mock.Mock(return_value=bundled)
+        self.ws._inspect_weixin_plugin = unittest.mock.Mock(
+            return_value=self._weixin_inspection(
+                installed,
+                enabled=False,
+                status="disabled",
+                activated=False,
+            )
+        )
+        self.ws._weixin_policy_snapshot = WeixinPluginPolicy(
+            plugins_enabled_present=False,
+            plugins_enabled=None,
+            entry_present=True,
+            entry={"enabled": False},
+            allow_present=True,
+            allow=["other-plugin"],
+            deny_present=True,
+            deny=["openclaw-weixin"],
+        )
+
+        self.assertTrue(self.ws._validate_weixin_plugin())
+
+    def test_write_config_preserves_existing_weixin_plugin_settings(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        plugins = {
+            "allow": ["openclaw-weixin"],
+            "entries": {
+                "openclaw-weixin": {
+                    "enabled": False,
+                    "config": {"userSetting": "preserved"},
+                }
+            },
+        }
+        config_path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            written["plugins"]["entries"]["openclaw-weixin"], plugins["entries"]["openclaw-weixin"]
+        )
+        self.assertIn("openclaw-weixin", written["plugins"]["allow"])
+
+    def test_write_config_keeps_migrated_agent_ownership_when_setting_a_model(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        agents = {
+            "ownership": "explicit",
+            "entries": {"main": {"name": "Assistant"}, "custom": {"skills": []}},
+            "defaults": {"heartbeat": {"agentId": "custom"}},
+        }
+        config_path.write_text(json.dumps({"agents": agents}), encoding="utf-8")
+        self.ws.cfg = _Config(
+            {
+                "model.api_key": "test-key",
+                "model.base_url": "https://example.invalid",
+                "model.model_name": "test-model",
+            }
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+        self.assertTrue(self.ws.write_config())
+        written = json.loads(config_path.read_text(encoding="utf-8"))["agents"]
+        self.assertEqual(written["entries"], agents["entries"])
+        self.assertEqual(written["ownership"], "explicit")
+        self.assertEqual(written["defaults"]["heartbeat"], {"agentId": "custom"})
+        self.assertEqual(written["defaults"]["model"], {"primary": "custom/test-model"})
+
+    def test_write_config_defaults_fresh_install_to_parallel_free_search(self):
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["tools"]["web"]["search"], {"provider": "parallel-free"})
+        self.assertEqual(written["plugins"]["entries"]["parallel"], {"enabled": True})
+
+    def test_write_config_preserves_search_disabled_for_background_setup_or_by_user(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True, exist_ok=True)
+        config_path = state / "openclaw.json"
+        search = {"enabled": False, "maxResults": 7}
+        config_path.write_text(json.dumps({"tools": {"web": {"search": search}}}), encoding="utf-8")
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["tools"]["web"]["search"], search)
+        self.assertNotIn("parallel", written.get("plugins", {}).get("entries", {}))
+
+    def test_write_config_disables_new_managed_skills_outside_whitelist(self):
+        self.ws.cfg = _Config(
+            {
+                "skills.enable": True,
+                "skills.allowManaged": ["officecli"],
+            }
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        entries = written["skills"]["entries"]
+        self.assertTrue(entries["officecli"]["enabled"])
+        self.assertNotIn("rednote-publisher", entries)
+        self.assertFalse(entries["desktop-organizer"]["enabled"])
+
+    def test_write_config_preserves_desktop_owned_and_unknown_skill_entries(self):
+        self.ws.cfg = _Config(
+            {
+                "skills.enable": True,
+                "skills.allowManaged": ["officecli"],
+            }
+        )
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "entries": {
+                            "rednote-publisher": {"enabled": False, "owner": "desktop"},
+                            "user-skill": {"enabled": True},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        entries = json.loads(config_path.read_text(encoding="utf-8"))["skills"]["entries"]
+        self.assertEqual(entries["rednote-publisher"], {"enabled": False, "owner": "desktop"})
+        self.assertEqual(entries["user-skill"], {"enabled": True})
+
+    def test_write_config_preserves_existing_web_search_provider(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "tavily", "apiKey": "key"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            written["tools"]["web"]["search"],
+            {"provider": "tavily", "apiKey": "key"},
+        )
+
+    def test_write_config_existing_provider_wins_over_installer_brave_key(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "tavily", "apiKey": "key"}}}}),
+            encoding="utf-8",
+        )
+        self.ws.cfg = _Config({"brave.api_key": "installer-brave-key"})
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            written["tools"]["web"]["search"],
+            {"provider": "tavily", "apiKey": "key"},
+        )
+
+    def test_write_config_replaces_keyless_paid_provider_with_parallel_free(self):
+        for provider in ("brave", "tavily"):
+            with self.subTest(provider=provider):
+                config_path = self.home / ".openclaw" / "openclaw.json"
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(
+                    json.dumps({"tools": {"web": {"search": {"provider": provider}}}}),
+                    encoding="utf-8",
+                )
+                self.ws._deploy_managed_skills = unittest.mock.Mock()
+                self.ws._install_officecli = unittest.mock.Mock()
+                self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+                self.assertTrue(self.ws.write_config())
+
+                written = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    written["tools"]["web"]["search"],
+                    {"provider": "parallel-free"},
+                )
+                self.assertEqual(
+                    written["plugins"]["entries"]["parallel"],
+                    {"enabled": True},
+                )
+
+    def test_install_search_provider_plugin_installs_parallel_package(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "parallel-free"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock(
+            return_value=(["openclaw.cmd"], {"OPENCLAW_STATE_DIR": str(config_path.parent)})
+        )
+        self.ws._run_openclaw_json = unittest.mock.Mock(side_effect=RuntimeError("not installed"))
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="installed", stderr="")
+        )
+        self.ws._reachable_npm_registries = unittest.mock.Mock(
+            return_value=[MIRRORS[MIRROR_HUAWEI]["npm_registry"]]
+        )
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._run.assert_called_once()
+        self.assertEqual(
+            self.ws._run.call_args.args[0],
+            [
+                "openclaw.cmd",
+                "plugins",
+                "install",
+                "--force",
+                f"@openclaw/parallel-plugin@{OPENCLAW_TARGET_VERSION}",
+            ],
+        )
+        self.assertEqual(
+            self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
+            MIRRORS[MIRROR_HUAWEI]["npm_registry"],
+        )
+
+    def test_registry_env_overrides_case_variants_without_changing_parent_or_tls_settings(self):
+        original = {
+            "NPM_CONFIG_REGISTRY": "https://proxy.invalid/npm/",
+            "npm_config_registry": "https://other.invalid/npm/",
+            "Npm_Config_Replace_Registry_Host": "never",
+            "NPM_CONFIG_FETCH_RETRIES": "20",
+            "NPM_CONFIG_FETCH_TIMEOUT": "300000",
+            "HTTPS_PROXY": "http://proxy.invalid:8080",
+            "npm_config_cafile": "trusted-ca.pem",
+            "NODE_EXTRA_CA_CERTS": "extra-ca.pem",
+            "OPENCLAW_STATE_DIR": str(self.home / ".openclaw"),
+        }
+        before = original.copy()
+        registry = MIRRORS[MIRROR_HUAWEI]["npm_registry"]
+
+        env = self.ws._npm_registry_env(registry, original)
+
+        self.assertEqual(original, before)
+        self.assertEqual(env["npm_config_registry"], registry)
+        self.assertEqual(env["npm_config_replace_registry_host"], "always")
+        self.assertNotIn("NPM_CONFIG_REGISTRY", env)
+        self.assertNotIn("Npm_Config_Replace_Registry_Host", env)
+        self.assertNotIn("NPM_CONFIG_FETCH_RETRIES", env)
+        self.assertNotIn("NPM_CONFIG_FETCH_TIMEOUT", env)
+        self.assertEqual(env["npm_config_fetch_retries"], "1")
+        self.assertEqual(env["npm_config_fetch_retry_mintimeout"], "1000")
+        self.assertEqual(env["npm_config_fetch_retry_maxtimeout"], "3000")
+        self.assertEqual(env["npm_config_fetch_timeout"], "60000")
+        for key in (
+            "HTTPS_PROXY",
+            "npm_config_cafile",
+            "NODE_EXTRA_CA_CERTS",
+            "OPENCLAW_STATE_DIR",
+        ):
+            self.assertEqual(env[key], original[key])
+
+    def test_npm_setup_verifies_selected_registry_despite_inherited_registry_override(self):
+        registry = MIRRORS[MIRROR_HUAWEI]["npm_registry"]
+        inherited = {"NPM_CONFIG_REGISTRY": "https://proxy.invalid/npm/"}
+        self.ws.cfg = _Config({"npm.registry": registry})
+        self.ws._get_npm_path = unittest.mock.Mock(return_value="npm.cmd")
+        self.ws._get_env = unittest.mock.Mock(return_value=inherited)
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+                SimpleNamespace(returncode=0, stdout=registry, stderr=""),
+            ]
+        )
+
+        self.assertTrue(self.ws.setup_npm_mirror())
+
+        for call in self.ws._run.call_args_list:
+            self.assertEqual(call.kwargs["env"]["npm_config_registry"], registry)
+            self.assertNotIn("NPM_CONFIG_REGISTRY", call.kwargs["env"])
+        self.assertEqual(inherited, {"NPM_CONFIG_REGISTRY": "https://proxy.invalid/npm/"})
+
+    def _prepare_parallel_registry_test(self, results):
+        state = self.home / ".openclaw"
+        state.mkdir()
+        (state / "openclaw.json").write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "parallel-free"}}}}),
+            encoding="utf-8",
+        )
+        inherited = {
+            "NPM_CONFIG_REGISTRY": "https://proxy.invalid/npm/",
+            "OPENCLAW_STATE_DIR": str(state),
+        }
+        self.ws._weixin_cli_context = unittest.mock.Mock(return_value=(["openclaw.cmd"], inherited))
+        self.ws._run_openclaw_json = unittest.mock.Mock(side_effect=RuntimeError("not installed"))
+        self.ws._run = unittest.mock.Mock(side_effect=results)
+        self.ws._reachable_npm_registries = unittest.mock.Mock(
+            return_value=[
+                MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+                MIRRORS[MIRROR_HUAWEI]["npm_registry"],
+            ]
+        )
+        return inherited
+
+    def test_parallel_missing_version_falls_back_with_explicit_child_registry(self):
+        inherited = self._prepare_parallel_registry_test(
+            [
+                SimpleNamespace(returncode=1, stdout="", stderr="npm error code ETARGET"),
+                SimpleNamespace(returncode=0, stdout="installed", stderr=""),
+            ]
+        )
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.assertEqual(self.ws._run.call_count, 2)
+        for call, mirror in zip(
+            self.ws._run.call_args_list, (MIRROR_NPMMIRROR, MIRROR_HUAWEI), strict=True
+        ):
+            self.assertEqual(
+                call.kwargs["env"]["npm_config_registry"], MIRRORS[mirror]["npm_registry"]
+            )
+            self.assertNotIn("NPM_CONFIG_REGISTRY", call.kwargs["env"])
+            self.assertEqual(
+                call.kwargs["env"]["OPENCLAW_STATE_DIR"], inherited["OPENCLAW_STATE_DIR"]
+            )
+        self.assertEqual(inherited["NPM_CONFIG_REGISTRY"], "https://proxy.invalid/npm/")
+
+    def test_parallel_prefers_registry_used_for_successful_runtime_install(self):
+        self._prepare_parallel_registry_test(
+            [SimpleNamespace(returncode=0, stdout="installed", stderr="")]
+        )
+        self.ws._successful_npm_registry = MIRRORS[MIRROR_HUAWEI]["npm_registry"]
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._run.assert_called_once()
+        self.assertEqual(
+            self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
+            self.ws._successful_npm_registry,
+        )
+
+    def test_parallel_api_incompatibility_does_not_retry_another_registry(self):
+        self._prepare_parallel_registry_test(
+            [SimpleNamespace(returncode=1, stdout="", stderr="requires plugin API >=2026.10.4")]
+        )
+
+        self.assertFalse(self.ws.install_search_provider_plugin())
+
+        self.ws._run.assert_called_once()
+
+    def test_parallel_inconclusive_registry_probes_still_try_install(self):
+        self._prepare_parallel_registry_test(
+            [SimpleNamespace(returncode=0, stdout="installed", stderr="")]
+        )
+        self.ws._reachable_npm_registries.return_value = []
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._run.assert_called_once()
+        self.assertEqual(
+            self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
+            self.ws._npm_registry_candidates()[0],
+        )
+
+    def test_local_model_provider_installs_only_pinned_component_and_preserves_model_selection(
+        self,
+    ):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True)
+        config = {
+            "agents": {"defaults": {"model": {"primary": "cloud/keep"}}},
+            "models": {"mode": "merge"},
+        }
+        (state / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+        resources = self.root / ".microclaw" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "openclaw-fs-safe-compat.mjs").write_text("", encoding="utf-8")
+        self.ws._local_model_provider_is_current = unittest.mock.Mock(side_effect=[False, True])
+        self.ws._weixin_cli_context = unittest.mock.Mock(return_value=(["openclaw.cmd"], {}))
+        self.ws._detect_openclaw_installation = unittest.mock.Mock(
+            return_value=SimpleNamespace(package_dir=self.root / "runtime")
+        )
+
+        def run(command, **kwargs):
+            if "enable" in command:
+                (state / "openclaw.json").write_text(
+                    json.dumps(
+                        {**config, "plugins": {"entries": {"llama-cpp": {"enabled": True}}}}
+                    ),
+                    encoding="utf-8",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.ws._run = unittest.mock.Mock(side_effect=run)
+        self.assertTrue(self.ws.install_local_model_provider())
+        install = self.ws._run.call_args_list[0]
+        self.assertEqual(
+            install.args[0][1:],
+            [
+                "plugins",
+                "install",
+                f"clawhub:@openclaw/llama-cpp-provider@{OPENCLAW_TARGET_VERSION}",
+                "--accept-capabilities",
+            ],
+        )
+        self.assertEqual(install.kwargs["env"]["MICROCLAW_FS_SAFE_COMPAT"], "1")
+        self.assertIn("--import", install.kwargs["env"]["NODE_OPTIONS"])
+        self.assertNotIn("--acknowledge-install-policy-warning", install.args[0])
+        self.assertEqual(
+            json.loads((state / "openclaw.json").read_text())["agents"], config["agents"]
+        )
+
+    def test_local_model_provider_preserves_explicit_disable_and_avoids_network_when_ready(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True)
+        config_path = state / "openclaw.json"
+        self.ws._run = unittest.mock.Mock()
+        for plugins in (
+            {"enabled": False},
+            {"deny": ["llama-cpp"]},
+            {"entries": {"llama-cpp": {"enabled": False}}},
+        ):
+            config_path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+            self.assertTrue(self.ws.install_local_model_provider())
+        self.ws._run.assert_not_called()
+        config_path.write_text(
+            json.dumps(
+                {"plugins": {"entries": {"llama-cpp": {"enabled": True}}, "allow": ["llama-cpp"]}}
+            ),
+            encoding="utf-8",
+        )
+        self.ws._local_model_provider_is_current = unittest.mock.Mock(return_value=True)
+        self.assertTrue(self.ws.install_local_model_provider())
+        self.ws._run.assert_not_called()
+
+    def test_local_model_provider_fails_if_install_policy_rejects_the_component(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True)
+        (state / "openclaw.json").write_text("{}", encoding="utf-8")
+        resources = self.root / ".microclaw" / "resources"
+        resources.mkdir(parents=True)
+        (resources / "openclaw-fs-safe-compat.mjs").write_text("", encoding="utf-8")
+        self.ws._local_model_provider_is_current = unittest.mock.Mock(return_value=False)
+        self.ws._weixin_cli_context = unittest.mock.Mock(return_value=(["openclaw.cmd"], {}))
+        self.ws._detect_openclaw_installation = unittest.mock.Mock(
+            return_value=SimpleNamespace(package_dir=self.root / "runtime")
+        )
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="policy blocked")
+        )
+        self.assertFalse(self.ws.install_local_model_provider())
+        self.ws._run.assert_called_once()
+
+    def test_install_search_provider_plugin_uses_verified_local_fast_path(self):
+        state_dir = self.home / ".openclaw"
+        config_path = state_dir / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {"web": {"search": {"provider": "parallel-free"}}},
+                    "plugins": {"entries": {"parallel": {"enabled": True}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_dir = (
+            state_dir
+            / "npm"
+            / "projects"
+            / "parallel-project"
+            / "node_modules"
+            / "@openclaw"
+            / "parallel-plugin"
+        )
+        (plugin_dir / "dist").mkdir(parents=True)
+        (plugin_dir / "dist" / "index.js").write_text("", encoding="utf-8")
+        (plugin_dir / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "@openclaw/parallel-plugin",
+                    "openclaw": {
+                        "extensions": ["./index.ts"],
+                        "runtimeExtensions": ["./dist/index.js"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (plugin_dir / "openclaw.plugin.json").write_text(
+            json.dumps(
+                {
+                    "id": "parallel",
+                    "contracts": {"webSearchProviders": ["parallel", "parallel-free"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._weixin_cli_context.assert_not_called()
+
+    def test_install_search_provider_plugin_preserves_other_provider(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"tools": {"web": {"search": {"provider": "tavily", "apiKey": "key"}}}}),
+            encoding="utf-8",
+        )
+        self.ws._weixin_cli_context = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_search_provider_plugin())
+
+        self.ws._weixin_cli_context.assert_not_called()
+
+    def test_warmup_compile_cache_skips_current_same_version_cache(self):
+        self.ws._openclaw_upgrade_required = False
+        state_dir = self.home / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / ".microclaw-version").write_text(
+            OPENCLAW_TARGET_VERSION,
+            encoding="utf-8",
+        )
+        (cache_dir / "cached-module").write_bytes(b"cache")
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_bytes(b"node")
+        package = self._write_package(self.appdata / "npm", OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = self.appdata / "npm"
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.warmup_compile_cache())
+
+        self.assertTrue(package.exists())
+        popen.assert_not_called()
+
+    def test_warmup_compile_cache_adopts_existing_same_version_cache(self):
+        self.ws._openclaw_upgrade_required = False
+        cache_dir = self.home / ".openclaw" / "compile-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "cached-module").write_bytes(b"cache")
+        self.ws.node_dir.mkdir(parents=True)
+        (self.ws.node_dir / "node.exe").write_bytes(b"node")
+        self._write_package(self.appdata / "npm", OPENCLAW_TARGET_VERSION)
+        self.ws.install_prefix = self.appdata / "npm"
+
+        with unittest.mock.patch("deployer.windows_setup.subprocess.Popen") as popen:
+            self.assertTrue(self.ws.warmup_compile_cache())
+
+        self.assertEqual(
+            (cache_dir / ".microclaw-version").read_text(encoding="utf-8"),
+            OPENCLAW_TARGET_VERSION,
+        )
+        popen.assert_not_called()
+
+    def test_deploy_managed_skills_preserves_existing_officecli_binary(self):
+        bundled = self.root / "bundled-skills"
+        bundled_officecli = bundled / "officecli"
+        bundled_officecli.mkdir(parents=True)
+        (bundled_officecli / "SKILL.md").write_text("updated", encoding="utf-8")
+        state_dir = self.home / ".openclaw"
+        existing = state_dir / "skills" / "officecli" / "bin" / "officecli.exe"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"existing-binary")
+        self.ws._get_bundled_skills_dir = unittest.mock.Mock(return_value=bundled)
+
+        self.ws._deploy_managed_skills(state_dir)
+
+        self.assertEqual(existing.read_bytes(), b"existing-binary")
+        self.assertEqual(
+            (state_dir / "skills" / "officecli" / "SKILL.md").read_text(encoding="utf-8"),
+            "updated",
+        )
+
+    def test_defender_exclusions_skip_elevation_when_already_configured(self):
+        directories = [self.root / "one", self.root / "two"]
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([str(path) for path in directories]),
+                stderr="",
+            )
+        )
+
+        self.ws._add_defender_exclusions(directories)
+
+        self.ws._run.assert_called_once()
+
+    def test_defender_exclusions_add_only_missing_paths(self):
+        existing = self.root / "existing"
+        missing = self.root / "missing"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout=json.dumps([str(existing)]), stderr=""),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+        )
+
+        self.ws._add_defender_exclusions([existing, missing])
+
+        elevated_command = self.ws._run.call_args_list[1].args[0]
+        self.assertIn(str(missing), elevated_command[-1])
+        self.assertNotIn(str(existing), elevated_command[-1])
+
+    def test_defender_exclusions_use_success_marker(self):
+        marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
+        marker.parent.mkdir(parents=True)
+        expected_paths = sorted(
+            os.path.normcase(os.path.normpath(str(path)))
+            for path in (
+                self.ws.node_dir,
+                self.appdata / "npm" / "node_modules" / "openclaw",
+                self.home / ".openclaw",
+                self.home / ".openclaw-git",
+                self.home / ".microclaw",
+                self.local_appdata / "npm-cache",
+                self.local_appdata / "Temp",
+            )
+        )
+        marker.write_text(
+            json.dumps({"schema": 1, "paths": expected_paths}),
+            encoding="utf-8",
+        )
+        self.ws._add_defender_exclusions = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.ensure_defender_exclusions())
+
+        self.ws._add_defender_exclusions.assert_not_called()
+
+    def test_defender_exclusions_write_marker_only_after_success(self):
+        marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
+        self.ws._add_defender_exclusions = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.ensure_defender_exclusions())
+
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["schema"], 1)
+        configured_paths = self.ws._add_defender_exclusions.call_args.args[0]
+        self.assertIn(
+            self.appdata / "npm" / "node_modules" / "openclaw",
+            configured_paths,
+        )
+
+    def test_defender_exclusions_do_not_write_marker_after_failure(self):
+        marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
+        self.ws._add_defender_exclusions = unittest.mock.Mock(return_value=False)
+
+        self.assertTrue(self.ws.ensure_defender_exclusions())
+
+        self.assertFalse(marker.exists())
+
+    def test_desktop_update_preserves_upgrade_transaction_directories(self):
+        install_dir = self.root / ".microclaw"
+        backup_marker = install_dir / "backups" / "openclaw" / "tx" / "marker.txt"
+        transaction_marker = install_dir / "upgrade" / "openclaw-upgrade.json"
+        backup_marker.parent.mkdir(parents=True)
+        transaction_marker.parent.mkdir(parents=True)
+        backup_marker.write_text("backup", encoding="utf-8")
+        transaction_marker.write_text("transaction", encoding="utf-8")
+        (install_dir / "MicroClawDesktop.exe").write_text("old", encoding="utf-8")
+        desktop_zip = self.root / "microclaw-portable.zip"
+        with zipfile.ZipFile(desktop_zip, "w") as archive:
+            archive.writestr("MicroClawDesktop.exe", "new")
+
+        self.ws._find_local_desktop_zip = unittest.mock.Mock(return_value=desktop_zip)
+        self.ws._process_snapshot = unittest.mock.Mock(return_value={})
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        with unittest.mock.patch("deployer.windows_setup.DEFAULT_DESKTOP_DIR", install_dir):
+            self.assertTrue(self.ws.install_desktop_client())
+
+        self.assertEqual(backup_marker.read_text(encoding="utf-8"), "backup")
+        self.assertEqual(transaction_marker.read_text(encoding="utf-8"), "transaction")
+        self.assertEqual(
+            (install_dir / "MicroClawDesktop.exe").read_text(encoding="utf-8"),
+            "new",
+        )
+        self.ws._run.assert_not_called()
+
+    def test_desktop_install_skips_matching_committed_build(self):
+        self.ws._desktop_install_is_current = unittest.mock.Mock(return_value=True)
+        self.ws._find_local_desktop_zip = unittest.mock.Mock()
+        self.ws._process_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.install_desktop_client())
+
+        self.ws._find_local_desktop_zip.assert_not_called()
+        self.ws._process_snapshot.assert_not_called()
+
+    def test_install_uninstaller_bundle_publishes_source_and_checks_persisted_exe(self):
+        source = self.root / "dist" / "MicroClawInstaller"
+        destination = self.home / ".openclaw"
+        persisted = destination / "MicroClawInstaller.exe"
+        self.ws._check_persisted_uninstaller = unittest.mock.Mock()
+        self.ws.log.warn = unittest.mock.Mock()
+
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.resolve_uninstaller_bundle",
+                return_value=source,
+            ) as resolve,
+            unittest.mock.patch(
+                "deployer.windows_setup.publish_uninstaller_bundle",
+                return_value=persisted,
+            ) as publish,
+        ):
+            self.assertTrue(self.ws.install_uninstaller_bundle())
+
+        resolve.assert_called_once()
+        publish.assert_called_once_with(
+            source,
+            destination,
+            self.ws._check_persisted_uninstaller,
+            cleanup_error_handler=self.ws.log.warn,
+        )
+
+    def test_install_uninstaller_bundle_reports_failure(self):
+        with unittest.mock.patch(
+            "deployer.windows_setup.resolve_uninstaller_bundle",
+            side_effect=UninstallerBundleError("build installer first"),
+        ):
+            self.assertFalse(self.ws.install_uninstaller_bundle())
+
+    def test_install_uninstaller_bundle_skips_matching_committed_build(self):
+        self.ws._uninstaller_install_is_current = unittest.mock.Mock(return_value=True)
+        with unittest.mock.patch("deployer.windows_setup.resolve_uninstaller_bundle") as resolve:
+            self.assertTrue(self.ws.install_uninstaller_bundle())
+
+        resolve.assert_not_called()
+
+    def test_uninstaller_fast_path_still_requires_full_bundle_match(self):
+        self.ws._bundled_install_manifest = self._install_manifest()
+        self.ws._persisted_install_manifest = self._install_manifest(npmRegistry="registry")
+        source = self.root / "source"
+        with (
+            unittest.mock.patch(
+                "deployer.windows_setup.resolve_uninstaller_bundle",
+                return_value=source,
+            ),
+            unittest.mock.patch(
+                "deployer.windows_setup.bundles_match",
+                return_value=False,
+            ) as matches,
+        ):
+            self.assertFalse(self.ws._uninstaller_install_is_current())
+
+        matches.assert_called_once_with(source, self.home / ".openclaw")
+
+    def test_persisted_uninstaller_check_rejects_nonzero_exit(self):
+        exe = self.root / "MicroClawInstaller.exe"
+        self.ws._run = unittest.mock.Mock(
+            return_value=SimpleNamespace(returncode=3, stdout="", stderr="runtime failed")
+        )
+
+        with self.assertRaisesRegex(UninstallerBundleError, "runtime failed"):
+            self.ws._check_persisted_uninstaller(exe)
+
+        self.ws._run.assert_called_once_with(
+            [str(exe), "--check-uninstaller"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+
+    def test_persisted_uninstaller_check_rejects_timeout(self):
+        exe = self.root / "MicroClawInstaller.exe"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=subprocess.TimeoutExpired([str(exe)], timeout=30)
+        )
+
+        with self.assertRaisesRegex(UninstallerBundleError, "timed out"):
+            self.ws._check_persisted_uninstaller(exe)
+
+    def test_persisted_uninstaller_check_rejects_launch_error(self):
+        exe = self.root / "MicroClawInstaller.exe"
+        self.ws._run = unittest.mock.Mock(
+            side_effect=FileNotFoundError(2, "No such file or directory")
+        )
+
+        with self.assertRaisesRegex(UninstallerBundleError, "could not launch"):
+            self.ws._check_persisted_uninstaller(exe)
+
+    def _write_persisted_uninstaller(self):
+        state = self.home / ".openclaw"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "MicroClawInstaller.exe").write_text("exe", encoding="utf-8")
+        (state / "_internal").mkdir(exist_ok=True)
+        (state / "_internal" / "runtime.dll").write_text("runtime", encoding="utf-8")
+        return state / "MicroClawInstaller.exe"
+
+    def test_register_installed_app_refuses_missing_uninstaller(self):
+        fake_winreg = unittest.mock.MagicMock()
+        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+            self.assertFalse(self.ws._register_installed_app(None))
+        fake_winreg.CreateKeyEx.assert_not_called()
+
+    def test_create_desktop_shortcut_removes_legacy_uninstall_shortcuts(self):
+        desktop = self.root / "Desktop"
+        desktop.mkdir()
+        uninstall_shortcut = desktop / "Uninstall MicroClaw.lnk"
+        localized_shortcut = desktop / "卸载 MicroClaw.lnk"
+        uninstall_shortcut.write_text("shortcut", encoding="utf-8")
+        localized_shortcut.write_text("shortcut", encoding="utf-8")
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=desktop)
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=None)
+        self.ws._create_url_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
+
+        self.assertTrue(self.ws.create_desktop_shortcut())
+
+        self.assertFalse(uninstall_shortcut.exists())
+        self.assertFalse(localized_shortcut.exists())
+
+    def test_create_desktop_shortcut_skips_matching_committed_build(self):
+        self.ws._entry_points_are_current = unittest.mock.Mock(return_value=True)
+        self.ws._get_desktop_path = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.create_desktop_shortcut())
+
+        self.ws._get_desktop_path.assert_not_called()
+
+    def _configure_entry_point_mocks(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
+        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
+
+    def test_entry_points_require_embedded_desktop_icon(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        desktop_exe.parent.mkdir(parents=True)
+        desktop_exe.write_bytes(b"exe")
+        desktop = self.root / "Desktop"
+        programs = self.root / "Programs"
+        desktop.mkdir()
+        programs.mkdir()
+        (desktop / "MicroClawDesktop.lnk").write_bytes(b"lnk")
+        (programs / "MicroClaw.lnk").write_bytes(b"lnk")
+        self.ws._build_install_identity_matches = unittest.mock.Mock(return_value=True)
+        self.ws._get_desktop_path = unittest.mock.Mock(return_value=desktop)
+        self.ws._get_start_menu_path = unittest.mock.Mock(return_value=programs)
+        registry_values = {
+            "DisplayVersion": OPENCLAW_TARGET_VERSION,
+            "InstallLocation": str(desktop_exe.parent),
+            "UninstallString": f'"{self.home / ".openclaw" / "MicroClawInstaller.exe"}" --uninstall',
+        }
+
+        def query_value(_key, name):
+            if name not in registry_values:
+                raise OSError("missing registry value")
+            return registry_values[name], 1
+
+        fake_winreg = unittest.mock.MagicMock()
+        fake_winreg.QueryValueEx.side_effect = query_value
+        for display_icon, expected in (
+            (None, False),
+            (str(self.home / ".openclaw" / "microclaw.ico"), False),
+            (r"%USERPROFILE%\.openclaw\microclaw.ico", False),
+            (str(desktop_exe), True),
+        ):
+            with self.subTest(display_icon=display_icon):
+                if display_icon is not None:
+                    registry_values["DisplayIcon"] = display_icon
+                with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+                    self.assertEqual(self.ws._entry_points_are_current(), expected)
+
+    def test_resolve_icon_prefers_desktop_executable_without_state_directory(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        desktop_exe.parent.mkdir(parents=True)
+        desktop_exe.write_bytes(b"exe")
+
+        with unittest.mock.patch("deployer.windows_setup.shutil.copy2") as copy_icon:
+            self.assertEqual(self.ws._resolve_icon(), desktop_exe)
+
+        copy_icon.assert_not_called()
+        self.assertFalse((self.home / ".openclaw").exists())
+
+    def test_resolve_icon_retains_packaged_fallback_without_desktop(self):
+        icon = self.ws._resolve_icon()
+
+        self.assertEqual(icon, self.home / ".openclaw" / "microclaw.ico")
+        self.assertTrue(icon.is_file())
+        self.assertGreater(icon.stat().st_size, 0)
+
+    def test_app_shortcuts_use_embedded_desktop_icon(self):
+        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        desktop_exe.parent.mkdir(parents=True)
+        desktop_exe.write_bytes(b"exe")
+        desktop = self.root / "Desktop"
+        programs = self.root / "Programs"
+        desktop.mkdir()
+        self.ws._get_start_menu_path = unittest.mock.Mock(return_value=programs)
+
+        for helper_name, shortcut_path, arguments in (
+            ("_create_lnk_shortcut", desktop / "MicroClawDesktop.lnk", (desktop, desktop_exe)),
+            ("_create_start_menu_shortcut", programs / "MicroClaw.lnk", (desktop_exe,)),
+        ):
+            with self.subTest(helper=helper_name):
+
+                def fake_run(_command, destination=shortcut_path, **_kwargs):
+                    destination.write_bytes(b"lnk")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+                self.ws._run = unittest.mock.Mock(side_effect=fake_run)
+
+                self.assertTrue(getattr(self.ws, helper_name)(*arguments))
+
+                command = self.ws._run.call_args.args[0]
+                script = base64.b64decode(command[-1]).decode("utf-16-le")
+                self.assertIn(f'$s.IconLocation = "{desktop_exe},0";', script)
+                self.assertNotIn("microclaw.ico", script)
+
+    def test_create_desktop_shortcut_treats_shortcut_failures_as_nonfatal(self):
+        for helper_name in (
+            "_create_lnk_shortcut",
+            "_create_start_menu_shortcut",
+        ):
+            with self.subTest(helper=helper_name):
+                self._configure_entry_point_mocks()
+                getattr(self.ws, helper_name).return_value = False
+
+                self.assertTrue(self.ws.create_desktop_shortcut())
+
+                self.ws._create_lnk_shortcut.assert_called_once()
+                self.ws._create_start_menu_shortcut.assert_called_once()
+                self.ws._register_installed_app.assert_called_once()
+
+    def test_create_desktop_shortcut_propagates_registry_failure(self):
+        self._configure_entry_point_mocks()
+        self.ws._register_installed_app = unittest.mock.Mock(return_value=False)
+
+        self.assertFalse(self.ws.create_desktop_shortcut())
+
+        self.ws._create_lnk_shortcut.assert_called_once()
+        self.ws._create_start_menu_shortcut.assert_called_once()
+        self.ws._register_installed_app.assert_called_once()
+
+    def test_browser_fallback_failure_defers_to_registry_result(self):
+        for registry_result in (True, False):
+            with self.subTest(registry_result=registry_result):
+                self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+                self.ws._find_desktop_exe = unittest.mock.Mock(return_value=None)
+                self.ws._create_lnk_shortcut = unittest.mock.Mock()
+                self.ws._create_start_menu_shortcut = unittest.mock.Mock()
+                self.ws._create_url_shortcut = unittest.mock.Mock(return_value=False)
+                self.ws._register_installed_app = unittest.mock.Mock(return_value=registry_result)
+
+                self.assertEqual(self.ws.create_desktop_shortcut(), registry_result)
+
+                self.ws._create_lnk_shortcut.assert_not_called()
+                self.ws._create_start_menu_shortcut.assert_not_called()
+                self.ws._create_url_shortcut.assert_called_once()
+                self.ws._register_installed_app.assert_called_once_with(None)
+
+    def test_url_shortcut_reports_write_failure(self):
+        self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
+
+        self.assertFalse(self.ws._create_url_shortcut(self.root / "missing-desktop"))
+
+    def test_get_start_menu_path_uses_appdata(self):
+        # Force the winreg lookup to fail so the APPDATA fallback is exercised.
+        fake_winreg = unittest.mock.MagicMock()
+        fake_winreg.OpenKey.side_effect = OSError("no key")
+        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+            programs = self.ws._get_start_menu_path()
+        self.assertEqual(
+            programs,
+            self.appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+        )
+
+    def test_create_start_menu_shortcut_creates_lnk_and_registers_rollback(self):
+        target_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        target_exe.parent.mkdir(parents=True, exist_ok=True)
+        target_exe.write_text("exe", encoding="utf-8")
+
+        programs = self.appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        self.ws._get_start_menu_path = unittest.mock.Mock(return_value=programs)
+        self.ws._resolve_icon = unittest.mock.Mock(return_value=None)
+
+        def _fake_run(cmd, **_kwargs):
+            # Simulate PowerShell creating the .lnk
+            (programs / "MicroClaw.lnk").write_text("lnk", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.ws._run = unittest.mock.Mock(side_effect=_fake_run)
+
+        self.assertTrue(self.ws._create_start_menu_shortcut(target_exe))
+        self.assertTrue((programs / "MicroClaw.lnk").exists())
+        # PowerShell invoked via EncodedCommand
+        args = self.ws._run.call_args[0][0]
+        self.assertIn("-EncodedCommand", args)
+        self.assertEqual(len(self.ws._rollback_actions), 1)
+
+    def test_register_installed_app_writes_hkcu_uninstall_key(self):
+        target_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+        target_exe.parent.mkdir(parents=True)
+        target_exe.write_bytes(b"exe")
+        persisted = self._write_persisted_uninstaller()
+
+        fake_winreg = unittest.mock.MagicMock()
+        fake_winreg.HKEY_CURRENT_USER = 0x11111111
+        fake_winreg.KEY_WRITE = 0x20006
+        fake_winreg.REG_SZ = 1
+        fake_winreg.REG_DWORD = 4
+        fake_key = unittest.mock.MagicMock()
+        fake_winreg.CreateKeyEx.return_value = fake_key
+
+        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+            self.assertTrue(self.ws._register_installed_app(target_exe))
+
+        fake_winreg.CreateKeyEx.assert_called_once()
+        create_args = fake_winreg.CreateKeyEx.call_args[0]
+        self.assertEqual(create_args[0], fake_winreg.HKEY_CURRENT_USER)
+        self.assertEqual(create_args[1], self.ws._UNINSTALL_REG_KEY)
+
+        values = {call.args[1]: call.args[4] for call in fake_winreg.SetValueEx.call_args_list}
+        self.assertEqual(values["DisplayName"], "MicroClaw")
+        self.assertEqual(values["DisplayVersion"], OPENCLAW_TARGET_VERSION)
+        self.assertEqual(values["DisplayIcon"], str(target_exe))
+        self.assertEqual(values["UninstallString"], f'"{persisted}" --uninstall')
+        self.assertEqual(values["NoModify"], 1)
+        self.assertEqual(len(self.ws._rollback_actions), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

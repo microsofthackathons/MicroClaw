@@ -4,11 +4,38 @@
 
 OpenClaw's WeChat channel plugin, supporting login authorization via QR code scanning.
 
+## Compatibility
+
+This repository maintains upstream **2.4.6** with local **OpenClaw 2026.10.2+** SDK compatibility and MicroClaw patches. This is not a new Tencent npm release, and the original checksummed vendor archives are unchanged.
+
+MicroClaw Desktop builds prepare the bundled plugin through `desktop/scripts/prepare-weixin-plugin-resource.mjs`, which overlays this repository's sources, compiles both entry paths, and generates a content-hash manifest. The packaged runtime is pinned to OpenClaw **2026.10.5**. Before starting its managed Gateway, MicroClaw verifies the installed plugin against that manifest and replaces stale content even when the package version is unchanged, without replacing account state.
+
+A source fix reaches new installations and reinstalls only after a new MicroClaw package containing it is built and distributed. Reinstalling an older MicroClaw package or independently installing Tencent's published package does not provide unpublished repository patches.
+
+| Plugin Version | OpenClaw Version       | npm dist-tag | Status      |
+|---------------|------------------------|--------------|-------------|
+| 2.4.6 + MicroClaw patch | >=2026.10.2    | Not published | MicroClaw bundled build |
+| 2.0.x         | >=2026.3.22            | `latest`     | Active      |
+| 1.0.x         | >=2026.1.0 <2026.3.22  | `legacy`     | Maintenance |
+
+> The plugin checks the host version at startup and will refuse to load if the
+> running OpenClaw version is outside the supported range.
+
+## Inbound replies while a turn is waiting
+
+Inbound messages reach the OpenClaw reply pipeline without waiting for earlier turns to finish. This lets `ask_user` answers reach a waiting turn instead of sitting behind it until its timeout. OpenClaw owns session admission and follow-up handling; remote approval replies still use their dedicated interception path.
+
+Sync cursors remain ordered and are saved only after all covered dispatches finish. Shutdown drains outstanding dispatches, and a failed dispatch retains the last durable cursor for replay.
+
 ## Prerequisites
 
 [OpenClaw](https://docs.openclaw.ai/install) must be installed (the `openclaw` CLI needs to be available).
 
+Check your version: `openclaw --version`
+
 ## Quick Install
+
+These commands install Tencent's published package, not MicroClaw's patched bundle. MicroClaw Desktop manages its bundled plugin on Gateway startup.
 
 ```bash
 npx -y @tencent-weixin/openclaw-weixin-cli install
@@ -54,13 +81,50 @@ Each QR code login creates a new account entry, supporting multiple WeChat accou
 
 ## Multi-Account Context Isolation
 
-By default, all channels share the same AI conversation context. To isolate conversation context for each WeChat account:
+By default, DMs can share one session bucket. For **multiple logged-in WeChat accounts**, isolate by account + channel + sender:
 
 ```bash
-openclaw config set agents.mode per-channel-per-peer
+openclaw config set session.dmScope per-account-channel-peer
 ```
 
-This gives each "WeChat account + message sender" combination its own independent AI memory, preventing context cross-talk between accounts.
+## Custom BotAgent (optional)
+
+Every outbound request to the WeChat backend carries a self-declared `bot_agent`
+identifier — analogous to an HTTP `User-Agent` — used for log attribution and
+monitoring aggregation. The default is `OpenClaw`. Declaring your own app name
+makes it much easier to trace your traffic in backend logs.
+
+Add one line to `openclaw.json`:
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "botAgent": "MyBot/1.2.0"
+    }
+  }
+}
+```
+
+**Format** (UA-style):
+
+- One or more `Name/Version` tokens, space-separated
+- Each token may optionally be followed by ` (comment)`
+- ASCII only; total length ≤ 256 bytes
+- Invalid tokens are silently dropped during sanitization; falls back to
+  `OpenClaw` if nothing valid remains
+
+Examples that pass through unchanged:
+
+- `MyBot/1.2.0`
+- `MyBot/1.2.0 (region=cn;env=prod)`
+- `MyBot/1.2.0 LangChain/0.3.5`
+- `MyBot/1.2.0-rc.1+build.5`
+
+**Note**: `bot_agent` is for observability only — it is not used for
+authentication or routing. All registered agents on this plugin instance
+currently share the same `botAgent` declaration; per-agent overrides may be
+added in a future version if needed.
 
 ## Backend API Protocol
 
@@ -227,8 +291,8 @@ Send or cancel the typing status indicator.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `seq` | `number?` | Message sequence number |
-| `message_id` | `number?` | Unique message ID |
+| `seq` | `number` or `string` (optional) | Message sequence number |
+| `message_id` | `number` or `string` (optional) | Unique message ID |
 | `from_user_id` | `string?` | Sender ID |
 | `to_user_id` | `string?` | Receiver ID |
 | `create_time_ms` | `number?` | Creation timestamp (ms) |
@@ -237,6 +301,11 @@ Send or cancel the typing status indicator.
 | `message_state` | `number?` | `0` = NEW, `1` = GENERATING, `2` = FINISH |
 | `item_list` | `MessageItem[]?` | Message content list |
 | `context_token` | `string?` | Conversation context token, must be passed back when replying |
+
+`getUpdates` preserves numeric `message_id` and `seq` JSON source lexemes as decimal strings,
+including values above JavaScript's safe-integer range. Remote approval requires both fields to
+be valid nonnegative uint64 decimals; it never reconstructs a rounded number or invents a missing
+cursor. These fields remain optional for ordinary chat.
 
 #### MessageItem
 
@@ -269,3 +338,34 @@ All media types (image/voice/file/video) are transferred via CDN using AES-128-E
 6. Use the returned `encrypt_query_param` to construct a `CDNMedia` reference, include it in the `MessageItem`, and send
 
 > For complete type definitions, see [`src/api/types.ts`](src/api/types.ts). For API call implementations, see [`src/api/api.ts`](src/api/api.ts).
+
+## Uninstall
+
+```bash
+openclaw plugins uninstall @tencent-weixin/openclaw-weixin
+```
+
+## Troubleshooting
+
+### "requires OpenClaw >=2026.3.22" error
+
+Your OpenClaw version is too old for this plugin version. Check with:
+
+```bash
+openclaw --version
+```
+
+Install the legacy plugin line instead:
+
+```bash
+openclaw plugins install @tencent-weixin/openclaw-weixin@legacy
+```
+
+### Channel shows "OK" but doesn't connect
+
+Ensure `plugins.entries.openclaw-weixin.enabled` is `true` in `~/.openclaw/openclaw.json`:
+
+```bash
+openclaw config set plugins.entries.openclaw-weixin.enabled true
+openclaw gateway restart
+```

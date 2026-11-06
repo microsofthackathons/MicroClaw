@@ -1,0 +1,1136 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+
+import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import { renderMxcPermissionResult } from "./windows-node-mxc-approval-lifecycle";
+import { createCanonicalExecPresentation } from "./windows-node-mxc-exec-presentation";
+import {
+  renderCanonicalWeixinExecPrompt,
+  type GenericPhonePresentationCategory,
+} from "./windows-node-mxc-weixin-exec-presentation";
+import {
+  normalizeWeixinProviderInteger,
+  isLaterWeixinProviderCursor,
+} from "./weixin-provider-integer";
+
+export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT =
+  "microclaw.windows-weixin-remote-approval.v1";
+export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS = 2 * 60_000;
+export const WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE = "native-exact-conversation-durable.v2";
+export const WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS = 3;
+// Temporary product policy: a delayed unquoted reply may select a newer delivered prompt.
+export const WEIXIN_REMOTE_APPROVAL_REPLY_MODE = "simple-current-prompt" as const;
+
+const CHALLENGE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const CHALLENGE_CODE_LENGTH = 8;
+const MAX_GLOBAL_ATTEMPTS_PER_MINUTE = 20;
+const SAFE_STRUCTURAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,159}$/;
+
+export interface WeixinRemoteApprovalOwnerBinding {
+  contract: typeof WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT;
+  accountId: string;
+  userId: string;
+  boundAt: string;
+}
+
+export interface WeixinRemoteApprovalConfiguration {
+  enabled: boolean;
+  owner: WeixinRemoteApprovalOwnerBinding | null;
+  consentScope?: typeof WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE;
+}
+
+export function migrateWeixinRemoteApprovalConfiguration(
+  value: unknown,
+): WeixinRemoteApprovalConfiguration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { enabled: false, owner: null };
+  }
+  const record = value as Record<string, unknown>;
+  const ownerValue = record.owner;
+  if (!ownerValue || typeof ownerValue !== "object" || Array.isArray(ownerValue)) {
+    return { enabled: false, owner: null };
+  }
+  const owner = ownerValue as Record<string, unknown>;
+  try {
+    const normalized = normalizeWeixinRemoteApprovalOwner(
+      typeof owner.accountId === "string" ? owner.accountId : "",
+      typeof owner.userId === "string" ? owner.userId : "",
+      typeof owner.boundAt === "string" ? owner.boundAt : new Date(0).toISOString(),
+    );
+    return {
+      enabled: record.enabled === true,
+      owner: normalized,
+      ...(record.consentScope === WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
+        ? { consentScope: WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE }
+        : {}),
+    };
+  } catch {
+    return { enabled: false, owner: null };
+  }
+}
+
+export function projectWeixinRemoteApprovalRuntimeConfiguration(
+  stored: unknown,
+  runtimeAuthorized: boolean,
+): WeixinRemoteApprovalConfiguration {
+  const validated = migrateWeixinRemoteApprovalConfiguration(stored);
+  return { ...validated, enabled: validated.enabled && runtimeAuthorized };
+}
+
+export interface WeixinRemoteApprovalSource {
+  accountId: string;
+  senderId: string;
+  conversationId: string;
+  messageId: string;
+  cursor: number | string;
+  agentId: string;
+  sessionKey: string;
+  direct: boolean;
+  forwarded: boolean;
+  quoted: boolean;
+  receivedAtUnixMs: number;
+  sentAtUnixMs?: number;
+  runIds?: string[];
+  gatewayGeneration?: string;
+  providerSessionKey?: string;
+}
+
+export interface WeixinRemoteApprovalSecurityBinding {
+  gatewayGeneration: string;
+  policyFingerprint: string;
+  nodeId: string;
+  activationLeaseHash: string;
+  requestedMode: "limited-dacl" | "full";
+  effectiveMode: string;
+}
+
+export function weixinApprovalSourceSessionKey(approval: WindowsNodeMxcGatewayApproval): string {
+  return approval.origin?.runSessionKey ?? approval.sessionKey;
+}
+
+export function weixinApprovalOriginRejection(
+  approval: WindowsNodeMxcGatewayApproval,
+  source: WeixinRemoteApprovalSource,
+): WeixinRemoteApprovalRejectionReason | null {
+  const origin = approval.origin;
+  if (!origin) return "source-origin-unavailable";
+  if (
+    origin.channel !== "openclaw-weixin" ||
+    origin.accountId !== source.accountId ||
+    origin.to !== source.senderId
+  )
+    return "source-provider-mismatch";
+  if (
+    source.gatewayGeneration !== origin.gatewayGeneration ||
+    !source.runIds?.includes(origin.runId)
+  )
+    return "source-run-mismatch";
+  return null;
+}
+
+export function weixinApprovalOriginMatchesSecurity(
+  approval: WindowsNodeMxcGatewayApproval,
+  security: WeixinRemoteApprovalSecurityBinding,
+): boolean {
+  const origin = approval.origin;
+  return (
+    !origin ||
+    (origin.contract === "microclaw.gateway-approval-origin.v1" &&
+      origin.gatewayGeneration === security.gatewayGeneration &&
+      origin.nodeId === security.nodeId &&
+      origin.executionSessionKey === approval.sessionKey &&
+      origin.agentId === approval.agent &&
+      origin.runId.length > 0 &&
+      origin.toolCallId.length > 0 &&
+      origin.runSessionKey.length > 0)
+  );
+}
+
+export interface WeixinRemoteApprovalBatchRequest {
+  approval: WindowsNodeMxcGatewayApproval;
+}
+
+export interface WeixinRemoteApprovalCreateInput {
+  source: WeixinRemoteApprovalSource;
+  requests: WeixinRemoteApprovalBatchRequest[];
+  security: WeixinRemoteApprovalSecurityBinding;
+  locale: "en-US" | "zh-CN";
+  now?: number;
+  expiresAtUnixMs?: number;
+}
+
+export interface WeixinRemoteApprovalDelivery {
+  contract: typeof WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT;
+  challengeId: string;
+  challengeHash: string;
+  accountId: string;
+  senderId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  sourceCursor: number | string;
+  expiresAtUnixMs: number;
+  text: string;
+  replyCode: string;
+}
+
+export interface WeixinRemoteApprovalCandidate {
+  accountId: string;
+  senderId: string;
+  conversationId: string;
+  messageId: string;
+  cursor: number | string;
+  direct: boolean;
+  forwarded: boolean;
+  quoted: boolean;
+  agentId: string;
+  sessionKey: string;
+  ambiguous?: boolean;
+  text: string;
+  now?: number;
+  sentAtUnixMs?: number;
+  requests?: WeixinRemoteApprovalBatchRequest[];
+  security?: WeixinRemoteApprovalSecurityBinding;
+  expectedSimpleChallengeId?: string | null;
+}
+
+export type WeixinRemoteApprovalResolution =
+  | {
+      consumed: false;
+      status: "not-candidate";
+    }
+  | {
+      consumed: true;
+      status: "approved" | "denied";
+      challengeId: string;
+      approvalIds: string[];
+      decision: "allow-once" | "allow-always" | "deny";
+      acknowledgement: string;
+    }
+  | {
+      consumed: true;
+      status: "rejected";
+      reason:
+        | "identity"
+        | "chat"
+        | "group"
+        | "forwarded"
+        | "quoted"
+        | "cursor"
+        | "code"
+        | "expired"
+        | "stale"
+        | "rate-limited"
+        | "replayed"
+        | "inactive"
+        | "malformed"
+        | "consent-scope";
+      acknowledgement: string;
+    };
+
+export interface WeixinRemoteApprovalAuditEvent {
+  contract: typeof WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT;
+  timestamp: string;
+  challengeHash: string;
+  ownerHash: string;
+  chatHash: string;
+  approvalIdHashes: string[];
+  result: string;
+  reason: string;
+  gatewayGenerationHash: string;
+  policyFingerprintHash: string;
+  nodeIdHash: string;
+  activationLeaseHash: string;
+}
+
+interface ActiveChallenge {
+  id: string;
+  code: string;
+  codeHash: string;
+  challengeHash: string;
+  bindingHash: string;
+  presentationBinding: {
+    presentationDigest: string;
+    authorityHash: string;
+  };
+  source: WeixinRemoteApprovalSource;
+  security: WeixinRemoteApprovalSecurityBinding;
+  approvalIds: string[];
+  createdAtUnixMs: number;
+  expiresAtUnixMs: number;
+  attempts: number;
+  lastCandidateCursor: number | string;
+  locale: "en-US" | "zh-CN";
+  deliveredAtUnixMs: number | null;
+  reminderAtUnixMs: number | null;
+  reminderCount: number;
+}
+
+interface ClosedChallenge {
+  codeHash: string;
+  expiresAtUnixMs: number;
+  locale: "en-US" | "zh-CN";
+}
+
+export interface WeixinRemoteApprovalNotice {
+  challengeId: string;
+  accountId: string;
+  senderId: string;
+  conversationId: string;
+  acknowledgement: string;
+}
+
+function normalizeIdentity(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeOpaqueId(value: string): string {
+  return value.trim();
+}
+
+export function normalizeWeixinRemoteApprovalOwner(
+  accountId: string,
+  userId: string,
+  boundAt = new Date().toISOString(),
+): WeixinRemoteApprovalOwnerBinding {
+  const normalizedAccountId = normalizeIdentity(accountId);
+  const normalizedUserId = normalizeIdentity(userId);
+  if (!normalizedAccountId || !normalizedUserId || !normalizedUserId.endsWith("@im.wechat")) {
+    throw new Error("A valid authenticated WeChat account and owner user ID are required");
+  }
+  return {
+    contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
+    accountId: normalizedAccountId,
+    userId: normalizedUserId,
+    boundAt,
+  };
+}
+
+function hash(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+export function weixinRemoteApprovalConsentHash(
+  configuration: WeixinRemoteApprovalConfiguration,
+): string | null {
+  return configuration.enabled &&
+    configuration.owner &&
+    configuration.consentScope === WEIXIN_NATIVE_DURABLE_CONSENT_SCOPE
+    ? hash(canonicalize({ owner: configuration.owner, consentScope: configuration.consentScope }))
+    : null;
+}
+
+export function weixinRemoteApprovalAuthorityHash(
+  configuration: WeixinRemoteApprovalConfiguration,
+): string | null {
+  return configuration.enabled && configuration.owner
+    ? hash(
+        canonicalize({
+          domain: "microclaw.wechat-approval-owner.v1",
+          owner: configuration.owner,
+          consentScope: configuration.consentScope ?? null,
+        }),
+      )
+    : null;
+}
+
+function canonicalize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function securityBindingHash(
+  source: WeixinRemoteApprovalSource,
+  requests: WeixinRemoteApprovalBatchRequest[],
+  security: WeixinRemoteApprovalSecurityBinding,
+  challenge: {
+    id: string;
+    codeHash: string;
+    createdAtUnixMs: number;
+    expiresAtUnixMs: number;
+  },
+  presentationBinding: ActiveChallenge["presentationBinding"],
+): string {
+  const binding = {
+    source: {
+      accountId: normalizeIdentity(source.accountId),
+      senderId: source.senderId,
+      conversationId: normalizeOpaqueId(source.conversationId),
+      messageId: normalizeOpaqueId(source.messageId),
+      cursor: normalizeWeixinProviderInteger(source.cursor),
+      agentId: normalizeOpaqueId(source.agentId),
+      sessionKey: normalizeOpaqueId(source.sessionKey),
+      direct: source.direct,
+      forwarded: source.forwarded,
+      quoted: source.quoted,
+      receivedAtUnixMs: source.receivedAtUnixMs,
+      runIds: source.runIds ?? [],
+      gatewayGeneration: source.gatewayGeneration ?? null,
+    },
+    requests: requests.map(({ approval }) => ({
+      id: approval.id,
+      command: approval.command,
+      executable: approval.executable,
+      executablePath: approval.executablePath,
+      executableSha256: approval.executableSha256.toLowerCase(),
+      arguments: approval.arguments,
+      canonicalCwd: approval.canonicalCwd,
+      declaredAccess: approval.declaredAccess,
+      folderChanges: approval.folderChanges ?? [],
+      planSha256: approval.planSha256 ?? null,
+      policyFingerprint: approval.policyFingerprint ?? null,
+      agent: approval.agent,
+      sessionKey: approval.sessionKey,
+      origin: approval.origin ?? null,
+      ...(approval.providerInitialization
+        ? { providerInitialization: approval.providerInitialization }
+        : {}),
+      hasMutableFileOperand: approval.hasMutableFileOperand,
+      allowedDecisions: approval.allowedDecisions,
+      commandConsent: approval.commandConsent ?? null,
+    })),
+    security,
+    challenge,
+  };
+  return hash(
+    canonicalize({
+      domain: "microclaw.wechat-exec-binding.readable.v2",
+      binding,
+      presentationBinding,
+      canonicalFacts: requests.map(({ approval }) => createCanonicalExecPresentation(approval)),
+    }),
+  );
+}
+
+function constantTimeCodeEquals(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function createCode(): string {
+  const bytes = randomBytes(CHALLENGE_CODE_LENGTH);
+  let result = "";
+  for (const byte of bytes) result += CHALLENGE_ALPHABET[byte % CHALLENGE_ALPHABET.length];
+  return result;
+}
+
+function acknowledgement(
+  locale: "en-US" | "zh-CN",
+  result: "approved" | "denied" | "expired" | "invalid",
+): string {
+  if (result !== "invalid") return renderMxcPermissionResult(result, locale);
+  return locale === "zh-CN"
+    ? "MicroClaw 安全审批：无效或已失效，未接受新决策。"
+    : "MicroClaw Security Approval: invalid or no longer active; no new decision accepted.";
+}
+
+export type WeixinRemoteApprovalRejectionReason =
+  | "disabled"
+  | "source-not-direct"
+  | "source-identity-mismatch"
+  | "source-owner-unavailable"
+  | "source-metadata-invalid"
+  | "source-session-mismatch"
+  | "source-agent-mismatch"
+  | "source-origin-unavailable"
+  | "source-run-mismatch"
+  | "source-provider-mismatch"
+  | "ambiguous-request-set"
+  | "presentation-sensitive"
+  | "presentation-unsupported"
+  | "presentation-too-long"
+  | "security-binding-invalid";
+
+export type WeixinRemoteApprovalChallengeResult =
+  | { status: "created"; delivery: WeixinRemoteApprovalDelivery }
+  | {
+      status: "rejected";
+      reason: WeixinRemoteApprovalRejectionReason;
+      presentationCategory?: GenericPhonePresentationCategory;
+    };
+
+export function weixinRemoteApprovalWireSourceRejection(
+  configuration: WeixinRemoteApprovalConfiguration,
+  source: Pick<WeixinRemoteApprovalSource, "accountId" | "senderId" | "conversationId">,
+  wireOwner: { readonly accountId: string; readonly userId: string } | null,
+): "source-owner-unavailable" | "source-identity-mismatch" | null {
+  const owner = configuration.owner;
+  if (
+    !configuration.enabled ||
+    !owner ||
+    !wireOwner ||
+    wireOwner.accountId !== owner.accountId ||
+    normalizeIdentity(wireOwner.userId) !== owner.userId
+  )
+    return "source-owner-unavailable";
+  return source.accountId === wireOwner.accountId &&
+    source.senderId === wireOwner.userId &&
+    source.conversationId === wireOwner.userId
+    ? null
+    : "source-identity-mismatch";
+}
+
+export class WindowsNodeMxcWeixinRemoteApprovalBroker {
+  private configuration: WeixinRemoteApprovalConfiguration = { enabled: false, owner: null };
+  private readonly challengesByChat = new Map<string, ActiveChallenge>();
+  private readonly closedByChat = new Map<string, ClosedChallenge>();
+  private readonly pendingResolutions = new Map<string, ActiveChallenge>();
+  private readonly seenCandidateMessages = new Set<string>();
+  private readonly globalAttemptTimes: number[] = [];
+  private readonly auditEvents: WeixinRemoteApprovalAuditEvent[] = [];
+
+  constructor(
+    private readonly onAudit?: (event: WeixinRemoteApprovalAuditEvent) => void,
+    private readonly readWireOwner: () => {
+      readonly accountId: string;
+      readonly userId: string;
+    } | null = () => null,
+  ) {}
+
+  isAuthenticatedSource(
+    source: Pick<WeixinRemoteApprovalSource, "accountId" | "senderId" | "conversationId">,
+  ): boolean {
+    return (
+      weixinRemoteApprovalWireSourceRejection(this.configuration, source, this.readWireOwner()) ===
+      null
+    );
+  }
+
+  configure(configuration: WeixinRemoteApprovalConfiguration): void {
+    const owner = configuration.owner
+      ? normalizeWeixinRemoteApprovalOwner(
+          configuration.owner.accountId,
+          configuration.owner.userId,
+          configuration.owner.boundAt,
+        )
+      : null;
+    const changed =
+      this.configuration.enabled !== configuration.enabled ||
+      this.configuration.consentScope !== configuration.consentScope ||
+      canonicalize(this.configuration.owner) !== canonicalize(owner);
+    this.configuration = {
+      enabled: configuration.enabled,
+      ...(configuration.consentScope ? { consentScope: configuration.consentScope } : {}),
+      owner,
+    };
+    if (changed) this.invalidateAll("configuration-changed");
+  }
+
+  getConfiguration(): WeixinRemoteApprovalConfiguration {
+    return {
+      enabled: this.configuration.enabled,
+      ...(this.configuration.consentScope ? { consentScope: this.configuration.consentScope } : {}),
+      owner: this.configuration.owner ? { ...this.configuration.owner } : null,
+    };
+  }
+
+  getAuditEvents(): WeixinRemoteApprovalAuditEvent[] {
+    return this.auditEvents.map((event) => ({
+      ...event,
+      approvalIdHashes: [...event.approvalIdHashes],
+    }));
+  }
+
+  createChallenge(input: WeixinRemoteApprovalCreateInput): WeixinRemoteApprovalDelivery | null {
+    const result = this.createChallengeResult(input);
+    return result.status === "created" ? result.delivery : null;
+  }
+
+  createChallengeResult(
+    input: WeixinRemoteApprovalCreateInput,
+  ): WeixinRemoteApprovalChallengeResult {
+    const now = input.now ?? Date.now();
+    const owner = this.configuration.owner;
+    const reject = (
+      reason: WeixinRemoteApprovalRejectionReason,
+    ): WeixinRemoteApprovalChallengeResult => ({ status: "rejected", reason });
+    if (!this.configuration.enabled || !owner) return reject("disabled");
+    if (!input.source.direct || input.source.forwarded || input.source.quoted)
+      return reject("source-not-direct");
+    const ownerReason = weixinRemoteApprovalWireSourceRejection(
+      this.configuration,
+      input.source,
+      this.readWireOwner(),
+    );
+    if (ownerReason) return reject(ownerReason);
+    if (
+      normalizeWeixinProviderInteger(input.source.cursor) === null ||
+      normalizeWeixinProviderInteger(input.source.messageId) === null
+    ) {
+      return reject("source-metadata-invalid");
+    }
+    if (!SAFE_STRUCTURAL_ID_PATTERN.test(input.security.effectiveMode))
+      return reject("security-binding-invalid");
+    const authorityHash = weixinRemoteApprovalAuthorityHash(this.configuration);
+    if (!authorityHash) return reject("disabled");
+    if (
+      input.requests.some(({ approval }) => approval.providerInitialization) &&
+      !(
+        (input.security.requestedMode === "limited-dacl" &&
+          input.security.effectiveMode === "appcontainer-dacl") ||
+        (input.security.requestedMode === "full" &&
+          ["base-container", "appcontainer-bfs"].includes(input.security.effectiveMode))
+      )
+    )
+      return reject("security-binding-invalid");
+    const approvalIds = input.requests.map(({ approval }) => approval.id);
+    if (approvalIds.length !== 1) return reject("ambiguous-request-set");
+    if (
+      input.requests.some(
+        ({ approval }) =>
+          approval.folderChanges?.length &&
+          (!approval.planSha256 ||
+            !/^[a-f0-9]{64}$/i.test(approval.planSha256) ||
+            approval.policyFingerprint !== input.security.policyFingerprint ||
+            approval.allowedDecisions.includes("allow-always")),
+      )
+    )
+      return reject("security-binding-invalid");
+    if (
+      input.requests.some(
+        ({ approval }) => !weixinApprovalOriginMatchesSecurity(approval, input.security),
+      )
+    )
+      return reject("security-binding-invalid");
+    if (
+      input.requests.some(
+        ({ approval }) => weixinApprovalSourceSessionKey(approval) !== input.source.sessionKey,
+      )
+    )
+      return reject("source-session-mismatch");
+    if (input.requests.some(({ approval }) => (approval.agent ?? "") !== input.source.agentId))
+      return reject("source-agent-mismatch");
+    for (const { approval } of input.requests) {
+      const reason = weixinApprovalOriginRejection(approval, input.source);
+      if (reason) return reject(reason);
+    }
+    const chatKey = this.chatKey(input.source.accountId, input.source.conversationId);
+    const code = createCode();
+    const id = randomBytes(16).toString("hex");
+    const codeHash = hash(code);
+    const challengeHash = hash(id);
+    const expiresAtUnixMs = Math.min(
+      now + WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_TTL_MS,
+      input.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+      input.requests[0].approval.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
+    );
+    if (expiresAtUnixMs <= now) return reject("security-binding-invalid");
+    const presentation = renderCanonicalWeixinExecPrompt({
+      approval: input.requests[0].approval,
+      security: input.security,
+      expiresAtUnixMs,
+      code,
+      locale: input.locale,
+      bareReplies: true,
+      nowUnixMs: now,
+    });
+    if (presentation.status === "unsupported") {
+      return {
+        status: "rejected",
+        reason: presentation.reason,
+        presentationCategory: presentation.category,
+      };
+    }
+    this.invalidateChat(chatKey, "superseded");
+    const presentationBinding = {
+      presentationDigest: presentation.presentationDigest,
+      authorityHash,
+    };
+    const challenge: ActiveChallenge = {
+      id,
+      code,
+      codeHash,
+      challengeHash,
+      bindingHash: securityBindingHash(
+        input.source,
+        input.requests,
+        input.security,
+        { id, codeHash, createdAtUnixMs: now, expiresAtUnixMs },
+        presentationBinding,
+      ),
+      presentationBinding,
+      source: {
+        ...input.source,
+        accountId: input.source.accountId,
+        senderId: input.source.senderId,
+      },
+      security: { ...input.security },
+      approvalIds,
+      createdAtUnixMs: now,
+      expiresAtUnixMs,
+      attempts: 0,
+      lastCandidateCursor: input.source.cursor,
+      locale: input.locale,
+      deliveredAtUnixMs: null,
+      reminderAtUnixMs: null,
+      reminderCount: 0,
+    };
+    this.challengesByChat.set(chatKey, challenge);
+    return {
+      status: "created",
+      delivery: {
+        contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
+        challengeId: id,
+        challengeHash,
+        accountId: challenge.source.accountId,
+        senderId: challenge.source.senderId,
+        conversationId: challenge.source.conversationId,
+        sourceMessageId: challenge.source.messageId,
+        sourceCursor: challenge.source.cursor,
+        expiresAtUnixMs,
+        text: presentation.text,
+        replyCode: code,
+      },
+    };
+  }
+
+  markDelivered(challengeId: string, now = Date.now()): boolean {
+    for (const challenge of this.challengesByChat.values()) {
+      if (
+        challenge.id !== challengeId ||
+        now >= challenge.expiresAtUnixMs ||
+        !this.isAuthenticatedSource(challenge.source)
+      )
+        continue;
+      challenge.deliveredAtUnixMs = now;
+      return true;
+    }
+    return false;
+  }
+
+  captureSimpleReplyChallenge(
+    candidate: Pick<WeixinRemoteApprovalCandidate, "accountId" | "senderId" | "conversationId">,
+    now = Date.now(),
+  ): string | null {
+    const challenge = this.challengesByChat.get(
+      this.chatKey(candidate.accountId, candidate.conversationId),
+    );
+    return challenge &&
+      challenge.approvalIds.length === 1 &&
+      challenge.deliveredAtUnixMs !== null &&
+      now < challenge.expiresAtUnixMs &&
+      this.isAuthenticatedSource(candidate) &&
+      candidate.senderId === challenge.source.senderId
+      ? challenge.id
+      : null;
+  }
+
+  resolveCandidate(candidate: WeixinRemoteApprovalCandidate): WeixinRemoteApprovalResolution {
+    const chatKey = this.chatKey(candidate.accountId, candidate.conversationId);
+    const challenge = this.challengesByChat.get(chatKey);
+    const now = candidate.now ?? Date.now();
+    if (challenge && !this.isAuthenticatedSource(challenge.source))
+      return this.rejectChallenge(chatKey, challenge, "stale", true);
+    const activeOwnerConversation =
+      challenge &&
+      challenge.deliveredAtUnixMs !== null &&
+      now < challenge.expiresAtUnixMs &&
+      candidate.direct &&
+      candidate.accountId === challenge.source.accountId &&
+      candidate.senderId === challenge.source.senderId;
+    const remind = (
+      reason: "malformed" | "cursor" | "quoted" | "forwarded" | "consent-scope",
+    ): WeixinRemoteApprovalResolution => {
+      let text = "";
+      if (
+        challenge &&
+        challenge.reminderCount < 3 &&
+        (challenge.reminderAtUnixMs === null || now - challenge.reminderAtUnixMs >= 5_000)
+      ) {
+        challenge.reminderAtUnixMs = now;
+        challenge.reminderCount++;
+        text =
+          challenge.locale === "zh-CN"
+            ? "MicroClaw 安全审批：未接受新决策，原截止时间不变。请单独回复 1（仅一次）或 3（拒绝）；不接受引用、转发或混合内容。"
+            : "MicroClaw Security Approval: no new decision accepted; original deadline unchanged. Reply only 1 (once) or 3 (deny), without quotes, forwarding or other content.";
+      }
+      return { consumed: true, status: "rejected", reason, acknowledgement: text };
+    };
+    if (activeOwnerConversation && (candidate.quoted || candidate.forwarded))
+      return remind(candidate.quoted ? "quoted" : "forwarded");
+    const bare = /^[123]$/.test(candidate.text);
+    // Simple replies intentionally select the current delivered challenge, not a proven prompt reference.
+    if (
+      activeOwnerConversation &&
+      !bare &&
+      !/^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.test(candidate.text)
+    ) {
+      return remind("malformed");
+    }
+    if (candidate.ambiguous) {
+      if (!challenge) {
+        return {
+          consumed: true,
+          status: "rejected",
+          reason: "inactive",
+          acknowledgement: acknowledgement("en-US", "invalid"),
+        };
+      }
+      return this.rejectChallenge(chatKey, challenge, "malformed", true);
+    }
+
+    const parsed = /^([123]) ([23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/i.exec(candidate.text);
+    if (!parsed && !bare) return { consumed: false, status: "not-candidate" };
+    if (bare && challenge && challenge.approvalIds.length !== 1) return remind("malformed");
+    const providerMessageId = normalizeWeixinProviderInteger(candidate.messageId);
+    const messageKey = hash(
+      canonicalize({
+        accountId: candidate.accountId,
+        senderId: candidate.senderId,
+        conversationId: candidate.conversationId,
+        messageId: providerMessageId,
+      }),
+    );
+    const replayed = this.seenCandidateMessages.has(messageKey);
+    if (
+      providerMessageId !== null &&
+      normalizeWeixinProviderInteger(candidate.cursor) !== null &&
+      candidate.direct &&
+      !candidate.forwarded &&
+      !candidate.quoted &&
+      this.isAuthenticatedSource(candidate)
+    ) {
+      // Process-lifetime fence also covers rejected pre-delivery/expired replies and replacements.
+      this.seenCandidateMessages.add(messageKey);
+    }
+
+    this.globalAttemptTimes.push(now);
+    while (this.globalAttemptTimes[0] != null && this.globalAttemptTimes[0] < now - 60_000) {
+      this.globalAttemptTimes.shift();
+    }
+    if (!challenge) {
+      if (!parsed) {
+        return {
+          consumed: true,
+          status: "rejected",
+          reason: "inactive",
+          acknowledgement: acknowledgement("en-US", "invalid"),
+        };
+      }
+      const candidateCodeHash = hash(parsed[2].toUpperCase());
+      for (const [activeChatKey, active] of this.challengesByChat) {
+        if (!constantTimeCodeEquals(candidateCodeHash, active.codeHash)) continue;
+        active.attempts += 1;
+        if (active.attempts >= WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS) {
+          this.invalidateChat(activeChatKey, "identity");
+        }
+        return {
+          consumed: true,
+          status: "rejected",
+          reason: "identity",
+          acknowledgement: acknowledgement(active.locale, "invalid"),
+        };
+      }
+      const closed = this.closedByChat.get(chatKey);
+      if (
+        !closed ||
+        now > closed.expiresAtUnixMs ||
+        !constantTimeCodeEquals(hash(parsed[2].toUpperCase()), closed.codeHash)
+      ) {
+        return {
+          consumed: true,
+          status: "rejected",
+          reason: "inactive",
+          acknowledgement: acknowledgement("en-US", "invalid"),
+        };
+      }
+      return {
+        consumed: true,
+        status: "rejected",
+        reason: "replayed",
+        acknowledgement: acknowledgement(closed.locale, "invalid"),
+      };
+    }
+    const reject = (
+      reason: Exclude<
+        Extract<WeixinRemoteApprovalResolution, { status: "rejected" }>["reason"],
+        never
+      >,
+      invalidate = false,
+    ): WeixinRemoteApprovalResolution => {
+      return this.rejectChallenge(chatKey, challenge, reason, invalidate);
+    };
+
+    if (this.globalAttemptTimes.length > MAX_GLOBAL_ATTEMPTS_PER_MINUTE) {
+      return reject("rate-limited", true);
+    }
+    if (!candidate.direct) return reject("group", true);
+    if (candidate.forwarded) return reject("forwarded", true);
+    if (candidate.quoted) return reject("quoted", true);
+    if (candidate.accountId !== challenge.source.accountId) {
+      return reject("identity");
+    }
+    if (candidate.senderId !== challenge.source.senderId) {
+      return reject("identity");
+    }
+    if (candidate.conversationId !== challenge.source.conversationId) {
+      return reject("chat");
+    }
+    if (
+      candidate.agentId !== challenge.source.agentId ||
+      candidate.sessionKey !== (challenge.source.providerSessionKey ?? challenge.source.sessionKey)
+    )
+      return reject("stale", true);
+    if (providerMessageId === null) return reject("cursor");
+    if (replayed) return reject("replayed");
+    if (now >= challenge.expiresAtUnixMs) return reject("expired", true);
+    if (
+      bare &&
+      candidate.expectedSimpleChallengeId !== undefined &&
+      candidate.expectedSimpleChallengeId !== challenge.id
+    )
+      return reject("inactive");
+    if (challenge.deliveredAtUnixMs === null) return reject("inactive");
+    if (
+      !isLaterWeixinProviderCursor(candidate.cursor, challenge.source.cursor) ||
+      !isLaterWeixinProviderCursor(candidate.cursor, challenge.lastCandidateCursor) ||
+      normalizeWeixinProviderInteger(candidate.messageId) === null ||
+      normalizeOpaqueId(candidate.messageId) === challenge.source.messageId
+    ) {
+      return reject("cursor");
+    }
+    challenge.lastCandidateCursor = candidate.cursor;
+    if (parsed && !constantTimeCodeEquals(parsed[2].toUpperCase(), challenge.code)) {
+      return reject("code");
+    }
+    if (!candidate.requests || !candidate.security) {
+      return reject("stale", true);
+    }
+    if (
+      canonicalize(candidate.security) !== canonicalize(challenge.security) ||
+      securityBindingHash(
+        challenge.source,
+        candidate.requests,
+        candidate.security,
+        {
+          id: challenge.id,
+          codeHash: challenge.codeHash,
+          createdAtUnixMs: challenge.createdAtUnixMs,
+          expiresAtUnixMs: challenge.expiresAtUnixMs,
+        },
+        challenge.presentationBinding,
+      ) !== challenge.bindingHash ||
+      weixinRemoteApprovalAuthorityHash(this.configuration) !==
+        challenge.presentationBinding.authorityHash
+    ) {
+      return reject("stale", true);
+    }
+    const option = parsed?.[1] ?? candidate.text;
+    if (option === "2") {
+      return remind(
+        weixinRemoteApprovalConsentHash(this.configuration) === null
+          ? "consent-scope"
+          : "malformed",
+      );
+    }
+    const decision = option === "3" ? "deny" : "allow-once";
+    if (candidate.requests.some(({ approval }) => !approval.allowedDecisions.includes(decision))) {
+      return remind("malformed");
+    }
+    this.challengesByChat.delete(chatKey);
+    this.closedByChat.set(chatKey, {
+      codeHash: challenge.codeHash,
+      expiresAtUnixMs: challenge.expiresAtUnixMs,
+      locale: challenge.locale,
+    });
+    this.pendingResolutions.set(challenge.id, challenge);
+    const approvalIds = [...challenge.approvalIds];
+    return {
+      consumed: true,
+      status: decision === "deny" ? "denied" : "approved",
+      challengeId: challenge.id,
+      approvalIds,
+      decision,
+      acknowledgement: acknowledgement(
+        challenge.locale,
+        decision === "deny" ? "denied" : "approved",
+      ),
+    };
+  }
+
+  markLocallyResolved(approvalId: string, result: "approved" | "denied"): void {
+    for (const [chatKey, challenge] of this.challengesByChat) {
+      if (!challenge.approvalIds.includes(approvalId)) continue;
+      this.recordAudit(challenge, "invalidated", `local-${result}`);
+      this.closedByChat.set(chatKey, {
+        codeHash: challenge.codeHash,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        locale: challenge.locale,
+      });
+      this.challengesByChat.delete(chatKey);
+    }
+
+    for (const [challengeId, challenge] of this.pendingResolutions) {
+      if (!challenge.approvalIds.includes(approvalId)) continue;
+      this.recordAudit(challenge, "invalidated", `local-${result}`);
+      this.pendingResolutions.delete(challengeId);
+    }
+  }
+
+  isResolutionPending(challengeId: string): boolean {
+    // Invalidated decisions stay invalid even if the same enrollment is later restored.
+    return this.pendingResolutions.has(challengeId);
+  }
+
+  completeResolution(challengeId: string, result: "approved" | "denied"): void {
+    const challenge = this.pendingResolutions.get(challengeId);
+    if (!challenge) return;
+    this.pendingResolutions.delete(challengeId);
+    this.recordAudit(challenge, result, result);
+  }
+
+  settleApproval(approvalId: string, result: string, origin: string): void {
+    for (const [chatKey, challenge] of this.challengesByChat) {
+      if (!challenge.approvalIds.includes(approvalId)) continue;
+      this.closedByChat.set(chatKey, {
+        codeHash: challenge.codeHash,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        locale: challenge.locale,
+      });
+      this.challengesByChat.delete(chatKey);
+      this.recordAudit(challenge, result, origin);
+    }
+    for (const [id, challenge] of this.pendingResolutions) {
+      if (!challenge.approvalIds.includes(approvalId)) continue;
+      this.pendingResolutions.delete(id);
+      this.recordAudit(challenge, result, origin);
+    }
+  }
+
+  failResolution(challengeId: string, reason: string): void {
+    const challenge = this.pendingResolutions.get(challengeId);
+    if (!challenge) return;
+    this.pendingResolutions.delete(challengeId);
+    this.recordAudit(challenge, "invalidated", reason);
+  }
+
+  expireChallenge(challengeId: string, now = Date.now()): WeixinRemoteApprovalNotice | null {
+    for (const [chatKey, challenge] of this.challengesByChat) {
+      if (challenge.id !== challengeId || now < challenge.expiresAtUnixMs) continue;
+      this.invalidateChat(chatKey, "expired");
+      return this.notice(challenge, "expired");
+    }
+    return null;
+  }
+
+  invalidateChallenge(challengeId: string, reason: string): WeixinRemoteApprovalNotice | null {
+    for (const [chatKey, challenge] of this.challengesByChat) {
+      if (challenge.id !== challengeId) continue;
+      this.invalidateChat(chatKey, reason);
+      return this.notice(challenge, "invalid");
+    }
+    const pending = this.pendingResolutions.get(challengeId);
+    if (!pending) return null;
+    this.pendingResolutions.delete(challengeId);
+    this.recordAudit(pending, "invalidated", reason);
+    return this.notice(pending, "invalid");
+  }
+
+  invalidateAll(
+    reason: string,
+    preserveResolvingApprovalId?: string,
+  ): WeixinRemoteApprovalNotice[] {
+    const notices: WeixinRemoteApprovalNotice[] = [];
+    for (const [chatKey, challenge] of this.challengesByChat) {
+      this.recordAudit(challenge, "invalidated", reason);
+      this.closedByChat.set(chatKey, {
+        codeHash: challenge.codeHash,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        locale: challenge.locale,
+      });
+      if (
+        !preserveResolvingApprovalId ||
+        !challenge.approvalIds.includes(preserveResolvingApprovalId)
+      )
+        notices.push(this.notice(challenge, "invalid"));
+    }
+    this.challengesByChat.clear();
+    for (const [challengeId, challenge] of this.pendingResolutions) {
+      // Only an already-consumed exact decision may survive its own live folder update.
+      if (
+        preserveResolvingApprovalId &&
+        challenge.approvalIds.length === 1 &&
+        challenge.approvalIds[0] === preserveResolvingApprovalId
+      )
+        continue;
+      this.recordAudit(challenge, "invalidated", reason);
+      this.pendingResolutions.delete(challengeId);
+    }
+    return notices;
+  }
+
+  private invalidateChat(chatKey: string, reason: string): void {
+    const challenge = this.challengesByChat.get(chatKey);
+    if (!challenge) return;
+    this.recordAudit(challenge, "invalidated", reason);
+    this.closedByChat.set(chatKey, {
+      codeHash: challenge.codeHash,
+      expiresAtUnixMs: challenge.expiresAtUnixMs,
+      locale: challenge.locale,
+    });
+    this.challengesByChat.delete(chatKey);
+  }
+
+  private rejectChallenge(
+    chatKey: string,
+    challenge: ActiveChallenge,
+    reason: Extract<WeixinRemoteApprovalResolution, { status: "rejected" }>["reason"],
+    invalidate: boolean,
+  ): WeixinRemoteApprovalResolution {
+    challenge.attempts += 1;
+    if (invalidate || challenge.attempts >= WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_MAX_ATTEMPTS) {
+      this.invalidateChat(chatKey, reason);
+    }
+    return {
+      consumed: true,
+      status: "rejected",
+      reason,
+      acknowledgement: acknowledgement(
+        challenge.locale,
+        reason === "expired" ? "expired" : "invalid",
+      ),
+    };
+  }
+
+  private chatKey(accountId: string, conversationId: string): string {
+    return `${accountId}\n${conversationId}`;
+  }
+
+  private recordAudit(challenge: ActiveChallenge, result: string, reason: string): void {
+    const event: WeixinRemoteApprovalAuditEvent = {
+      contract: WINDOWS_NODE_MXC_WEIXIN_REMOTE_APPROVAL_CONTRACT,
+      timestamp: new Date().toISOString(),
+      challengeHash: challenge.challengeHash,
+      ownerHash: hash(`${challenge.source.accountId}\n${challenge.source.senderId}`),
+      chatHash: hash(challenge.source.conversationId),
+      approvalIdHashes: challenge.approvalIds.map(hash),
+      result,
+      reason,
+      gatewayGenerationHash: hash(challenge.security.gatewayGeneration),
+      policyFingerprintHash: hash(challenge.security.policyFingerprint),
+      nodeIdHash: hash(challenge.security.nodeId),
+      activationLeaseHash: challenge.security.activationLeaseHash,
+    };
+    this.auditEvents.push(event);
+    this.onAudit?.({ ...event, approvalIdHashes: [...event.approvalIdHashes] });
+  }
+
+  private notice(
+    challenge: ActiveChallenge,
+    result: "expired" | "invalid",
+  ): WeixinRemoteApprovalNotice {
+    return {
+      challengeId: challenge.id,
+      accountId: challenge.source.accountId,
+      senderId: challenge.source.senderId,
+      conversationId: challenge.source.conversationId,
+      acknowledgement: acknowledgement(challenge.locale, result),
+    };
+  }
+}

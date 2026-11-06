@@ -1,67 +1,87 @@
 <template>
   <div class="chat-view">
-    <!-- Mode toggle bar -->
-    <div class="mode-toggle-bar">
-      <button
-        class="mode-toggle-btn"
-        :class="{ active: viewMode === 'chat' }"
-        @click="viewMode = 'chat'"
-      >
-        {{ t("studio.switchToChat") }}
-      </button>
-      <button
-        class="mode-toggle-btn"
-        :class="{ active: viewMode === 'studio' }"
-        @click="switchToStudio"
-      >
-        {{ t("studio.switchToStudio") }}
-      </button>
+    <!-- Welcome (no messages yet) -->
+    <div
+      v-if="
+        !hasMessages &&
+        !chatStore.loading &&
+        !chatStore.agentPreparationError &&
+        !chatStore.lastError
+      "
+      class="chat-welcome-area"
+    >
+      <ChatWelcome mode="hero" :agent="currentAgent" @select="handleCardSelect" />
     </div>
 
-    <!-- Chat mode -->
-    <template v-if="viewMode === 'chat'">
-      <!-- Welcome (no messages yet) -->
-      <div v-if="!hasMessages && !chatStore.loading" class="chat-welcome-area">
-        <ChatWelcome mode="hero" :agent="currentAgent" @select="handleCardSelect" />
-      </div>
-
-      <!-- Chat thread (has messages) -->
-      <template v-else>
-        <div
-          class="chat-thread"
-          ref="threadRef"
-          @scroll="handleScroll"
-          @wheel="handleUserScrollGesture"
-          @touchmove="handleUserScrollGesture"
-          @click="handleThreadClick"
-        >
-          <ChatMessageList />
-        </div>
-      </template>
-
-      <!-- New messages indicator — positioned above input -->
-      <button
-        v-if="hasMessages && showNewMessages"
-        class="chat-new-messages"
-        @click="scrollToBottom"
+    <!-- Chat thread (has messages) -->
+    <template v-else>
+      <div
+        class="chat-thread"
+        ref="threadRef"
+        @scroll="handleScroll"
+        @wheel="handleUserScrollGesture"
+        @touchmove="handleUserScrollGesture"
+        @click="handleThreadClick"
       >
-        {{ t("chat.newMessages") }}
-      </button>
+        <ChatMessageList />
+      </div>
+    </template>
 
-      <!-- Input area -->
-      <div class="home-input-area">
-        <div class="home-input-box">
-          <textarea
-            ref="inputRef"
-            v-model="inputText"
-            :placeholder="composePlaceholder"
-            :rows="isCompact ? 1 : 2"
-            @keydown="handleKeydown"
-            @input="autoResize"
-            :disabled="!chatStore.wsConnected"
-          ></textarea>
-          <div class="home-input-bottom">
-            <button class="home-input-plus" :title="t('chat.addAttachment')">
+    <!-- New messages indicator — positioned above input -->
+    <button v-if="hasMessages && showNewMessages" class="chat-new-messages" @click="scrollToBottom">
+      {{ t("chat.newMessages") }}
+    </button>
+
+    <!-- Input area -->
+    <div class="home-input-area">
+      <div class="home-input-box">
+        <ChatAttachments
+          class="home-input-attachments"
+          :attachments="pendingAttachments"
+          :removable="!submittingMessage"
+          @remove="removeAttachment"
+        />
+        <textarea
+          ref="inputRef"
+          v-model="inputText"
+          :placeholder="composePlaceholder"
+          :rows="isCompact ? 1 : 2"
+          @keydown="handleKeydown"
+          @paste="handlePaste"
+          @input="autoResize"
+          :disabled="!chatStore.wsConnected || submittingMessage"
+        ></textarea>
+        <div class="home-input-bottom">
+          <button
+            class="home-input-plus"
+            :title="t('chat.addAttachment')"
+            :disabled="!chatStore.wsConnected || pickingFiles || submittingMessage"
+            @click="handleAddAttachments"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
+          <div class="home-input-right">
+            <button
+              v-if="chatStore.streaming"
+              class="home-input-send home-input-send--stop"
+              @click="handleAbort"
+              :title="t('chat.stopTask')"
+            >
+              <span class="stop-square"></span>
+            </button>
+            <button v-else class="home-input-send" :disabled="!canSend" @click="handleSend">
               <svg
                 width="20"
                 height="20"
@@ -72,171 +92,76 @@
                 stroke-linecap="round"
                 stroke-linejoin="round"
               >
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5 12 12 5 19 12" />
               </svg>
             </button>
-            <div class="home-input-right">
-              <button
-                v-if="chatStore.streaming"
-                class="home-input-send home-input-send--stop"
-                @click="handleAbort"
-                :title="t('chat.stopTask')"
-              >
-                <span class="stop-square"></span>
-              </button>
-              <button
-                v-else
-                class="home-input-send"
-                :disabled="!inputText.trim() || !chatStore.wsConnected"
-                @click="handleSend"
-              >
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
-              </button>
-            </div>
           </div>
         </div>
-        <div class="home-disclaimer">
-          {{ t("chat.disclaimer") }}
-        </div>
       </div>
-    </template>
+      <div class="home-disclaimer">
+        {{ t("chat.disclaimer") }}
+      </div>
+    </div>
 
-    <!-- Studio mode -->
-    <template v-if="viewMode === 'studio'">
-      <div v-if="studioStore.backendStatus === 'starting'" class="studio-loading">
-        <div class="studio-loading-text">{{ t("studio.backend.starting") }}</div>
-      </div>
-      <div v-else-if="studioStore.backendStatus === 'failed'" class="studio-loading">
-        <div class="studio-loading-text studio-loading-error">{{ t("studio.backend.failed") }}</div>
-        <button class="studio-retry-btn" @click="switchToStudio">
-          {{ t("studio.backend.retry") }}
-        </button>
-      </div>
-      <div v-else class="studio-canvas-area">
-        <StudioGame />
-        <StudioChatPanel />
-        <div class="studio-status-bar">
-          <StudioStatusPanel />
-        </div>
-      </div>
-
-      <!-- Input area (same position as chat mode) -->
-      <div class="home-input-area">
-        <div class="home-input-box">
-          <textarea
-            ref="inputRef"
-            v-model="inputText"
-            :placeholder="composePlaceholder"
-            :rows="isCompact ? 1 : 2"
-            @keydown="handleKeydown"
-            @input="autoResize"
-            :disabled="!chatStore.wsConnected"
-          ></textarea>
-          <div class="home-input-bottom">
-            <button class="home-input-plus" :title="t('chat.addAttachment')">
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </button>
-            <div class="home-input-right">
-              <button
-                v-if="chatStore.streaming"
-                class="home-input-send home-input-send--stop"
-                @click="handleAbort"
-                :title="t('chat.stopTask')"
-              >
-                <span class="stop-square"></span>
-              </button>
-              <button
-                v-else
-                class="home-input-send"
-                :disabled="!inputText.trim() || !chatStore.wsConnected"
-                @click="handleSend"
-              >
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        <div class="home-disclaimer">
-          {{ t("chat.disclaimer") }}
-        </div>
-      </div>
-    </template>
-
-    <ModelSetupDialog v-model="modelSetupVisible" @configured="handleModelConfigured" />
+    <ModelSetupDialog
+      v-model="modelSetupVisible"
+      :initial-family="modelSetupInitialFamily"
+      :streaming="chatStore.streaming || Boolean(chatStore.activityStatus)"
+      @configured="handleModelConfigured"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
-import { useChatStore } from "@/stores/chat";
+import { ElMessage } from "element-plus";
+import {
+  modelAuthRecoveryInitialFamily,
+  requiresModelAuthRecovery,
+  useChatStore,
+} from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
-import { useStudioStore } from "@/stores/studio";
 import { t } from "@/i18n";
+import {
+  clipboardTextToInsert,
+  collectClipboardImageFiles,
+  insertTextAtSelection,
+  serializeClipboardImages,
+} from "@/utils/chat-clipboard";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
+import ChatAttachments from "@/components/chat/ChatAttachments.vue";
 import ChatWelcome from "@/components/ChatWelcome.vue";
-import StudioGame from "@/components/studio/StudioGame.vue";
-import StudioChatPanel from "@/components/studio/StudioChatPanel.vue";
-import StudioStatusPanel from "@/components/studio/StudioStatusPanel.vue";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import { useRoute } from "vue-router";
 
 const route = useRoute();
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
-const studioStore = useStudioStore();
 
-const viewMode = ref<"chat" | "studio">("chat");
 const inputText = ref("");
 const inputRef = ref<HTMLTextAreaElement>();
 const threadRef = ref<HTMLDivElement>();
 const showNewMessages = ref(false);
 const isCompact = ref(window.innerHeight < 700);
 const modelSetupVisible = ref(false);
+const modelSetupInitialFamily = ref<"github-copilot" | undefined>();
 const pendingModelSetupMessage = ref("");
+const pendingModelSetupAttachments = ref<ChatAttachment[]>([]);
+const pendingAttachments = ref<ChatAttachment[]>([]);
+const pickingFiles = ref(false);
+const importingClipboardImages = ref(0);
+const submittingMessage = ref(false);
 let isUserScrolledUp = false;
+let attachmentImportQueue: Promise<void> = Promise.resolve();
 
 function onWindowResize() {
   isCompact.value = window.innerHeight < 700;
 }
 
-const hasMessages = computed(() => chatStore.messages.length > 0 || chatStore.streaming);
+const hasMessages = computed(
+  () => chatStore.messages.length > 0 || chatStore.streaming || Boolean(chatStore.activityStatus),
+);
 
 function handleCardSelect(prompt: string) {
   inputText.value = prompt;
@@ -244,8 +169,9 @@ function handleCardSelect(prompt: string) {
 }
 
 function clearComposeInput() {
-  if (!inputText.value && !chatStore.pendingPrompt) return;
+  if (!inputText.value && !chatStore.pendingPrompt && pendingAttachments.value.length === 0) return;
   inputText.value = "";
+  pendingAttachments.value = [];
   chatStore.pendingPrompt = null;
   nextTick(() => autoResize());
 }
@@ -262,25 +188,12 @@ onMounted(() => {
   if (chatStore.messages.length) {
     nextTick(scrollToBottom);
   }
-  try {
-    studioStore.initialize();
-  } catch {
-    // Studio APIs may be absent in lightweight preview mode.
-  }
 });
 
 onUnmounted(() => {
   window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("microclaw:clear-compose", clearComposeInput);
-  studioStore.teardown();
 });
-
-async function switchToStudio() {
-  viewMode.value = "studio";
-  if (studioStore.backendStatus !== "running" && studioStore.backendStatus !== "starting") {
-    await studioStore.startBackend();
-  }
-}
 
 // Pre-fill input from pending prompt
 watch(
@@ -303,7 +216,21 @@ watch(
 );
 
 const composePlaceholder = computed(() =>
-  chatStore.wsConnected ? t("chat.inputPlaceholder") : t("chat.waitingGateway"),
+  !chatStore.wsConnected
+    ? t("chat.waitingGateway")
+    : chatStore.agentPreparationError
+      ? t("chat.error.agent_initializing.title")
+      : t("chat.inputPlaceholder"),
+);
+const canSend = computed(
+  () =>
+    chatStore.wsConnected &&
+    !chatStore.activityStatus &&
+    !chatStore.agentPreparationError &&
+    !submittingMessage.value &&
+    !pickingFiles.value &&
+    importingClipboardImages.value === 0 &&
+    (inputText.value.trim().length > 0 || pendingAttachments.value.length > 0),
 );
 
 // Auto-scroll
@@ -313,6 +240,7 @@ watch(
     chatStore.streamText,
     chatStore.streaming,
     chatStore.streamToolCalls.length,
+    chatStore.activityStatus,
   ],
   () => {
     if (!isUserScrolledUp) {
@@ -352,6 +280,16 @@ watch(
     showNewMessages.value = false;
     isUserScrolledUp = false;
     nextTick(scrollToBottom);
+  },
+);
+
+watch(
+  () => chatStore.lastError,
+  (error) => {
+    if (!requiresModelAuthRecovery(error)) return;
+    pendingModelSetupMessage.value = "";
+    modelSetupInitialFamily.value = modelAuthRecoveryInitialFamily(error);
+    modelSetupVisible.value = true;
   },
 );
 
@@ -404,23 +342,45 @@ function handleKeydown(e: KeyboardEvent) {
 
 async function handleSend() {
   const text = inputText.value.trim();
-  if (!text || !chatStore.wsConnected) return;
-  if (await needsModelSetupBeforeSend()) {
-    pendingModelSetupMessage.value = text;
-    modelSetupVisible.value = true;
+  if (
+    (!text && pendingAttachments.value.length === 0) ||
+    !chatStore.wsConnected ||
+    chatStore.agentPreparationError ||
+    submittingMessage.value ||
+    pickingFiles.value ||
+    importingClipboardImages.value > 0
+  ) {
     return;
   }
-  await sendText(text);
+  const attachments = pendingAttachments.value.map((attachment) => ({ ...attachment }));
+  submittingMessage.value = true;
+  try {
+    if (await needsModelSetupBeforeSend()) {
+      pendingModelSetupMessage.value = text;
+      pendingModelSetupAttachments.value = attachments;
+      modelSetupInitialFamily.value = undefined;
+      modelSetupVisible.value = true;
+      return;
+    }
+    await sendText(text, attachments);
+  } finally {
+    submittingMessage.value = false;
+  }
 }
 
-async function sendText(text: string) {
+async function sendText(text: string, attachments: ChatAttachment[]): Promise<boolean> {
+  const sent = await chatStore.sendMessage(text, attachments);
+  if (!sent) return false;
   inputText.value = "";
+  pendingAttachments.value = [];
   autoResize();
-  await chatStore.sendMessage(text);
+  return true;
 }
 
 async function needsModelSetupBeforeSend(): Promise<boolean> {
   try {
+    const current = await window.openclaw.model.session.get(chatStore.sessionKey);
+    if (current.overridden && current.modelRef) return false;
     return await window.openclaw.config.needsSetup();
   } catch {
     return false;
@@ -428,10 +388,118 @@ async function needsModelSetupBeforeSend(): Promise<boolean> {
 }
 
 async function handleModelConfigured() {
-  const text = pendingModelSetupMessage.value || inputText.value.trim();
-  pendingModelSetupMessage.value = "";
-  if (!text || !chatStore.wsConnected) return;
-  await sendText(text);
+  const text = pendingModelSetupMessage.value;
+  const attachments = pendingModelSetupAttachments.value;
+  if ((!text && attachments.length === 0) || !chatStore.wsConnected || submittingMessage.value) {
+    return;
+  }
+  submittingMessage.value = true;
+  try {
+    if (!(await sendText(text, attachments))) return;
+    pendingModelSetupMessage.value = "";
+    pendingModelSetupAttachments.value = [];
+  } finally {
+    submittingMessage.value = false;
+  }
+}
+
+async function handleAddAttachments() {
+  if (!chatStore.wsConnected || pickingFiles.value || submittingMessage.value) return;
+  pickingFiles.value = true;
+  try {
+    await enqueueAttachmentImport(async () => {
+      const result = await window.openclaw.dialog.openFiles(currentAttachmentBytes());
+      applyAttachmentResult(result);
+    });
+  } catch (error) {
+    ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+  } finally {
+    pickingFiles.value = false;
+  }
+}
+
+function handlePaste(event: ClipboardEvent) {
+  const clipboardData = event.clipboardData;
+  if (!clipboardData || !chatStore.wsConnected || submittingMessage.value) return;
+  const files = collectClipboardImageFiles(clipboardData);
+  if (files.length === 0) return;
+
+  event.preventDefault();
+  const pastedText = clipboardTextToInsert(clipboardData);
+  if (pastedText) {
+    const textarea = inputRef.value;
+    const insertion = insertTextAtSelection(
+      inputText.value,
+      textarea?.selectionStart ?? inputText.value.length,
+      textarea?.selectionEnd ?? inputText.value.length,
+      pastedText,
+    );
+    inputText.value = insertion.text;
+    nextTick(() => {
+      inputRef.value?.setSelectionRange(insertion.caret, insertion.caret);
+      autoResize();
+    });
+  }
+
+  importingClipboardImages.value += 1;
+  void enqueueAttachmentImport(async () => {
+    try {
+      const images = await serializeClipboardImages(files);
+      const result = await window.openclaw.attachment.importClipboardImages(
+        images,
+        currentAttachmentBytes(),
+      );
+      applyAttachmentResult(result);
+    } catch (error) {
+      ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+    } finally {
+      importingClipboardImages.value -= 1;
+    }
+  });
+}
+
+function enqueueAttachmentImport<T>(task: () => Promise<T>): Promise<T> {
+  const result = attachmentImportQueue.then(task, task);
+  attachmentImportQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function currentAttachmentBytes(): number {
+  return pendingAttachments.value.reduce((total, attachment) => total + attachment.size, 0);
+}
+
+function applyAttachmentResult(result: OpenFilesResult) {
+  pendingAttachments.value.push(...result.attachments);
+  for (const rejection of result.rejections) {
+    if (rejection.reason === "file_too_large") {
+      ElMessage.error(
+        t("chat.attachment.fileTooLarge", {
+          file: rejection.fileName,
+          limit: formatLimit(rejection.limit),
+        }),
+      );
+    } else if (rejection.reason === "total_too_large") {
+      ElMessage.error(
+        t("chat.attachment.totalTooLarge", {
+          file: rejection.fileName,
+          limit: formatLimit(rejection.limit),
+        }),
+      );
+    } else {
+      ElMessage.error(t("chat.attachment.readFailed", { file: rejection.fileName }));
+    }
+  }
+}
+
+function removeAttachment(index: number) {
+  pendingAttachments.value.splice(index, 1);
+}
+
+function formatLimit(bytes?: number): string {
+  return `${Math.round((bytes ?? 0) / (1024 * 1024))} MB`;
 }
 
 async function handleAbort() {
@@ -452,10 +520,7 @@ function handleThreadClick(e: MouseEvent) {
 
 <style scoped>
 .chat-view,
-.mode-toggle-btn,
 .chat-new-messages,
-.studio-canvas-area,
-.studio-retry-btn,
 .home-input-box,
 .home-input-plus,
 .home-input-send,
@@ -482,39 +547,6 @@ function handleThreadClick(e: MouseEvent) {
   background: var(--ux-surface-primary);
   overflow: hidden;
   position: relative;
-}
-
-/* ── Mode toggle bar ── */
-.mode-toggle-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px clamp(12px, 3vw, 32px) 4px;
-  flex-shrink: 0;
-}
-
-.mode-toggle-btn {
-  padding: 4px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
-  border: 1px solid var(--ux-border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ux-text-muted);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.mode-toggle-btn.active {
-  background: var(--ux-ctrl-brand-rest);
-  color: var(--ux-ctrl-on-brand);
-  border-color: var(--ux-ctrl-brand-rest);
-}
-
-.mode-toggle-btn:not(.active):hover {
-  background: var(--ux-surface-hover);
-  color: var(--ux-text-primary);
 }
 
 /* ── Welcome ── */
@@ -573,60 +605,6 @@ function handleThreadClick(e: MouseEvent) {
   box-shadow: var(--smtc-shadow-flyout-key, 0 4px 16px rgba(0, 0, 0, 0.2));
 }
 
-/* ── Studio mode ── */
-.studio-canvas-area {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  overflow: hidden;
-  background: var(--smtc-background-window-tab-band-solid, #2d2d3d);
-  border-radius: 14px;
-  margin: 8px 32px 12px;
-}
-
-.studio-loading {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: var(--ux-text-muted);
-}
-
-.studio-loading-text {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.studio-loading-error {
-  color: var(--danger);
-}
-
-.studio-retry-btn {
-  padding: 6px 20px;
-  border: 1px solid var(--ux-border);
-  border-radius: 8px;
-  background: var(--ux-surface-secondary);
-  color: var(--ux-text-primary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s;
-  font-family: inherit;
-}
-
-.studio-retry-btn:hover {
-  background: var(--ux-surface-hover);
-}
-
-.studio-status-bar {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
-}
-
 /* ── Input area (matches HomeView) ── */
 .home-input-area {
   flex-shrink: 0;
@@ -663,6 +641,10 @@ function handleThreadClick(e: MouseEvent) {
   font-family: inherit;
   resize: none;
   line-height: 1.5;
+}
+
+.home-input-attachments {
+  padding: 12px 16px 0;
 }
 
 .home-input-box textarea::placeholder {
@@ -702,6 +684,11 @@ function handleThreadClick(e: MouseEvent) {
 
 .home-input-plus:hover {
   background: var(--ux-surface-hover);
+}
+
+.home-input-plus:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .home-input-send {

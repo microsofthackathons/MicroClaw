@@ -5,16 +5,24 @@ import {
   COMPILE_CACHE_SUBDIR,
   HEALTH_CHECK_INTERVAL_MS,
   HEALTH_CHECK_HTTP_TIMEOUT_MS,
+  HEALTH_CHECK_BUSY_GRACE_MS,
   GATEWAY_READY_TIMEOUT_MS,
+  MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS,
+  MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
+  MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS,
+  MXC_GATEWAY_RPC_READY_TIMEOUT_MS,
   PORT_WAIT_TIMEOUT_MS,
-  POST_SPAWN_RESTART_DELAY_MS,
+  MODEL_CONNECTION_TEST_TIMEOUT_MS,
+  POST_SPAWN_CHANNEL_READY_TIMEOUT_MS,
   WEIXIN_LOGIN_TIMEOUT_MS,
   USAGE_QUERY_DAYS,
   WS_RECONNECT_INITIAL_MS,
   WS_RECONNECT_MAX_MS,
   WS_RECONNECT_MULTIPLIER,
   WS_REQUEST_TIMEOUT_MS,
-  SANDBOX_PERMISSION_TIMEOUT_MS,
+  AGENT_WARMUP_PROMPT,
+  AGENT_WARMUP_SESSION_KEY,
+  AGENT_WARMUP_TIMEOUT_MS,
 } from "./constants";
 import type { GatewayStatus } from "./constants";
 
@@ -42,16 +50,36 @@ describe("constants", () => {
       expect(HEALTH_CHECK_HTTP_TIMEOUT_MS).toBeLessThan(HEALTH_CHECK_INTERVAL_MS);
     });
 
-    it("gateway ready timeout > port wait timeout", () => {
+    it("busy gateway grace >= health check interval", () => {
+      expect(HEALTH_CHECK_BUSY_GRACE_MS).toBe(240_000);
+      expect(HEALTH_CHECK_BUSY_GRACE_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_INTERVAL_MS);
+    });
+
+    it("gateway ready timeout covers cold compatibility-preload startup", () => {
+      expect(GATEWAY_READY_TIMEOUT_MS).toBe(300_000);
       expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(PORT_WAIT_TIMEOUT_MS);
+      expect(GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(HEALTH_CHECK_BUSY_GRACE_MS);
+    });
+
+    it("gates bundled-node startup on a bounded long-running authenticated RPC", () => {
+      expect(MXC_GATEWAY_RPC_READY_TIMEOUT_MS).toBeLessThanOrEqual(GATEWAY_READY_TIMEOUT_MS);
+      expect(MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS).toBeLessThan(MXC_GATEWAY_RPC_READY_TIMEOUT_MS);
+      expect(MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS).toBeLessThanOrEqual(
+        MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS,
+      );
+    });
+
+    it("model connection test has a finite timeout", () => {
+      expect(MODEL_CONNECTION_TEST_TIMEOUT_MS).toBeGreaterThan(0);
+      expect(MODEL_CONNECTION_TEST_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
     });
 
     it("weixin login timeout > 60s", () => {
       expect(WEIXIN_LOGIN_TIMEOUT_MS).toBeGreaterThan(60_000);
     });
 
-    it("post-spawn restart delay > 1s", () => {
-      expect(POST_SPAWN_RESTART_DELAY_MS).toBeGreaterThan(1_000);
+    it("post-spawn channel readiness wait is bounded to 5s", () => {
+      expect(POST_SPAWN_CHANNEL_READY_TIMEOUT_MS).toBe(5_000);
     });
 
     it("usage query days is reasonable", () => {
@@ -73,6 +101,10 @@ describe("constants", () => {
       expect(WS_REQUEST_TIMEOUT_MS).toBeGreaterThan(WS_RECONNECT_INITIAL_MS);
     });
 
+    it("agent warm-up has a finite 30-second safety cap", () => {
+      expect(AGENT_WARMUP_TIMEOUT_MS).toBe(30_000);
+    });
+
     it("backoff reaches max within reasonable retries", () => {
       let delay = WS_RECONNECT_INITIAL_MS;
       let retries = 0;
@@ -81,6 +113,14 @@ describe("constants", () => {
         retries++;
       }
       expect(retries).toBeLessThan(50);
+    });
+
+    describe("agent warm-up", () => {
+      it("uses a reserved non-main session and minimal prompt", () => {
+        expect(AGENT_WARMUP_SESSION_KEY).toBe("agent:main:__microclaw_warmup__");
+        expect(AGENT_WARMUP_SESSION_KEY).not.toBe("agent:main:main");
+        expect(AGENT_WARMUP_PROMPT).toBe("ping");
+      });
     });
   });
 
@@ -96,16 +136,6 @@ describe("constants", () => {
         "timeout",
       ];
       expect(statuses).toHaveLength(7);
-    });
-  });
-
-  describe("sandbox permission timeout", () => {
-    it("SANDBOX_PERMISSION_TIMEOUT_MS is 60s", () => {
-      expect(SANDBOX_PERMISSION_TIMEOUT_MS).toBe(60_000);
-    });
-
-    it("SANDBOX_PERMISSION_TIMEOUT_MS > 0 (not infinite)", () => {
-      expect(SANDBOX_PERMISSION_TIMEOUT_MS).toBeGreaterThan(0);
     });
   });
 });

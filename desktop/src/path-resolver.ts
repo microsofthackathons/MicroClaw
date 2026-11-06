@@ -8,6 +8,8 @@
 import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
+import { execFileSync } from "child_process";
+import { resolveBundledOpenClawDir } from "./bundled-runtime";
 
 /**
  * Resolve the OpenClaw state directory.
@@ -53,29 +55,72 @@ export function loadStateDirEnv(stateDir?: string): Record<string, string> {
   return result;
 }
 
+export function loadGatewayEnvironment(
+  stateDir: string,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnvironment)) {
+    if (value !== undefined) environment[key] = value;
+  }
+  return { ...environment, ...loadStateDirEnv(stateDir) };
+}
+
+/**
+ * Stable Node releases supported by OpenClaw 2026.10.5.
+ */
+export function isSupportedNodeVersion(value: string): boolean {
+  const match = /^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(value);
+  if (!match || match[0] !== value) return false;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return false;
+  return (major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major > 26;
+}
+
 /**
  * Resolve the path to `node.exe`.
  *
- * Priority:
+ * Priority (skipping unsupported or unreadable runtimes):
  *  1. Bundled in packaged app resources
- *  2. Deployer-installed `~/.openclaw-node/node.exe`
- *  3. `C:\Program Files\nodejs\node.exe`
- *  4. Bare `"node"` (rely on PATH)
+ *  2. Explicit `OPENCLAW_NODE_DIR`
+ *  3. Deployer-installed `~/.openclaw-node/node.exe`
+ *  4. Per-machine and per-user MSI installations
+ *  5. Bare `"node"` (rely on PATH)
  */
 export function resolveNodePath(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "node.exe");
-    if (fs.existsSync(bundled)) return bundled;
+  const override = process.env.OPENCLAW_NODE_DIR || "";
+  const candidates = [
+    app.isPackaged ? path.join(process.resourcesPath, "node.exe") : "",
+    path.isAbsolute(override) ? path.join(override, "node.exe") : "",
+    process.env.USERPROFILE ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe") : "",
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs", "node.exe"),
+    process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe")
+      : "",
+    "node",
+  ];
+  for (const candidate of new Set(candidates.filter(Boolean))) {
+    if (candidate !== "node" && !fs.existsSync(candidate)) continue;
+    let version: string;
+    try {
+      version = execFileSync(candidate, ["--version"], {
+        encoding: "utf-8",
+        windowsHide: true,
+        timeout: 5_000,
+      }).trim();
+    } catch (error) {
+      console.warn(
+        `[path-resolver] Cannot read Node.js version at ${candidate}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+    if (isSupportedNodeVersion(version)) return candidate;
+    console.warn(`[path-resolver] Skipping unsupported Node.js ${version} at ${candidate}`);
   }
-  const ocNode = process.env.USERPROFILE
-    ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe")
-    : "";
-  if (ocNode && fs.existsSync(ocNode)) return ocNode;
-
-  const programFiles = "C:\\Program Files\\nodejs\\node.exe";
-  if (fs.existsSync(programFiles)) return programFiles;
-
-  return "node";
+  throw new Error(
+    "OpenClaw 2026.10.5 requires Node.js >=24.16.0 <25 || >=26.1.0. " +
+      "Run the MicroClaw installer or install Node.js 26.",
+  );
 }
 
 /**
@@ -89,9 +134,9 @@ export function resolveNodePath(): string {
  *  5. Per-user Node at `%LocalAppData%/Programs/nodejs`
  */
 export function resolveOpenClawEntry(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
-    if (fs.existsSync(bundled)) return bundled;
+  const bundledRoot = resolveBundledOpenClawDir();
+  if (bundledRoot) {
+    return path.join(bundledRoot, "node_modules", "openclaw", "openclaw.mjs");
   }
   const home = process.env.USERPROFILE || "";
   const appData = process.env.APPDATA || "";
@@ -115,14 +160,7 @@ export function resolveOpenClawEntry(): string {
       ? path.join(programFiles, "nodejs", "node_modules", "openclaw", "dist", "index.js")
       : "",
     localAppData
-      ? path.join(
-          localAppData,
-          "Programs",
-          "nodejs",
-          "node_modules",
-          "openclaw",
-          "openclaw.mjs",
-        )
+      ? path.join(localAppData, "Programs", "nodejs", "node_modules", "openclaw", "openclaw.mjs")
       : "",
     localAppData
       ? path.join(
@@ -142,6 +180,12 @@ export function resolveOpenClawEntry(): string {
   return candidates[0];
 }
 
+/** Resolve the package root that must remain readable by the sandbox preload. */
+export function resolveOpenClawPackageDir(entryPath: string): string {
+  const entryDir = path.dirname(entryPath);
+  return path.basename(entryDir).toLowerCase() === "dist" ? path.dirname(entryDir) : entryDir;
+}
+
 /**
  * Resolve the directory containing the built-in (bundled with the `openclaw`
  * npm package) skills.
@@ -157,9 +201,9 @@ export function resolveOpenClawEntry(): string {
  * (legacy deployer layout) so callers can still surface a useful path.
  */
 export function resolveBuiltinSkillsDir(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "openclaw", "skills");
-    if (fs.existsSync(bundled)) return bundled;
+  const bundledRoot = resolveBundledOpenClawDir();
+  if (bundledRoot) {
+    return path.join(bundledRoot, "node_modules", "openclaw", "skills");
   }
   const home = process.env.USERPROFILE || "";
   const appData = process.env.APPDATA || "";

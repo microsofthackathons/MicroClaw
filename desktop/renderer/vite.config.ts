@@ -20,17 +20,11 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          phaser: ["phaser"],
-        },
-      },
-    },
   },
   test: {
     include: ["src/**/*.test.ts"],
     environment: "jsdom",
+    setupFiles: ["./src/test-setup.ts"],
     globals: true,
   },
 });

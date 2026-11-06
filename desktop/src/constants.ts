@@ -44,25 +44,70 @@ export const HEALTH_CHECK_HTTP_TIMEOUT_MS = 10_000;
  *  the gateway event loop can stall for several seconds during plugin work. */
 export const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
 
-/** Max time to wait for the gateway to become ready after spawn (ms). */
-export const GATEWAY_READY_TIMEOUT_MS = 120_000;
+/** Grace period before restarting an unresponsive but still-running gateway.
+ *  Long synchronous agent turns can block the event loop on loaded machines
+ *  even though the gateway process is alive and making progress. */
+export const HEALTH_CHECK_BUSY_GRACE_MS = 240_000;
+
+/** Max time to wait for the gateway to become ready after spawn (ms).
+ *  The pinned compatibility preload can make a cold Windows start take more
+ *  than two minutes before the Gateway binds its health endpoint. */
+export const GATEWAY_READY_TIMEOUT_MS = 300_000;
+
+/** Total authenticated RPC readiness budget before the bundled Windows node may start. */
+export const MXC_GATEWAY_RPC_READY_TIMEOUT_MS = 180_000;
+
+/** Per-attempt budget for the representative authenticated config.get readiness RPC. */
+export const MXC_GATEWAY_RPC_PROBE_TIMEOUT_MS = 120_000;
+
+/** Initial and maximum retry delays for authenticated Gateway readiness. */
+export const MXC_GATEWAY_RPC_PROBE_INITIAL_BACKOFF_MS = 500;
+export const MXC_GATEWAY_RPC_PROBE_MAX_BACKOFF_MS = 5_000;
+
+/** Max time to keep the locked policy while agent databases finish startup preparation. */
+export const MXC_AGENT_DATABASE_READY_TIMEOUT_MS = 180_000;
+
+/** Poll cadence for per-agent database admission readiness. */
+export const MXC_AGENT_DATABASE_READY_POLL_INTERVAL_MS = 250;
 
 /** Max time to wait for the gateway port to become free (ms). */
 export const PORT_WAIT_TIMEOUT_MS = 30_000;
 
-/** Delay before the post-spawn restart that activates plugin channels (ms). */
-export const POST_SPAWN_RESTART_DELAY_MS = 5_000;
+/** Max time to wait for a model provider connection test (ms). */
+export const MODEL_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
-/** Timeout for sandbox permission requests — file, shell, and app approval (ms).
- *  Shared by sandbox-preload.js (via env var) and main.ts (remote approval).
- *  After this timeout, pending prompts auto-deny to prevent consent fatigue. */
-export const SANDBOX_PERMISSION_TIMEOUT_MS = 60_000;
+/** Time budget for the non-blocking startup channel diagnostic (ms). */
+export const POST_SPAWN_CHANNEL_READY_TIMEOUT_MS = 5_000;
 
 /** Timeout for the WeChat login flow (ms). */
 export const WEIXIN_LOGIN_TIMEOUT_MS = 180_000;
 
+/** Timeout for each OpenClaw `skills` diagnostics CLI invocation (ms). The CLI is
+ *  spawned cold and can take ~60–90s to emit its JSON on slower machines, so this
+ *  is generous headroom to avoid killing the child before it produces output. */
+export const SKILLS_STATUS_TIMEOUT_MS = 120_000;
+
 /** Number of days of usage data to query from the gateway. */
 export const USAGE_QUERY_DAYS = 30;
+
+/**
+ * Free, no-API-key FX endpoint (ECB data via Frankfurter) used to convert the
+ * USD spend figures relayed from the OpenClaw gateway into CNY for display.
+ */
+export const EXCHANGE_RATE_API_URL = "https://api.frankfurter.app/latest?from=USD&to=CNY";
+
+/** How long a fetched USD→CNY rate stays cached in memory before we refetch. */
+export const EXCHANGE_RATE_CACHE_TTL_MS = 12 * 60 * 60 * 1_000;
+
+/**
+ * Fallback USD→CNY rate used when the FX endpoint is unreachable (offline / API
+ * down) so the usage UI never breaks. Approximate mid-market rate as of 2026 —
+ * this is only a safety net; the live rate is preferred whenever available.
+ */
+export const USD_TO_CNY_FALLBACK_RATE = 7.2;
+
+/** Public manifest used by the P0 manual update checker. */
+export const UPDATE_MANIFEST_URL = "https://microclaw.microsoft.com/releases/latest.json";
 
 // ── WebSocket reconnect back-off ────────────────────────────────────────
 
@@ -78,35 +123,24 @@ export const WS_RECONNECT_MULTIPLIER = 1.7;
 /** Per-request timeout for gateway WS RPC calls (ms). */
 export const WS_REQUEST_TIMEOUT_MS = 30_000;
 
-// ── Studio backend ──────────────────────────────────────────────────────
+export const MODEL_APPLY_SETTLE_TIMEOUT_MS = 30_000;
 
-/** Default port for the Studio Node backend. */
-export const STUDIO_DEFAULT_PORT = 19000;
+/** Reserved throwaway session used to pre-warm the main agent. */
+export const AGENT_WARMUP_SESSION_KEY = "agent:main:__microclaw_warmup__";
 
-/** Max time to wait for the studio backend to become ready after spawn (ms). */
-export const STUDIO_READY_TIMEOUT_MS = 30_000;
+/** Minimal prompt for the throwaway warm-up turn. */
+export const AGENT_WARMUP_PROMPT = "ping";
 
-/** Health-check poll interval while waiting for studio backend ready (ms). */
-export const STUDIO_HEALTH_POLL_MS = 500;
+/** Hard cap for startup agent warm-up before the app fails open (ms). */
+export const AGENT_WARMUP_TIMEOUT_MS = 30_000;
 
-/** HTTP timeout for a single studio health-check request (ms). */
-export const STUDIO_HEALTH_HTTP_TIMEOUT_MS = 2_000;
+// ── Chat attachments ────────────────────────────────────────────────────
 
-/** Max automatic restart attempts for the studio backend. */
-export const STUDIO_MAX_RESTARTS = 3;
+/** Maximum decoded size of one chat attachment (20 MiB, matching the gateway). */
+export const CHAT_ATTACHMENT_MAX_FILE_BYTES = 20 * 1024 * 1024;
 
-/** Sub-directory under the state dir for studio data files. */
-export const STUDIO_DATA_SUBDIR = "studio-data";
-
-// ── Studio backend status ───────────────────────────────────────────────
-
-export type StudioBackendStatus =
-  | "stopped"
-  | "starting"
-  | "running"
-  | "restarting"
-  | "failed"
-  | "stopping";
+/** Maximum decoded size of all attachments selected for one message (50 MiB). */
+export const CHAT_ATTACHMENT_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 // ── Gateway status ──────────────────────────────────────────────────────
 

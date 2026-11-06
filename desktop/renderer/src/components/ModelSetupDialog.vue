@@ -1,7 +1,28 @@
 <template>
-  <div v-if="modelValue" class="model-setup-overlay">
-    <div class="model-setup-panel" role="dialog" aria-modal="true">
-      <button class="model-setup-close" type="button" :aria-label="t('common.close')" @click="close">
+  <div v-if="modelValue" class="model-setup-overlay" :class="{ 'model-setup-inline': inline }">
+    <LocalModelSetupDialog
+      v-if="localVisible"
+      :streaming="streaming"
+      :target-model-ref="localTarget"
+      :default-agent-override="defaultAgentOverride"
+      @close="close"
+      @configured="handleLocalConfigured"
+    />
+    <div
+      v-else
+      class="model-setup-panel"
+      :role="inline ? 'region' : 'dialog'"
+      :aria-modal="inline ? undefined : true"
+      :aria-label="inline ? getFamilyLabel(selectedFamily) : undefined"
+    >
+      <button
+        v-if="!inline"
+        class="model-setup-close"
+        type="button"
+        :disabled="configMutationInProgress"
+        :aria-label="t('common.close')"
+        @click="close"
+      >
         <svg
           width="12"
           height="12"
@@ -17,9 +38,17 @@
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
+      <p v-if="defaultAgentOverride" role="status" data-testid="default-agent-override">
+        {{
+          t("localModel.defaultAgentOverride", {
+            agent: defaultAgentOverride.agentId,
+            model: defaultAgentOverride.modelRef,
+          })
+        }}
+      </p>
 
       <template v-if="!isKeyStep">
-        <h2>{{ t("modelSetup.title") }}</h2>
+        <h2>{{ inline ? getFamilyLabel(selectedFamily) : t("modelSetup.title") }}</h2>
         <p class="model-setup-desc">{{ t("modelSetup.selectDesc") }}</p>
 
         <div class="model-family-grid">
@@ -30,13 +59,43 @@
             class="model-family-card"
             :class="{ active: selectedFamilyId === family.id }"
             :aria-pressed="selectedFamilyId === family.id ? 'true' : 'false'"
-            @click="selectedFamilyId = family.id"
+            @click="selectFamily(family.id)"
           >
             <span class="family-icon" aria-hidden="true">
-              <img :src="family.logo" :alt="family.label" />
+              <img v-if="family.logo" :src="family.logo" :alt="getFamilyLabel(family)" />
+              <svg
+                v-else
+                class="custom-provider-icon"
+                viewBox="0 0 64 64"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  x="10"
+                  y="10"
+                  width="44"
+                  height="44"
+                  rx="14"
+                  fill="currentColor"
+                  opacity=".08"
+                />
+                <circle cx="24" cy="26" r="5" stroke="currentColor" stroke-width="3" />
+                <circle cx="42" cy="22" r="4" stroke="currentColor" stroke-width="3" />
+                <circle cx="39" cy="42" r="5" stroke="currentColor" stroke-width="3" />
+                <path
+                  d="M28.5 24.5 38 22.8M27.5 30 36 39M41.5 26 40 37"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                />
+              </svg>
             </span>
-            <span class="family-name">{{ family.label }}</span>
-            <span v-if="selectedFamilyId === family.id" class="family-selected-badge" aria-hidden="true">
+            <span class="family-name">{{ getFamilyLabel(family) }}</span>
+            <span
+              v-if="selectedFamilyId === family.id"
+              class="family-selected-badge"
+              aria-hidden="true"
+            >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                 <path
                   d="M3.25 8.25L6.5 11.5L12.75 5.25"
@@ -50,103 +109,319 @@
           </button>
         </div>
 
-        <UiButton class="primary-action" variant="default" size="lg" @click.stop="handleGetApiKey">
-          {{ t("modelSetup.getApiKey") }}
+        <UiButton class="primary-action" type="button" @click.stop="handlePrimaryAction">
+          {{
+            isLocalProvider
+              ? t("localModel.configure")
+              : isGitHubCopilot
+                ? t("modelSetup.copilotSignIn")
+                : t("modelSetup.getApiKey")
+          }}
         </UiButton>
-        <UiButton class="text-action" variant="outline" size="lg" @click.stop="goToKeyForm">
+        <UiButton
+          v-if="!isGitHubCopilot && !isLocalProvider"
+          class="text-action"
+          type="button"
+          @click.stop="goToKeyForm()"
+        >
           {{ t("modelSetup.haveApiKey") }}
         </UiButton>
       </template>
 
       <template v-else>
-        <h2>{{ t("modelSetup.title") }}</h2>
-        <p class="model-setup-desc">{{ t("modelSetup.keyDesc") }}</p>
+        <template v-if="!inline">
+          <h2>{{ t("modelSetup.title") }}</h2>
+          <p class="model-setup-desc">
+            {{
+              manageOnly
+                ? t("modelManager.saveOnlyHint")
+                : t(
+                    isGitHubCopilot
+                      ? "modelSetup.copilotDesc"
+                      : isCustomProvider
+                        ? "modelSetup.customDesc"
+                        : "modelSetup.keyDesc",
+                  )
+            }}
+          </p>
+        </template>
 
         <el-form label-position="top" class="model-key-form">
-          <el-form-item :label="t('modelSetup.modelSelect')">
-            <div ref="dropdownRef" class="model-dropdown" :class="{ 'is-open': isDropdownOpen }">
-              <button
-                class="model-dropdown-trigger"
-                type="button"
-                role="combobox"
-                :aria-expanded="isDropdownOpen ? 'true' : 'false'"
-                :aria-controls="dropdownListId"
-                :aria-activedescendant="isDropdownOpen ? activeOptionId : undefined"
-                aria-haspopup="listbox"
-                @click.stop="toggleDropdown"
-                @keydown.down.prevent="handleTriggerArrow(1)"
-                @keydown.up.prevent="handleTriggerArrow(-1)"
-                @keydown.home.prevent="selectFirstModel"
-                @keydown.end.prevent="selectLastModel"
-                @keydown.enter.prevent="toggleDropdown"
-                @keydown.space.prevent="toggleDropdown"
-                @keydown.esc.prevent="closeDropdown"
+          <template v-if="isGitHubCopilot">
+            <div class="copilot-auth-panel">
+              <template v-if="githubAuthState === 'code'">
+                <span class="copilot-auth-label">{{ t("modelSetup.copilotEnterCode") }}</span>
+                <strong class="copilot-device-code">{{ githubUserCode }}</strong>
+                <span class="copilot-auth-hint">
+                  {{
+                    t("modelSetup.copilotCodeExpires", {
+                      minutes: githubCodeExpiryMinutes,
+                    })
+                  }}
+                </span>
+                <button
+                  class="text-action copilot-open-action"
+                  type="button"
+                  @click.stop="openGitHubVerificationPage"
+                >
+                  {{ t("modelSetup.copilotOpenGitHub") }}
+                </button>
+              </template>
+              <p v-if="streaming || localBlocked" role="status">
+                {{ t(streaming ? "localModel.streaming" : "localModel.switchBeforeSave") }}
+              </p>
+              <template
+                v-else-if="githubAuthState === 'checking' || githubAuthState === 'signing-in'"
               >
-                <span class="model-dropdown-value">{{ selectedModelName }}</span>
-                <span class="model-dropdown-caret" aria-hidden="true"></span>
-              </button>
-
-              <ul
-                :id="dropdownListId"
-                class="model-dropdown-menu"
-                role="listbox"
-                :aria-hidden="isDropdownOpen ? 'false' : 'true'"
-              >
-                <li v-for="model in selectedFamily.models" :key="model" role="none">
-                  <button
-                    :id="getOptionId(model)"
-                    class="model-dropdown-option"
-                    :class="{ selected: selectedModelName === model, active: selectedModelName === model && isDropdownOpen }"
-                    type="button"
-                    role="option"
-                    :aria-selected="selectedModelName === model ? 'true' : 'false'"
-                    @click.stop="selectModel(model)"
-                  >
-                    {{ model }}
-                  </button>
-                </li>
-              </ul>
+                <span class="copilot-auth-label">
+                  {{
+                    t(
+                      githubAuthState === "checking"
+                        ? "modelSetup.copilotChecking"
+                        : "modelSetup.copilotStarting",
+                    )
+                  }}
+                </span>
+                <span class="copilot-auth-hint">{{ t("modelSetup.copilotTokenPrivacy") }}</span>
+              </template>
+              <template v-else-if="githubAuthState === 'authenticated'">
+                <span class="copilot-auth-success">{{ t("modelSetup.copilotConnected") }}</span>
+                <button
+                  class="text-action copilot-open-action"
+                  type="button"
+                  @click.stop="startGitHubCopilotLogin"
+                >
+                  {{ t("modelSetup.copilotUseAnotherAccount") }}
+                </button>
+              </template>
+              <template v-else>
+                <span class="copilot-auth-label">{{ t("modelSetup.copilotSignInHint") }}</span>
+                <span class="copilot-auth-hint">{{ t("modelSetup.copilotTokenPrivacy") }}</span>
+              </template>
             </div>
-          </el-form-item>
-          <el-form-item :label="t('modelSetup.baseUrl')">
-            <UiInput
-              v-model="baseUrl"
-              class="model-key-input"
-              size="lg"
-              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-              @keydown.enter.prevent="saveAndStart"
-            />
-          </el-form-item>
-          <el-form-item :label="t('modelSetup.apiKey')">
-            <UiInput
-              class="model-key-input"
-              v-model="apiKey"
-              size="lg"
-              show-password
-              :placeholder="selectedFamily.apiKeyPlaceholder"
-              @keydown.enter.prevent="saveAndStart"
-            />
-          </el-form-item>
+
+            <el-form-item
+              v-if="githubAuthState === 'authenticated' && !manageOnly"
+              :label="t('modelSetup.modelSelect')"
+            >
+              <el-select
+                v-model="selectedGitHubModel"
+                style="width: 100%"
+                filterable
+                :placeholder="t('modelSetup.copilotModelPlaceholder')"
+              >
+                <el-option
+                  v-for="model in githubModels"
+                  :key="model.id"
+                  :label="model.name"
+                  :value="model.id"
+                />
+              </el-select>
+            </el-form-item>
+          </template>
+
+          <template v-else>
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.providerId')">
+              <el-input
+                v-model="providerKey"
+                :disabled="Boolean(inline && currentProvider)"
+                :placeholder="t('modelSetup.providerIdPlaceholder')"
+                @keydown.enter.prevent="saveAndStart"
+              />
+              <div class="field-hint">{{ t("modelSetup.providerIdHint") }}</div>
+            </el-form-item>
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.apiFormat')">
+              <el-select v-model="selectedApiFormat" style="width: 100%">
+                <el-option :label="t('modelSetup.apiFormatOpenAIChat')" value="openai-chat" />
+                <el-option
+                  :label="t('modelSetup.apiFormatOpenAIResponses')"
+                  value="openai-responses"
+                />
+                <el-option :label="t('modelSetup.apiFormatAnthropic')" value="anthropic" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="isCustomProvider" :label="t('modelSetup.modelSelect')">
+              <el-input
+                v-model="selectedModelName"
+                :placeholder="t('modelSetup.modelPlaceholder')"
+                @keydown.enter.prevent="saveAndStart"
+              />
+            </el-form-item>
+            <el-form-item :label="t('modelSetup.baseUrl')" data-testid="provider-base-field">
+              <el-input
+                v-model="baseUrl"
+                :disabled="!isCustomProvider"
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                @keydown.enter.prevent="saveAndStart"
+              />
+            </el-form-item>
+            <el-form-item
+              :label="t(isCustomProvider ? 'modelSetup.apiKeyOptional' : 'modelSetup.apiKey')"
+              data-testid="provider-key-field"
+            >
+              <div class="model-field-row">
+                <el-input
+                  v-model="apiKey"
+                  class="model-field-input"
+                  :disabled="saving"
+                  type="password"
+                  show-password
+                  :placeholder="selectedFamily.apiKeyPlaceholder"
+                  @keydown.enter.prevent="saveAndStart"
+                />
+                <button
+                  v-if="selectedManagedProvider"
+                  class="model-field-action provider-api-key-link"
+                  type="button"
+                  :disabled="configMutationInProgress"
+                  @click.stop="openProviderSignup"
+                >
+                  {{ t("modelSetup.getApiKey") }}
+                </button>
+              </div>
+              <div v-if="isCustomProvider" class="field-hint">
+                {{ t("modelSetup.credentialHint") }}
+              </div>
+            </el-form-item>
+            <el-form-item
+              v-if="selectedManagedProvider && !connectionOnly"
+              :label="t('modelSetup.modelSelect')"
+              data-testid="provider-model-field"
+            >
+              <div class="model-field-row">
+                <el-select
+                  class="model-field-input"
+                  :model-value="catalogReady ? selectedModelName : ''"
+                  :disabled="!catalogReady || saving"
+                  :loading="catalogLoading"
+                  filterable
+                  :filter-method="filterCatalogModels"
+                  :placeholder="t('modelSetup.modelPlaceholder')"
+                  @update:model-value="selectedModelName = $event"
+                  @visible-change="resetCatalogPicker"
+                >
+                  <el-option
+                    v-for="model in visibleCatalogModels"
+                    :key="model"
+                    :label="catalogModelLabel(model)"
+                    :title="catalogModelLabel(model)"
+                    :value="model"
+                    :disabled="Boolean(catalogModelRestriction(model))"
+                  >
+                    <span class="catalog-option-name">{{ catalogModelLabel(model) }}</span>
+                    <span
+                      v-if="isRecommendedProviderModel(providerKey, model)"
+                      class="catalog-recommended"
+                    >
+                      {{ t("modelManager.recommended") }}
+                    </span>
+                  </el-option>
+                  <template
+                    v-if="
+                      !visibleCatalogModels.length && catalogSections.more.length && !catalogQuery
+                    "
+                    #empty
+                  >
+                    <p class="catalog-empty-hint">{{ t("modelManager.noFeaturedModels") }}</p>
+                  </template>
+                  <template v-if="!catalogQuery && catalogSections.more.length" #footer>
+                    <button
+                      class="catalog-more-toggle"
+                      type="button"
+                      data-testid="more-provider-models"
+                      :aria-expanded="catalogMoreExpanded"
+                      @mousedown.prevent
+                      @click.stop="catalogMoreExpanded = !catalogMoreExpanded"
+                    >
+                      {{
+                        t(
+                          catalogMoreExpanded
+                            ? "modelManager.fewerModels"
+                            : "modelManager.moreModels",
+                          { count: catalogSections.more.length },
+                        )
+                      }}
+                      <span aria-hidden="true">{{ catalogMoreExpanded ? "−" : "+" }}</span>
+                    </button>
+                  </template>
+                </el-select>
+                <button
+                  class="model-field-action model-refresh-action"
+                  type="button"
+                  data-testid="refresh-provider-models"
+                  :aria-label="t('modelSetup.catalogRefresh')"
+                  :title="t('modelSetup.catalogRefresh')"
+                  :aria-busy="catalogLoading"
+                  :disabled="!apiKey.trim() || catalogLoading || saving"
+                  @click="loadProviderModels"
+                >
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                    :class="{ 'refresh-spinning': catalogLoading }"
+                  >
+                    <path d="M20 7v5h-5M4 17v-5h5" />
+                    <path d="M6.1 7A7 7 0 0 1 18 5l2 2M4 17l2 2a7 7 0 0 0 11.9-2" />
+                  </svg>
+                </button>
+              </div>
+              <p class="field-hint" role="status">
+                {{
+                  t(
+                    catalogLoading
+                      ? "modelSetup.catalogLoading"
+                      : catalogReady
+                        ? "modelSetup.catalogLoaded"
+                        : "modelSetup.catalogNeedsKey",
+                  )
+                }}
+              </p>
+              <p v-if="catalogError" class="error-msg" role="alert">{{ catalogError }}</p>
+              <p v-if="selectedModelRestriction" class="error-msg" role="alert">
+                {{ t(`modelSetup.incompatible.${selectedModelRestriction}`) }}
+              </p>
+            </el-form-item>
+          </template>
+          <p v-if="connectionOnly" class="field-hint" data-testid="provider-connection-hint">
+            {{ t("modelManager.connectionOnlyHint") }}
+          </p>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
         </el-form>
 
         <div class="key-actions">
           <UiButton
+            v-if="!inline"
             class="text-action text-action--back"
-            variant="outline"
-            size="lg"
-            @click.stop="goToSelectStep"
+            type="button"
+            :disabled="configMutationInProgress"
+            @click.prevent.stop="goToSelectStep"
           >
-            {{ t("common.back") }}
+            {{ t("modelSetup.back") }}
           </UiButton>
+          <button
+            v-if="isGitHubCopilot && githubLoginInProgress"
+            class="text-action"
+            type="button"
+            @mousedown.prevent.stop="cancelGitHubCopilotLogin"
+          >
+            {{ t("modelSetup.copilotCancel") }}
+          </button>
           <UiButton
             class="primary-action"
-            variant="default"
-            size="lg"
-            :disabled="saving"
-            @click.stop="saveAndStart"
+            type="button"
+            :disabled="formPrimaryDisabled"
+            @click.prevent.stop="handleFormPrimaryAction"
+            @keydown.enter.prevent.stop="handleFormPrimaryAction"
+            @keydown.space.prevent.stop="handleFormPrimaryAction"
           >
-            {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
+            {{ formPrimaryLabel }}
           </UiButton>
         </div>
       </template>
@@ -155,258 +430,762 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { UiButton } from "@/components/ui";
+import { useProviderModelCatalog } from "@/composables/use-provider-model-catalog";
+import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
+import {
+  getProviderCatalogOptions,
+  getProviderModelSections,
+  isRecommendedProviderModel,
+} from "@/utils/provider-model-options";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
-import { UiButton, UiInput } from "@/components/ui";
-import qwenLogo from "@/assets/modelprovider/Qwen.png";
-import minimaxLogo from "@/assets/modelprovider/minimax.png";
+import {
+  mergeModelProviderConfig,
+  mergeModelProviderConnectionConfig,
+  getDefaultAgentModelOverride,
+  selectPrimaryModelConfig,
+  validateModelProviderInput,
+  validateModelProviderConnectionInput,
+  type ModelProviderConnectionInput,
+  type ModelApiFormat,
+  type ModelProviderInput,
+  type ModelProviderValidationError,
+  type ModelInputCapability,
+  type ModelReasoningEffort,
+} from "@/utils/model-provider";
+import {
+  MANAGED_MODEL_PROVIDERS,
+  getManagedModelProvider,
+  type ManagedModelProviderId,
+  type ManagedModelPreset,
+} from "@/utils/managed-model-providers";
+import { useGitHubCopilotAuth } from "@/composables/use-github-copilot-auth";
+import { isModelProviderEnabled } from "@/utils/model-features";
+import githubCopilotBlack from "@/assets/github-copilot-black.svg";
+import LocalModelSetupDialog from "./LocalModelSetupDialog.vue";
+import { useLocalModelOperation } from "@/composables/use-local-model-operation";
+import { confirmLocalModelSwitch, releaseLocalModelSetup } from "@/utils/local-model-transition";
 
-type ModelFamilyId = "qwen" | "minimax";
-type ApiFormat = "openai-chat" | "anthropic";
+type ModelFamilyId = ManagedModelProviderId | "github-copilot" | "custom" | "local";
 
 interface ModelFamilyPreset {
   id: ModelFamilyId;
-  label: string;
+  label?: string;
+  labelKey?: string;
   providerKey: string;
   baseUrl: string;
-  apiFormat: ApiFormat;
-  models: string[];
+  apiFormat: ModelApiFormat;
+  models: ManagedModelPreset[];
+  defaultModel: string;
   apiKeyPlaceholder: string;
-  logo: string;
+  logo?: string;
+  signupUrl?: string;
 }
 
-const props = defineProps<{ modelValue: boolean }>();
+// The provider that is currently configured, so the wizard can reopen pre-filled for quick
+// adjustment. Null when nothing is configured yet.
+interface ModelProviderPrefill {
+  familyId: string;
+  providerKey: string;
+  modelName: string;
+  baseUrl: string;
+  apiKey: string;
+  apiFormat: ModelApiFormat;
+  displayName?: string;
+  reasoningEffort?: ModelReasoningEffort;
+  input?: ModelInputCapability[];
+}
+
+const props = defineProps<{
+  modelValue: boolean;
+  singleProvider?: boolean;
+  currentProvider?: ModelProviderPrefill | null;
+  initialFamily?: ModelFamilyId;
+  streaming?: boolean;
+  inline?: boolean;
+  manageOnly?: boolean;
+}>();
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   configured: [];
+  busy: [value: boolean];
 }>();
 
-const ALIYUN_OPENAI_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-
-const modelFamilies: ModelFamilyPreset[] = [
+const allModelFamilies: ModelFamilyPreset[] = [
+  ...MANAGED_MODEL_PROVIDERS.map((provider) => ({
+    ...provider,
+    providerKey: provider.id,
+  })),
   {
-    id: "qwen",
-    label: "千问",
-    providerKey: "qwen",
-    baseUrl: ALIYUN_OPENAI_COMPATIBLE_BASE_URL,
+    id: "github-copilot",
+    labelKey: "modelSetup.githubCopilot",
+    providerKey: "",
+    baseUrl: "",
     apiFormat: "openai-chat",
-    models: ["qwen", "Qwen3.6-Plus", "Qwen3.5-Plus"],
+    models: [],
+    defaultModel: "",
     apiKeyPlaceholder: "sk-...",
-    logo: qwenLogo,
+    logo: githubCopilotBlack,
   },
   {
-    id: "minimax",
-    label: "MiniMax",
-    providerKey: "minimax",
+    id: "local",
+    labelKey: "localModel.title",
+    providerKey: "llama-cpp",
     baseUrl: "",
-    apiFormat: "anthropic",
-    models: ["minimaxm3", "MiniMax-M1"],
-    apiKeyPlaceholder: "sk-cp-...",
-    logo: minimaxLogo,
+    apiFormat: "openai-chat",
+    models: [],
+    defaultModel: "",
+    apiKeyPlaceholder: "",
   },
 ];
+const modelFamilies = allModelFamilies.filter((family) => isModelProviderEnabled(family.id));
+
+const customModelFamily: ModelFamilyPreset = {
+  id: "custom",
+  labelKey: "modelSetup.customProvider",
+  providerKey: "custom",
+  baseUrl: "",
+  apiFormat: "openai-chat",
+  models: [],
+  defaultModel: "",
+  apiKeyPlaceholder: "sk-... or ${MODEL_API_KEY}",
+};
+
+function getDefaultModel(family: ModelFamilyPreset): string {
+  return family.defaultModel;
+}
+
+function getFamilyById(familyId: ModelFamilyId): ModelFamilyPreset {
+  if (familyId === "custom") return customModelFamily;
+  return modelFamilies.find((family) => family.id === familyId) ?? modelFamilies[0];
+}
 
 const isKeyStep = ref(false);
 const selectedFamilyId = ref<ModelFamilyId>("qwen");
-const selectedModelName = ref(modelFamilies[0].models[0]);
+const selectedModelName = ref("");
 const baseUrl = ref(modelFamilies[0].baseUrl);
-const isDropdownOpen = ref(false);
-const dropdownRef = ref<HTMLElement | null>(null);
-const dropdownListId = "model-setup-model-listbox";
+const providerKey = ref(modelFamilies[0].providerKey);
+const selectedApiFormat = ref<ModelApiFormat>(modelFamilies[0].apiFormat);
 const apiKey = ref("");
 const errorMsg = ref("");
 const saving = ref(false);
+watch(saving, (value) => emit("busy", value), { flush: "sync" });
+onUnmounted(() => {
+  catalogGeneration++;
+  clearTimeout(catalogTimer);
+  cancelPendingSubmission();
+  emit("busy", false);
+});
+const configMutationInProgress = ref(false);
+const localVisible = ref(false);
+const localTarget = ref<string>();
+const defaultAgentOverride = ref<ReturnType<typeof getDefaultAgentModelOverride>>(null);
+const { blocked: localBlocked, refresh: refreshLocalOperation } = useLocalModelOperation();
+let submissionGeneration = 0;
 
-const activeOptionId = computed(() => getOptionId(selectedModelName.value));
-
-const selectedFamily = computed(
-  () => modelFamilies.find((family) => family.id === selectedFamilyId.value) ?? modelFamilies[0],
+const selectedFamily = computed(() => getFamilyById(selectedFamilyId.value));
+const selectedManagedProvider = computed(() => getManagedModelProvider(selectedFamilyId.value));
+const connectionOnly = computed(() => props.manageOnly && Boolean(selectedManagedProvider.value));
+const catalogModels = ref<string[]>([]);
+const catalogQuery = ref("");
+const catalogMoreExpanded = ref(false);
+const catalogSections = computed(() =>
+  getProviderModelSections(
+    providerKey.value,
+    catalogModels.value.map((id) => ({ id })),
+    selectedModelName.value,
+  ),
 );
+const visibleCatalogModels = computed(() => {
+  if (catalogQuery.value)
+    return catalogModels.value.filter((id) =>
+      catalogModelLabel(id).toLocaleLowerCase().includes(catalogQuery.value),
+    );
+  return [
+    ...catalogSections.value.primary,
+    ...(catalogMoreExpanded.value ? catalogSections.value.more : []),
+  ].map(({ id }) => id);
+});
+const catalogReady = ref(false);
+const catalogLoading = ref(false);
+const catalogError = ref("");
+const providerCatalog = useProviderModelCatalog();
+const selectedModelRestriction = computed(() => catalogModelRestriction(selectedModelName.value));
+function catalogModelRestriction(model: string) {
+  return getChatModelRestriction(`${providerKey.value}/${model}`);
+}
+function catalogModelLabel(model: string): string {
+  const restriction = catalogModelRestriction(model);
+  return restriction ? `${model} — ${t(`modelSetup.incompatible.${restriction}`)}` : model;
+}
+function filterCatalogModels(query: string): void {
+  catalogQuery.value = query.trim().toLocaleLowerCase();
+}
+function resetCatalogPicker(): void {
+  catalogQuery.value = "";
+  catalogMoreExpanded.value = false;
+}
+let catalogGeneration = 0;
+let catalogTimer: ReturnType<typeof setTimeout> | undefined;
 
-watch(selectedFamilyId, () => {
-  selectedModelName.value = selectedFamily.value.models[0];
-  baseUrl.value = selectedFamily.value.baseUrl;
-  errorMsg.value = "";
+async function loadProviderModels() {
+  if (!props.modelValue || !selectedManagedProvider.value || !apiKey.value.trim() || saving.value)
+    return;
+  clearTimeout(catalogTimer);
+  const generation = ++catalogGeneration;
+  catalogModels.value = [];
+  catalogReady.value = false;
+  catalogLoading.value = true;
+  catalogError.value = "";
+  try {
+    const result = await providerCatalog.load({
+      baseUrl: baseUrl.value,
+      apiKey: apiKey.value,
+    });
+    if (generation !== catalogGeneration) return;
+    if (!result.ok) {
+      catalogError.value = t(`modelSetup.catalogError.${result.error}`);
+      return;
+    }
+    catalogModels.value = getProviderCatalogOptions(providerKey.value, result.models);
+    catalogReady.value = true;
+    if (!catalogModels.value.includes(selectedModelName.value)) selectedModelName.value = "";
+  } catch {
+    if (generation === catalogGeneration) catalogError.value = t("modelSetup.catalogError.network");
+  } finally {
+    if (generation === catalogGeneration) catalogLoading.value = false;
+  }
+}
+const isCustomProvider = computed(() => selectedFamilyId.value === "custom");
+const isGitHubCopilot = computed(() => selectedFamilyId.value === "github-copilot");
+const isLocalProvider = computed(() => selectedFamilyId.value === "local");
+const {
+  state: githubAuthState,
+  models: githubModels,
+  selectedModel: selectedGitHubModel,
+  userCode: githubUserCode,
+  loginInProgress: githubLoginInProgress,
+  codeExpiryMinutes: githubCodeExpiryMinutes,
+  loadStatus: loadGitHubCopilotStatus,
+  startLogin: startGitHubCopilotLogin,
+  cancelLogin: cancelGitHubCopilotLogin,
+  reset: resetGitHubCopilotState,
+  openVerificationPage: openGitHubVerificationPage,
+} = useGitHubCopilotAuth({
+  isActive: () => props.modelValue && isKeyStep.value && isGitHubCopilot.value,
+  clearError: () => {
+    errorMsg.value = "";
+  },
+  setError: (message) => {
+    errorMsg.value = message;
+  },
+});
+const formPrimaryDisabled = computed(
+  () =>
+    saving.value ||
+    props.streaming ||
+    (connectionOnly.value && (!apiKey.value.trim() || !baseUrl.value.trim())) ||
+    (!connectionOnly.value && Boolean(selectedModelRestriction.value)) ||
+    (!connectionOnly.value &&
+      Boolean(selectedManagedProvider.value) &&
+      (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))) ||
+    (isGitHubCopilot.value &&
+      (githubAuthState.value === "checking" ||
+        githubAuthState.value === "signing-in" ||
+        githubAuthState.value === "code" ||
+        (githubAuthState.value === "authenticated" &&
+          !props.manageOnly &&
+          !selectedGitHubModel.value))),
+);
+const formPrimaryLabel = computed(() => {
+  if (connectionOnly.value)
+    return t(saving.value ? "modelManager.verifyingConnection" : "modelManager.saveConnection");
+  if (props.manageOnly && (!isGitHubCopilot.value || githubAuthState.value === "authenticated"))
+    return t(saving.value ? "modelManager.saving" : "settings.save");
+  if (isGitHubCopilot.value) {
+    if (saving.value) return t("modelSetup.starting");
+    if (githubAuthState.value === "authenticated") return t("modelSetup.copilotUseModel");
+    if (
+      githubAuthState.value === "checking" ||
+      githubAuthState.value === "signing-in" ||
+      githubAuthState.value === "code"
+    ) {
+      return t("modelSetup.copilotWaiting");
+    }
+    return t("modelSetup.copilotSignIn");
+  }
+  return saving.value ? t("modelSetup.validating") : t("modelSetup.start");
 });
 
 watch(
   () => props.modelValue,
   (visible) => {
-    if (!visible) {
-      closeDropdown();
+    cancelPendingSubmission();
+    void resetGitHubCopilotState();
+    if (!visible) return;
+    localVisible.value = false;
+    localTarget.value = undefined;
+    defaultAgentOverride.value = null;
+    const generation = submissionGeneration;
+    void window.openclaw.config
+      .read()
+      .then((config) => {
+        if (props.modelValue && generation === submissionGeneration) {
+          defaultAgentOverride.value = getDefaultAgentModelOverride(config);
+        }
+      })
+      .catch(() => {});
+    void refreshLocalOperation();
+    const prefill = props.currentProvider;
+    if (prefill?.providerKey === "llama-cpp" || props.initialFamily === "local") {
+      selectFamily("local");
+      if (prefill) localTarget.value = `llama-cpp/${prefill.modelName}`;
+      localVisible.value = true;
       return;
     }
+    if (
+      prefill &&
+      isModelProviderEnabled(prefill.familyId) &&
+      isModelProviderEnabled(prefill.providerKey)
+    ) {
+      // Reopen on the configured provider, pre-filled and jumped to the key form so the user
+      // can adjust the model, base URL or key without re-selecting the family.
+      selectFamily(prefill.familyId as ModelFamilyId);
+      providerKey.value = prefill.providerKey;
+      selectedModelName.value = prefill.modelName || getDefaultModel(selectedFamily.value);
+      baseUrl.value = prefill.baseUrl || selectedFamily.value.baseUrl;
+      selectedApiFormat.value = prefill.apiFormat;
+      apiKey.value = prefill.apiKey;
+      isKeyStep.value = props.inline || selectedFamilyId.value !== "github-copilot";
+      if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
+      errorMsg.value = "";
+      return;
+    }
+    if (props.initialFamily && isModelProviderEnabled(props.initialFamily)) {
+      selectFamily(props.initialFamily);
+      isKeyStep.value = true;
+      apiKey.value = "";
+      errorMsg.value = "";
+      if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
+      return;
+    }
+    selectFamily("qwen");
     isKeyStep.value = false;
+    apiKey.value = "";
     errorMsg.value = "";
-    closeDropdown();
   },
+  { immediate: true },
 );
 
-onMounted(() => {
-  document.addEventListener("pointerdown", handleDocumentPointerDown);
-});
+watch(
+  [() => props.modelValue, isKeyStep, selectedFamilyId, baseUrl, apiKey, connectionOnly],
+  () => {
+    ++catalogGeneration;
+    clearTimeout(catalogTimer);
+    catalogReady.value = false;
+    catalogLoading.value = false;
+    catalogModels.value = [];
+    catalogError.value = "";
+    resetCatalogPicker();
+    if (
+      props.modelValue &&
+      isKeyStep.value &&
+      selectedManagedProvider.value &&
+      !connectionOnly.value &&
+      apiKey.value.trim()
+    )
+      catalogTimer = setTimeout(() => void loadProviderModels(), 600);
+  },
+  { immediate: true, flush: "sync" },
+);
 
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", handleDocumentPointerDown);
-});
+function getFamilyLabel(family: ModelFamilyPreset): string {
+  return family.labelKey ? t(family.labelKey) : (family.label ?? family.id);
+}
 
-function resolveApiValue(apiFormat: ApiFormat): string {
-  return apiFormat === "anthropic" ? "anthropic-messages" : "openai-completions";
+function cancelPendingSubmission() {
+  submissionGeneration += 1;
+  saving.value = false;
 }
 
 function close() {
+  if (configMutationInProgress.value) return;
+  cancelPendingSubmission();
+  void resetGitHubCopilotState();
   emit("update:modelValue", false);
 }
 
+function selectFamily(familyId: ModelFamilyId) {
+  const family = getFamilyById(familyId);
+  if (family.id !== selectedFamilyId.value) apiKey.value = "";
+  selectedFamilyId.value = family.id;
+  selectedModelName.value = getManagedModelProvider(familyId) ? "" : getDefaultModel(family);
+  baseUrl.value = family.baseUrl;
+  providerKey.value = family.providerKey;
+  selectedApiFormat.value = family.apiFormat;
+  errorMsg.value = "";
+}
+
 function goToKeyForm() {
-  selectedModelName.value = selectedFamily.value.models[0];
+  selectedModelName.value = selectedManagedProvider.value
+    ? ""
+    : getDefaultModel(selectedFamily.value);
   baseUrl.value = selectedFamily.value.baseUrl;
+  providerKey.value = selectedFamily.value.providerKey;
+  selectedApiFormat.value = selectedFamily.value.apiFormat;
   isKeyStep.value = true;
   errorMsg.value = "";
-  closeDropdown();
+  if (isGitHubCopilot.value) void loadGitHubCopilotStatus();
+}
+
+function handlePrimaryAction() {
+  if (isLocalProvider.value) {
+    localVisible.value = true;
+    return;
+  }
+  if (isGitHubCopilot.value) {
+    goToKeyForm();
+    return;
+  }
+  handleGetApiKey();
 }
 
 function handleGetApiKey() {
-  const signupUrl =
-    selectedFamily.value.id === "qwen"
-      ? "https://bailian.console.aliyun.com/?tab=model#/api-key"
-      : "https://platform.minimaxi.com/user-center/basic-information/interface-key";
-  try {
-    window.openclaw?.shell?.openExternal?.(signupUrl);
-  } catch {
-    window.open(signupUrl, "_blank", "noopener,noreferrer");
-  }
+  void openProviderSignup();
   goToKeyForm();
 }
 
+async function openProviderSignup() {
+  const signupUrl = selectedManagedProvider.value?.signupUrl;
+  if (!signupUrl) return;
+  const family = selectedFamilyId.value;
+  const generation = submissionGeneration;
+  try {
+    if (window.openclaw?.shell?.openExternal) {
+      await window.openclaw.shell.openExternal(signupUrl);
+    } else {
+      window.open(signupUrl, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    if (
+      props.modelValue &&
+      selectedFamilyId.value === family &&
+      submissionGeneration === generation
+    ) {
+      errorMsg.value = t("modelSetup.openProviderFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 function goToSelectStep() {
+  if (configMutationInProgress.value) return;
+  cancelPendingSubmission();
+  if (isCustomProvider.value) selectFamily("qwen");
+  void resetGitHubCopilotState();
   isKeyStep.value = false;
   errorMsg.value = "";
-  closeDropdown();
 }
 
-function selectModel(model: string) {
-  selectedModelName.value = model;
-  closeDropdown();
-}
-
-function toggleDropdown() {
-  isDropdownOpen.value = !isDropdownOpen.value;
-}
-
-function closeDropdown() {
-  isDropdownOpen.value = false;
-}
-
-function handleTriggerArrow(step: number) {
-  if (!isDropdownOpen.value) {
-    isDropdownOpen.value = true;
+async function saveGitHubCopilotModel(): Promise<void> {
+  if (saving.value || props.streaming) return;
+  if (
+    !props.manageOnly &&
+    (!selectedGitHubModel.value.startsWith("github-copilot/") ||
+      !githubModels.value.some((model) => model.id === selectedGitHubModel.value))
+  ) {
+    errorMsg.value = t("modelSetup.copilotSelectModel");
+    return;
   }
-  cycleModel(step);
+
+  const generation = ++submissionGeneration;
+  saving.value = true;
+  errorMsg.value = "";
+  try {
+    if (!(await releaseLocalBeforeSave(generation))) return;
+    configMutationInProgress.value = true;
+    const preparation = await window.openclaw.model.prepareGitHubCopilot();
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (preparation.restartRequired) {
+      await window.openclaw.gateway.restart({ reason: "copilot-plugin-activation" });
+      if (generation !== submissionGeneration || !props.modelValue) return;
+    }
+    if (props.manageOnly) {
+      configMutationInProgress.value = false;
+      emit("update:modelValue", false);
+      emit("configured");
+      return;
+    }
+    const existing = await window.openclaw.config.read();
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (props.streaming) return;
+    const nextConfig = selectPrimaryModelConfig(existing || {}, selectedGitHubModel.value, {
+      ensureAllowed: true,
+    });
+    configMutationInProgress.value = true;
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "copilot-save",
+      providerKey: "github-copilot",
+    });
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    configMutationInProgress.value = false;
+    emit("update:modelValue", false);
+    emit("configured");
+  } catch (error) {
+    errorMsg.value = t("modelSetup.saveFailed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    if (generation === submissionGeneration) {
+      saving.value = false;
+      configMutationInProgress.value = false;
+    }
+  }
 }
 
-function cycleModel(step: number) {
-  const models = selectedFamily.value.models;
-  if (!models.length) return;
-  const currentIndex = Math.max(0, models.indexOf(selectedModelName.value));
-  const nextIndex = (currentIndex + step + models.length) % models.length;
-  selectedModelName.value = models[nextIndex];
+async function releaseLocalBeforeSave(generation: number): Promise<boolean> {
+  const isCurrent = () => generation === submissionGeneration && props.modelValue;
+  const outcome = await releaseLocalModelSetup(
+    window.openclaw.model.local,
+    confirmLocalModelSwitch,
+    isCurrent,
+  );
+  if (!isCurrent()) return false;
+  await refreshLocalOperation();
+  if (outcome === "pending") {
+    errorMsg.value = t("localModel.setupFinishing");
+    return false;
+  }
+  return outcome === "ready" && isCurrent();
 }
 
-function selectFirstModel() {
-  const models = selectedFamily.value.models;
-  if (!models.length) return;
-  selectedModelName.value = models[0];
-  isDropdownOpen.value = true;
+function handleFormPrimaryAction(): void {
+  if (isGitHubCopilot.value) {
+    if (githubAuthState.value === "authenticated") {
+      void saveGitHubCopilotModel();
+    } else {
+      void startGitHubCopilotLogin();
+    }
+  } else {
+    void saveAndStart();
+  }
 }
 
-function selectLastModel() {
-  const models = selectedFamily.value.models;
-  if (!models.length) return;
-  selectedModelName.value = models[models.length - 1];
-  isDropdownOpen.value = true;
+function validationMessage(error: ModelProviderValidationError): string {
+  const keys: Record<ModelProviderValidationError, string> = {
+    providerKeyRequired: "modelSetup.enterProviderId",
+    invalidProviderKey: "modelSetup.invalidProviderId",
+    modelNameRequired: "modelSetup.enterModelName",
+    baseUrlRequired: "modelSetup.enterBaseUrl",
+    invalidBaseUrl: "modelSetup.invalidBaseUrl",
+    apiKeyRequired: "modelSetup.enterApiKey",
+    invalidCredentialReference: "modelSetup.invalidCredentialReference",
+  };
+  return t(keys[error]);
 }
 
-function getOptionId(model: string) {
-  return `model-option-${model.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()}`;
-}
-
-function handleDocumentPointerDown(event: Event) {
-  const target = event.target as Node | null;
-  if (!target) return;
-  if (!dropdownRef.value?.contains(target)) {
-    closeDropdown();
+async function saveProviderConnection() {
+  const input: ModelProviderConnectionInput = {
+    providerKey: providerKey.value,
+    baseUrl: baseUrl.value,
+    apiKey: apiKey.value,
+    apiFormat: selectedApiFormat.value,
+  };
+  const validationError = validateModelProviderConnectionInput(input);
+  if (validationError) {
+    errorMsg.value = validationMessage(validationError);
+    return;
+  }
+  const generation = ++submissionGeneration;
+  const isCurrent = () => generation === submissionGeneration && props.modelValue;
+  saving.value = true;
+  errorMsg.value = "";
+  try {
+    const existing = await window.openclaw.config.read();
+    if (!isCurrent()) return;
+    const catalog = await providerCatalog.load({ baseUrl: input.baseUrl, apiKey: input.apiKey });
+    if (!isCurrent() || props.streaming) return;
+    if (!catalog.ok) {
+      errorMsg.value = t(`modelSetup.catalogError.${catalog.error}`);
+      return;
+    }
+    configMutationInProgress.value = true;
+    await window.openclaw.model.applyConfig({
+      config: mergeModelProviderConnectionConfig(existing || {}, input),
+      expectedConfig: existing,
+      action: "provider-save",
+      providerKey: input.providerKey.trim(),
+    });
+    if (!isCurrent()) return;
+    configMutationInProgress.value = false;
+    emit("update:modelValue", false);
+    emit("configured");
+  } catch (error) {
+    if (isCurrent())
+      errorMsg.value = t("modelSetup.saveFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+  } finally {
+    if (generation === submissionGeneration) {
+      saving.value = false;
+      configMutationInProgress.value = false;
+    }
   }
 }
 
 async function saveAndStart() {
-  const trimmedModelName = selectedModelName.value.trim();
-  const trimmedBaseUrl = baseUrl.value.trim();
-  const trimmedKey = apiKey.value.trim();
-  if (!trimmedModelName) {
-    errorMsg.value = t("modelSetup.enterModelName");
+  if (saving.value || props.streaming) return;
+  if (connectionOnly.value) {
+    await saveProviderConnection();
     return;
   }
-  if (!trimmedKey) {
-    errorMsg.value = t("modelSetup.enterApiKey");
+  if (selectedModelRestriction.value) {
+    errorMsg.value = t(`modelSetup.incompatible.${selectedModelRestriction.value}`);
     return;
   }
-  if (selectedFamily.value.id === "minimax" && !trimmedKey.startsWith("sk-cp-")) {
-    errorMsg.value = t("modelSetup.invalidMiniMaxKey");
+  if (
+    selectedManagedProvider.value &&
+    (!catalogReady.value || !catalogModels.value.includes(selectedModelName.value))
+  ) {
+    errorMsg.value = catalogError.value || t("modelSetup.catalogChoose");
+    return;
+  }
+  if (providerKey.value.trim().toLowerCase() === "llama-cpp") {
+    if (props.inline) {
+      errorMsg.value = t("modelManager.localEntryHint");
+      return;
+    }
+    localVisible.value = true;
     return;
   }
 
+  const managedModel = selectedManagedProvider.value?.models.find(
+    (model) => model.id === selectedModelName.value,
+  );
+  const input: ModelProviderInput = {
+    providerKey: providerKey.value,
+    baseUrl: baseUrl.value,
+    apiKey: apiKey.value,
+    apiFormat: selectedApiFormat.value,
+    modelName: selectedModelName.value,
+    input:
+      props.currentProvider?.modelName === selectedModelName.value
+        ? props.currentProvider.input
+        : isCustomProvider.value
+          ? ["text"]
+          : managedModel?.input,
+  };
+  const validationError = validateModelProviderInput(input, {
+    requireApiKey: !isCustomProvider.value,
+  });
+  if (validationError) {
+    errorMsg.value = validationMessage(validationError);
+    return;
+  }
+
+  const generation = ++submissionGeneration;
   saving.value = true;
   errorMsg.value = "";
   try {
-    const family = selectedFamily.value;
-    const modelName = trimmedModelName;
-    const modelRef = `${family.providerKey}/${modelName}`;
-    const existing = (await window.openclaw.config.read()) || {};
-    const providerEntry: Record<string, unknown> = {
-      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
-      apiKey: trimmedKey,
-      api: resolveApiValue(family.apiFormat),
-      models: [
-        {
-          id: modelName,
-          name: modelName,
-          ...(family.apiFormat !== "anthropic" ? { input: ["text", "image"] } : {}),
-        },
-      ],
-    };
+    const connection = props.manageOnly
+      ? null
+      : await window.openclaw.model.testConnection({
+          baseUrl: input.baseUrl.trim(),
+          apiKey: input.apiKey.trim(),
+          apiFormat: input.apiFormat,
+          modelName: input.modelName.trim(),
+        });
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (connection && !connection.ok) {
+      errorMsg.value = t("modelSetup.connectionFailed", { error: connection.message });
+      return;
+    }
+    if (!(await releaseLocalBeforeSave(generation))) return;
 
-    existing.models = {
-      ...(existing.models ?? {}),
-      mode: existing.models?.mode ?? "merge",
-      providers: {
-        ...(existing.models?.providers ?? {}),
-        [family.providerKey]: providerEntry,
-      },
+    const verifiedInput = {
+      ...input,
+      baseUrl: connection?.baseUrl ?? input.baseUrl,
     };
-    existing.agents = existing.agents || {};
-    existing.agents.defaults = existing.agents.defaults || {};
-    existing.agents.defaults.model = {
-      ...(typeof existing.agents.defaults.model === "object" && existing.agents.defaults.model
-        ? existing.agents.defaults.model
-        : {}),
-      primary: modelRef,
-    };
-
-    await window.openclaw.config.write(existing);
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const existing = await window.openclaw.config.read();
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (props.streaming) return;
+    if (
+      props.manageOnly &&
+      !input.apiKey.trim() &&
+      typeof existing?.models?.providers?.[input.providerKey.trim()]?.apiKey === "object"
+    ) {
+      errorMsg.value = t("modelManager.structuredSecret");
+      return;
+    }
+    configMutationInProgress.value = true;
+    const nextConfig = props.manageOnly
+      ? mergeModelProviderConfig(existing || {}, verifiedInput, {
+          select: false,
+          displayName:
+            props.currentProvider?.modelName === verifiedInput.modelName
+              ? (props.currentProvider.displayName ?? verifiedInput.modelName)
+              : verifiedInput.modelName,
+        })
+      : mergeModelProviderConfig(existing || {}, verifiedInput);
+    await window.openclaw.model.applyConfig({
+      config: nextConfig,
+      expectedConfig: existing,
+      action: "provider-save",
+      providerKey: verifiedInput.providerKey.trim(),
+    });
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    if (selectedManagedProvider.value) {
+      await window.openclaw.model.registerCatalogModel({
+        modelRef: `${verifiedInput.providerKey.trim()}/${verifiedInput.modelName.trim()}`,
+        expectedConfig: await window.openclaw.config.read(),
+      });
+    }
+    if (generation !== submissionGeneration || !props.modelValue) return;
+    configMutationInProgress.value = false;
     emit("update:modelValue", false);
     emit("configured");
-  } catch (err: any) {
-    errorMsg.value = t("modelSetup.saveFailed", { error: err.message || err });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    errorMsg.value = t("modelSetup.saveFailed", { error: message });
   } finally {
-    saving.value = false;
+    if (generation === submissionGeneration) {
+      saving.value = false;
+      configMutationInProgress.value = false;
+    }
   }
 }
 
+function handleLocalConfigured() {
+  emit("configured");
+}
 </script>
 
 <style scoped>
+.model-setup-overlay.model-setup-inline {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  display: block;
+  background: transparent;
+}
+.model-setup-inline .model-setup-panel {
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+  padding: 24px;
+  box-shadow: none;
+  border-radius: 0;
+  text-align: left;
+  background: transparent;
+}
+.model-setup-inline .model-setup-panel h2 {
+  font-size: 18px;
+}
 .model-setup-overlay,
 .model-setup-panel,
 .model-setup-close,
@@ -414,32 +1193,32 @@ async function saveAndStart() {
 .primary-action,
 .text-action,
 .model-key-form,
+.copilot-auth-panel,
+.field-hint,
 .error-msg {
   --ux-overlay: var(--surface-overlay, rgba(255, 255, 255, 0.72));
   --ux-panel-bg: var(--surface-page, var(--bg-primary));
   --ux-panel-text: var(--text-primary, #1f2228);
-  --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, #555967);
-  --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, #6b6e78);
-  --ux-border: var(--border-default, var(--smtc-stroke-divider-subtle, #ededf0));
-  --ux-surface-hover: var(--surface-hover, var(--smtc-background-ctrl-subtle-hover, #f4f4f5));
-  --ux-card-active: var(--smtc-background-card-on-primary-default-rest, #fafafa);
+  --ux-text-secondary: var(--text-secondary, #555967);
+  --ux-text-muted: var(--text-secondary, #6b6e78);
+  --ux-border: var(--border-default, var(--border, #ededf0));
+  --ux-surface-hover: var(--surface-hover, var(--bg-tertiary, #f4f4f5));
+  --ux-card-active: var(--surface-hover, var(--bg-tertiary, #fafafa));
   --ux-card-selected-border: var(--ux-brand-bg);
   --ux-card-selected-bg: var(--ux-card-active);
   --ux-card-check-bg: var(--ux-brand-bg);
   --ux-card-check-fg: var(--ux-brand-fg);
   --ux-brand-bg: var(--action-primary, #18181b);
-  --ux-brand-bg-hover: #27272a;
-  --ux-brand-bg-active: #09090b;
+  --ux-brand-bg-hover: var(--settings-action-primary-hover, var(--action-primary, #27272a));
+  --ux-brand-bg-active: var(--settings-action-primary-active, var(--action-primary, #09090b));
   --ux-brand-fg: var(--action-primary-foreground, #fff);
   --ux-panel-radius: 20px;
   --ux-cta-radius: 999px;
   --ux-danger: var(--smtc-status-danger-foreground);
   --ux-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
-  --ux-flyout-border: var(--ux-border);
-  --ux-flyout-bg: var(--ux-panel-bg);
-  --ux-flyout-shadow:
-    0 24px 44px rgba(21, 24, 31, 0.16),
-    0 8px 18px rgba(21, 24, 31, 0.1);
+  --ux-flyout-border: var(--border-default, var(--border, #e7e8ec));
+  --ux-flyout-bg: var(--surface-panel, var(--bg-secondary, #fff));
+  --ux-flyout-shadow: 0 24px 44px rgba(21, 24, 31, 0.16), 0 8px 18px rgba(21, 24, 31, 0.1);
   --ux-font-family: "Segoe UI", "Noto Sans SC", sans-serif;
   --ux-title-size: 28px;
   --ux-title-weight: 700;
@@ -458,12 +1237,12 @@ async function saveAndStart() {
   display: grid;
   place-items: center;
   background: var(--ux-overlay);
-  backdrop-filter: blur(10px);
 }
 
 .model-setup-panel {
-  width: min(470px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 32px));
   min-height: 430px;
+  max-height: calc(100vh - 32px);
   position: relative;
   padding: 42px 34px 34px;
   border-radius: var(--ux-panel-radius);
@@ -472,6 +1251,7 @@ async function saveAndStart() {
   font-family: var(--ux-font-family);
   box-shadow: var(--ux-shadow);
   text-align: center;
+  overflow-y: auto;
 }
 
 .model-setup-close {
@@ -516,8 +1296,8 @@ h2 {
 
 .model-family-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 26px;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 14px;
   margin-bottom: 28px;
 }
 
@@ -528,15 +1308,15 @@ h2 {
   align-items: center;
   gap: 10px;
   padding: 8px 6px 12px;
-  border: 1px solid transparent;
+  border: 2px solid transparent;
   border-radius: 12px;
   background: transparent;
   color: var(--ux-panel-text);
   cursor: pointer;
   transition:
-    border-color 0.15s,
-    background 0.15s,
-    transform 0.15s;
+    border-color 70ms ease-out,
+    background 70ms ease-out,
+    transform 70ms ease-out;
 }
 
 .model-family-card:hover,
@@ -552,7 +1332,6 @@ h2 {
 .model-family-card.active {
   background: var(--ux-card-selected-bg);
   border-color: var(--ux-card-selected-border);
-  border-width: 2px;
 }
 
 .family-icon {
@@ -567,6 +1346,12 @@ h2 {
   height: 76px;
   object-fit: contain;
   display: block;
+}
+
+.custom-provider-icon {
+  width: 76px;
+  height: 76px;
+  color: var(--ux-panel-text);
 }
 
 .family-name {
@@ -596,8 +1381,38 @@ h2 {
 
 .primary-action {
   width: 100%;
-  min-height: 52px;
+  height: 52px;
+  border: 0;
   border-radius: var(--ux-cta-radius);
+  background: var(--ux-brand-bg);
+  color: var(--ux-brand-fg);
+  font-family: var(--ux-font-family);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    transform 0.12s ease,
+    box-shadow 0.18s ease;
+  box-shadow: 0 10px 26px rgba(24, 24, 27, 0.18);
+}
+
+.primary-action:hover:not(:disabled) {
+  background: var(--ux-brand-bg-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px rgba(24, 24, 27, 0.22);
+}
+
+.primary-action:active:not(:disabled) {
+  background: var(--ux-brand-bg-active);
+  transform: translateY(0);
+  box-shadow: 0 6px 14px rgba(24, 24, 27, 0.2);
+}
+
+.primary-action:disabled {
+  opacity: 0.72;
+  cursor: wait;
 }
 
 .primary-action--spaced {
@@ -606,9 +1421,27 @@ h2 {
 
 .text-action {
   margin-top: 14px;
-  width: 100%;
-  min-height: 52px;
+  border: 1px solid var(--ux-border);
   border-radius: var(--ux-cta-radius);
+  box-sizing: border-box;
+  background: var(--ux-panel-bg);
+  color: var(--ux-text-muted);
+  font-family: var(--ux-font-family);
+  font-size: 14px;
+  font-weight: 600;
+  height: 52px;
+  width: 100%;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.text-action:hover {
+  color: var(--ux-panel-text);
+  background: var(--ux-surface-hover);
+  border-color: var(--ux-border);
 }
 
 .text-action--back {
@@ -617,28 +1450,142 @@ h2 {
 
 .key-actions {
   margin-top: 16px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 12px;
 }
 
 .key-actions .text-action,
 .key-actions .primary-action {
+  flex: 1 1 0;
+  width: auto;
   margin-top: 0;
-  min-height: 48px;
-}
-
-.model-key-input {
-  width: 100%;
-}
-
-.model-key-input :deep(.ui-input__control) {
-  height: 48px;
-  border-radius: 12px;
+  height: 46px;
 }
 
 .model-key-form {
   text-align: left;
+}
+
+.model-field-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.model-field-input {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+}
+
+.catalog-empty-hint {
+  margin: 0;
+  padding: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.catalog-option-name {
+  margin-right: 12px;
+}
+
+.catalog-recommended {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.catalog-more-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.catalog-more-toggle:hover {
+  color: var(--el-text-color-primary);
+}
+
+.catalog-more-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+.model-field-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid var(--ux-border);
+  border-radius: 10px;
+  background: var(--ux-panel-bg);
+  color: var(--ux-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.model-field-action:hover:not(:disabled) {
+  background: var(--ux-surface-hover);
+  color: var(--ux-panel-text);
+}
+
+.model-field-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+.model-field-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-refresh-action {
+  width: 48px;
+  padding: 0;
+}
+
+.refresh-spinning {
+  animation: model-refresh-spin 1s linear infinite;
+}
+
+@keyframes model-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refresh-spinning {
+    animation: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .model-field-row {
+    gap: 8px;
+  }
+  .provider-api-key-link {
+    padding: 0 8px;
+    font-size: 12px;
+  }
 }
 
 .model-key-form :deep(.el-form-item__label) {
@@ -646,6 +1593,64 @@ h2 {
   font-size: var(--ux-label-size);
   font-weight: var(--ux-label-weight);
   line-height: 1.4;
+}
+
+.field-hint {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--ux-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.copilot-auth-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid var(--ux-border);
+  border-radius: 14px;
+  background: var(--ux-card-active);
+  text-align: center;
+}
+
+.copilot-auth-label,
+.copilot-auth-success {
+  color: var(--ux-panel-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.copilot-auth-success {
+  color: #238636;
+}
+
+.copilot-auth-hint {
+  color: var(--ux-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.copilot-device-code {
+  padding: 8px 14px;
+  border: 1px solid var(--ux-border);
+  border-radius: 10px;
+  background: var(--ux-panel-bg);
+  color: var(--ux-panel-text);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 24px;
+  letter-spacing: 2px;
+  user-select: all;
+}
+
+.copilot-open-action {
+  width: auto;
+  height: auto;
+  margin-top: 2px;
+  padding: 6px 12px;
 }
 
 .model-key-form :deep(.el-input__wrapper),
@@ -671,7 +1676,7 @@ h2 {
   position: relative;
   border: 1px solid var(--ux-border);
   border-radius: 12px;
-  background: var(--surface-panel, var(--ux-panel-bg));
+  background: #fff;
   color: var(--ux-panel-text);
   font-family: var(--ux-font-family);
   font-size: var(--ux-input-size);
@@ -687,12 +1692,12 @@ h2 {
 }
 
 .model-dropdown-trigger:hover {
-  background: var(--ux-surface-hover);
+  background: #fcfcfd;
 }
 
 .model-dropdown-trigger:disabled {
   cursor: default;
-  background: var(--surface-panel, var(--ux-panel-bg));
+  background: #fff;
 }
 
 .model-dropdown-trigger:disabled .model-dropdown-caret {
@@ -701,8 +1706,8 @@ h2 {
 
 .model-dropdown-trigger:focus-visible {
   outline: none;
-  border-color: var(--ux-brand-bg);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: #c9cbd3;
+  box-shadow: 0 0 0 3px rgba(120, 126, 146, 0.12);
 }
 
 .model-dropdown-value {
@@ -717,14 +1722,14 @@ h2 {
   top: 50%;
   width: 9px;
   height: 9px;
-  border-right: 2px solid var(--ux-text-muted);
-  border-bottom: 2px solid var(--ux-text-muted);
+  border-right: 2px solid #989ba7;
+  border-bottom: 2px solid #989ba7;
   transform: translateY(-62%) rotate(45deg);
   transition: transform 0.16s ease;
 }
 
 .model-dropdown-menu {
-  display: block;
+  display: none;
   position: absolute;
   z-index: 40;
   left: 0;
@@ -736,23 +1741,12 @@ h2 {
   border: 1px solid var(--ux-flyout-border);
   border-radius: 14px;
   background: var(--ux-flyout-bg);
-  backdrop-filter: none;
+  backdrop-filter: blur(14px) saturate(1.08);
   box-shadow: var(--ux-flyout-shadow);
-  opacity: 0;
-  transform: translateY(-4px);
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    opacity 0.15s ease,
-    transform 0.15s ease,
-    visibility 0.15s ease;
 }
 
-.model-dropdown.is-open .model-dropdown-menu {
-  opacity: 1;
-  transform: translateY(0);
-  visibility: visible;
-  pointer-events: auto;
+.model-dropdown:focus-within .model-dropdown-menu {
+  display: block;
 }
 
 .model-dropdown-option {
@@ -781,7 +1775,7 @@ h2 {
 }
 
 .model-dropdown-option.selected:hover {
-  background: var(--ux-surface-hover);
+  background: transparent;
 }
 
 .model-key-form :deep(.el-input__inner),

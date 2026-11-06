@@ -1,6 +1,10 @@
 declare module "qrcode-terminal" {
   const qrcodeTerminal: {
-    generate(text: string, options?: { small?: boolean }, callback?: (qr: string) => void): void;
+    generate(
+      text: string,
+      options?: { small?: boolean },
+      callback?: (qr: string) => void,
+    ): void;
   };
   export default qrcodeTerminal;
 }

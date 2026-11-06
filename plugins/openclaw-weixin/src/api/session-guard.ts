@@ -2,8 +2,8 @@ import { logger } from "../util/logger.js";
 
 const SESSION_PAUSE_DURATION_MS = 60 * 60 * 1000;
 
-/** Error code returned by the server when the bot session has expired. */
-export const SESSION_EXPIRED_ERRCODE = -14;
+/** Error code returned by the server when the bot token is stale / expired. */
+export const STALE_TOKEN_ERRCODE = -14;
 
 const pauseUntilMap = new Map<string, number>();
 
@@ -44,7 +44,7 @@ export function assertSessionActive(accountId: string): void {
   if (isSessionPaused(accountId)) {
     const remainingMin = Math.ceil(getRemainingPauseMs(accountId) / 60_000);
     throw new Error(
-      `session paused for accountId=${accountId}, ${remainingMin} min remaining (errcode ${SESSION_EXPIRED_ERRCODE})`,
+      `session paused for accountId=${accountId}, ${remainingMin} min remaining (errcode ${STALE_TOKEN_ERRCODE})`,
     );
   }
 }

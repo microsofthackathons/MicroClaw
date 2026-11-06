@@ -1,96 +1,1204 @@
+import { defineComponent } from "vue";
+import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { ElMessageBox } from "element-plus";
+import { createBrowserOpenClawMock } from "@/browser-openclaw";
+import { setLocale } from "@/i18n";
+import type { LocalModelOperation } from "../../../src/local-model-types";
+import { MANAGED_MODEL_PROVIDERS } from "@/utils/managed-model-providers";
 import ModelSetupDialog from "./ModelSetupDialog.vue";
 
-describe("ModelSetupDialog accessible actions", () => {
-  let wrapper: VueWrapper;
-  let read: ReturnType<typeof vi.fn>;
-  let write: ReturnType<typeof vi.fn>;
+const InputStub = defineComponent({
+  props: {
+    modelValue: { type: String, default: "" },
+    placeholder: { type: String, default: "" },
+  },
+  emits: ["update:modelValue"],
+  template:
+    '<input :value="modelValue" :placeholder="placeholder" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+});
+
+const SelectStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    modelValue: { type: String, default: "" },
+    filterMethod: Function,
+  },
+  emits: ["update:modelValue", "change", "visible-change"],
+  template:
+    '<div><select v-bind="$attrs" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value); $emit(\'change\', $event.target.value)"><slot /></select><slot name="footer" /></div>',
+});
+
+const componentStubs = {
+  "el-form": { template: "<form><slot /></form>" },
+  "el-form-item": {
+    props: ["label"],
+    template: "<label>{{ label }}<slot /></label>",
+  },
+  "el-input": InputStub,
+  "el-select": SelectStub,
+  "el-option": {
+    props: ["label", "value"],
+    template: '<option :value="value">{{ label }}</option>',
+  },
+  "el-option-group": { template: "<optgroup><slot /></optgroup>" },
+};
+
+function mountDialog(props: Partial<InstanceType<typeof ModelSetupDialog>["$props"]> = {}) {
+  return mount(ModelSetupDialog, {
+    props: { modelValue: true, ...props },
+    global: { stubs: componentStubs },
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+describe("ModelSetupDialog", () => {
+  const read = vi.fn();
+  const write = vi.fn();
+  const restart = vi.fn();
+  const testConnection = vi.fn();
+  const discoverModels = vi.fn();
+  const registerCatalogModel = vi.fn();
+  const openExternal = vi.fn();
+  const prepareGitHubCopilot = vi.fn();
+  const startGitHubCopilotLogin = vi.fn();
+  const cancelGitHubCopilotLogin = vi.fn();
+  const getGitHubCopilotStatus = vi.fn();
+  const listGitHubCopilotModels = vi.fn();
+  const removeGitHubCopilotListener = vi.fn();
+  let githubCopilotLoginListener: ((event: GitHubCopilotLoginEvent) => void) | undefined;
 
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    read = vi.fn().mockResolvedValue({});
-    write = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("openclaw", { config: { read, write } });
-    wrapper = mount(ModelSetupDialog, {
-      props: { modelValue: true },
-      global: {
-        stubs: {
-          ElForm: { template: "<div><slot /></div>" },
-          ElFormItem: { template: "<div><slot /></div>" },
+    vi.useFakeTimers();
+    read.mockResolvedValue({ gateway: { port: 18789 } });
+    write.mockResolvedValue(undefined);
+    restart.mockResolvedValue(undefined);
+    testConnection.mockResolvedValue({
+      ok: true,
+      message: "Connection successful",
+      baseUrl: "http://localhost:11434/v1",
+    });
+    discoverModels.mockResolvedValue({
+      ok: true,
+      models: ["qwen", "qwen3.7-plus", "MiniMax-M3", "MiniMax-M1"],
+    });
+    registerCatalogModel.mockResolvedValue(undefined);
+    prepareGitHubCopilot.mockResolvedValue({ restartRequired: false });
+    startGitHubCopilotLogin.mockResolvedValue({ sessionId: "copilot-session" });
+    cancelGitHubCopilotLogin.mockResolvedValue({ cancelled: true });
+    getGitHubCopilotStatus.mockResolvedValue({ authenticated: false });
+    listGitHubCopilotModels.mockResolvedValue([]);
+    githubCopilotLoginListener = undefined;
+    window.openclaw = {
+      features: { githubCopilot: true },
+      config: { read, write: vi.fn() },
+      gateway: { restart },
+      model: {
+        applyConfig: vi.fn((input: Parameters<OpenClawAPI["model"]["applyConfig"]>[0]) =>
+          write(input.config, input.expectedConfig),
+        ),
+        discoverModels,
+        registerCatalogModel,
+        testConnection,
+        prepareGitHubCopilot,
+        startGitHubCopilotLogin,
+        cancelGitHubCopilotLogin,
+        getGitHubCopilotStatus,
+        listGitHubCopilotModels,
+        onGitHubCopilotLoginEvent: (listener: (event: GitHubCopilotLoginEvent) => void) => {
+          githubCopilotLoginListener = listener;
+          return removeGitHubCopilotListener;
         },
       },
-    });
+      shell: { openExternal },
+    } as unknown as typeof window.openclaw;
   });
 
   afterEach(() => {
-    wrapper.unmount();
+    setLocale("en-US");
     vi.useRealTimers();
-    vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
-  async function enterKeyForm() {
-    await wrapper.get("button.text-action").trigger("click");
+  describe("F35 native activation on the current provider flow", () => {
+    it("retains standalone modal semantics", () => {
+      const wrapper = mountDialog();
+      expect(wrapper.get('[role="dialog"]').attributes("aria-modal")).toBe("true");
+      wrapper.unmount();
+    });
+
+    it("returns through click without a preceding mousedown", async () => {
+      const wrapper = mountDialog();
+      await wrapper.get(".text-action").trigger("click");
+      await wrapper.get(".text-action--back").trigger("click");
+      expect(wrapper.find(".model-family-grid").exists()).toBe(true);
+      expect(wrapper.find(".model-key-form").exists()).toBe(false);
+      expect(write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("keeps Start disabled for an empty key under the current catalog contract", async () => {
+      const wrapper = mountDialog();
+      await wrapper.get(".text-action").trigger("click");
+      const start = wrapper.get<HTMLButtonElement>(".primary-action");
+      expect(start.element.disabled).toBe(true);
+      start.element.click();
+      await flushPromises();
+      expect(write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("saves through click without a preceding mousedown", async () => {
+      const wrapper = mountDialog({ singleProvider: true });
+      await wrapper.get(".text-action").trigger("click");
+      await enterCloudKey(wrapper);
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(write).toHaveBeenCalledOnce();
+      expect(wrapper.emitted("configured")).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it("saves once for a pointer activation and disables Start while saving", async () => {
+      const pending = deferred<void>();
+      write.mockReturnValueOnce(pending.promise);
+      const wrapper = mountDialog({ singleProvider: true });
+      await wrapper.get(".text-action").trigger("click");
+      await enterCloudKey(wrapper);
+      const start = wrapper.get<HTMLButtonElement>(".primary-action");
+      await start.trigger("mousedown");
+      start.element.click();
+      await flushPromises();
+      expect(start.element.disabled).toBe(true);
+      start.element.click();
+      await flushPromises();
+      expect(write).toHaveBeenCalledOnce();
+      pending.resolve(undefined);
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(wrapper.emitted("configured")).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it("shows a rejected save and restores a usable action", async () => {
+      write.mockRejectedValueOnce(new Error("F35 fixture write failure"));
+      const wrapper = mountDialog({ singleProvider: true });
+      await wrapper.get(".text-action").trigger("click");
+      await enterCloudKey(wrapper);
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      expect(wrapper.get(".error-msg").text()).toContain("F35 fixture write failure");
+      expect(wrapper.get<HTMLButtonElement>(".primary-action").element.disabled).toBe(false);
+      expect(wrapper.emitted("configured")).toBeUndefined();
+      wrapper.unmount();
+    });
+  });
+
+  it.each([
+    ["recovery", undefined],
+    ["saved provider", undefined],
+    ["recovery", false],
+    ["saved provider", false],
+  ] as const)("hides Copilot for %s with feature capability %s", async (entry, githubCopilot) => {
+    window.openclaw = {
+      ...window.openclaw,
+      features: githubCopilot === undefined ? undefined : { githubCopilot },
+    } as unknown as OpenClawAPI;
+    const props =
+      entry === "recovery"
+        ? { initialFamily: "github-copilot" as const }
+        : {
+            currentProvider: {
+              familyId: "github-copilot",
+              providerKey: "github-copilot",
+              modelName: "gpt-5",
+              baseUrl: "",
+              apiKey: "",
+              apiFormat: "openai-chat" as const,
+            },
+          };
+    const wrapper = mountDialog(props);
+    await flushPromises();
+    expect(wrapper.findAll(".model-family-card")).toHaveLength(3);
+    expect(wrapper.text()).not.toContain("GitHub Copilot");
+    expect(getGitHubCopilotStatus).not.toHaveBeenCalled();
+    expect(prepareGitHubCopilot).not.toHaveBeenCalled();
+    expect(startGitHubCopilotLogin).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  async function openCustomForm(wrapper: ReturnType<typeof mountDialog>) {
+    const cards = wrapper.findAll(".model-family-card");
+    expect(cards).toHaveLength(4);
+    await wrapper.setProps({ modelValue: false });
+    await wrapper.setProps({ modelValue: true, initialFamily: "custom" });
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
   }
 
-  it("exposes the model setup surface as a modal dialog", () => {
-    expect(wrapper.get('[role="dialog"]').attributes("aria-modal")).toBe("true");
-  });
-
-  // Keyboard activation and assistive technology send click without mousedown.
-  it("returns to provider selection on a click without a preceding mousedown", async () => {
-    await enterKeyForm();
-    await wrapper.get("button.text-action--back").trigger("click");
-    expect(wrapper.find(".model-family-grid").exists()).toBe(true);
-    expect(wrapper.find(".model-key-form").exists()).toBe(false);
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it("validates an empty key when Start is activated by click alone", async () => {
-    await enterKeyForm();
-    await wrapper.get("button.primary-action").trigger("click");
-    expect(wrapper.get(".error-msg").text()).not.toBe("");
-    expect(read).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it("saves and signals completion when Start is activated by click alone", async () => {
-    await enterKeyForm();
-    await wrapper.get('input[type="password"]').setValue("review-fixture-key");
-    await wrapper.get("button.primary-action").trigger("click");
+  async function enterCloudKey(wrapper: ReturnType<typeof mountDialog>) {
+    await wrapper.findAll("input")[1].setValue("new-key");
+    await vi.advanceTimersByTimeAsync(600);
     await flushPromises();
-    expect(read).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(write.mock.calls[0][0].models.providers.qwen.apiKey).toBe("review-fixture-key");
-    await vi.advanceTimersByTimeAsync(500);
-    expect(wrapper.emitted("configured")).toHaveLength(1);
+    await wrapper.get("select").setValue("qwen3.7-plus");
+  }
+
+  async function openGitHubCopilotForm(wrapper: ReturnType<typeof mountDialog>) {
+    const cards = wrapper.findAll(".model-family-card");
+    expect(cards).toHaveLength(4);
+    await cards[2].trigger("click");
+    expect(wrapper.text()).toContain("GitHub Copilot");
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+  }
+
+  it("shows managed providers, Copilot, and a first-time local entry", () => {
+    const wrapper = mountDialog();
+    const cards = wrapper.findAll(".model-family-card");
+    expect(cards.map((card) => card.text())).toEqual([
+      "千问",
+      "MiniMax",
+      "GitHub Copilot",
+      "Local model",
+    ]);
+    expect(cards[2].findAll(".family-icon img")).toHaveLength(1);
+    const copilotLogo = decodeURIComponent(
+      cards[2].find(".family-icon img").attributes("src") ?? "",
+    );
+    expect(copilotLogo).toContain("viewBox='0 0 128 128'");
+    expect(copilotLogo).toContain("fill='black'");
+    expect(wrapper.text()).not.toContain("OpenClaw catalog");
+  });
+
+  it.each(["en-US", "zh-CN"] as const)(
+    "only offers Qwen, MiniMax, and local setup in %s",
+    (locale) => {
+      setLocale(locale);
+      window.openclaw = { ...window.openclaw, features: { githubCopilot: false } };
+      const wrapper = mountDialog();
+      const cards = wrapper.findAll(".model-family-card");
+      expect(cards.map((card) => card.text())).toEqual([
+        "千问",
+        "MiniMax",
+        locale === "zh-CN" ? "本地模型" : "Local model",
+      ]);
+      expect(wrapper.text()).not.toMatch(/Other model|其他模型|OpenClaw catalog/);
+      wrapper.unmount();
+    },
+  );
+
+  it.each([
+    ["qwen", "千问"],
+    ["minimax", "MiniMax"],
+  ] as const)(
+    "keeps the inline %s editor focused on fields without duplicate dialog chrome",
+    async (family, label) => {
+      const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: family });
+      await flushPromises();
+      const panel = wrapper.get('[role="region"]');
+      expect(panel.attributes("aria-label")).toBe(label);
+      expect(panel.find("h2").exists()).toBe(false);
+      expect(panel.find(".model-setup-desc").exists()).toBe(false);
+      expect(panel.find(".model-setup-close").exists()).toBe(false);
+      expect(panel.element.firstElementChild?.classList.contains("model-key-form")).toBe(true);
+      expect(panel.find('[data-testid="provider-key-field"]').exists()).toBe(true);
+      expect(panel.find('[data-testid="provider-model-field"]').exists()).toBe(false);
+      expect(panel.find('[data-testid="provider-connection-hint"]').exists()).toBe(true);
+      expect(panel.find("select").exists()).toBe(false);
+      wrapper.unmount();
+    },
+  );
+
+  it("retains the title, instructions and close button for standalone setup", async () => {
+    const wrapper = mountDialog({ initialFamily: "qwen" });
+    await wrapper.get(".text-action").trigger("click");
+    const panel = wrapper.get('[role="dialog"]');
+    expect(panel.get("h2").text()).not.toBe("");
+    expect(panel.get(".model-setup-desc").text()).not.toBe("");
+    await panel.get(".model-setup-close").trigger("click");
     expect(wrapper.emitted("update:modelValue")).toEqual([[false]]);
+    wrapper.unmount();
   });
 
-  it("saves once for a pointer activation and disables Start while saving", async () => {
-    await enterKeyForm();
-    await wrapper.get('input[type="password"]').setValue("review-fixture-key");
-    const start = wrapper.get<HTMLButtonElement>("button.primary-action");
-    await start.trigger("mousedown");
-    start.element.click();
+  it("filters the Qwen catalog to chat models and groups their versions", async () => {
+    const realtime = "qwen3.8-omni-flash-realtime";
+    discoverModels.mockResolvedValue({
+      ok: true,
+      models: [
+        "qwen3.8-plus",
+        "qwen3.8-max",
+        "kimi/kimi-k3.1-pro",
+        realtime,
+        "qwen3.5-plus",
+        "qwen-image-2.1-pro",
+        "cmaas-qwen3.8-flash",
+        "qwen3.7-plus",
+      ],
+    });
+    const wrapper = mountDialog({
+      inline: true,
+      manageOnly: false,
+      currentProvider: {
+        familyId: "qwen",
+        providerKey: "qwen",
+        modelName: realtime,
+        baseUrl: MANAGED_MODEL_PROVIDERS[0].baseUrl,
+        apiKey: "fixture",
+        apiFormat: "openai-chat",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(600);
     await flushPromises();
-    expect(start.element.disabled).toBe(true);
-    start.element.click();
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.8-max",
+      "cmaas-qwen3.8-flash",
+      "qwen3.7-plus",
+      "qwen3.5-plus",
+    ]);
+    expect(wrapper.find(`option[value="${realtime}"]`).exists()).toBe(false);
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
+    await wrapper.get(".primary-action").trigger("click");
+    expect(write).not.toHaveBeenCalled();
+    expect(registerCatalogModel).not.toHaveBeenCalled();
+    const more = wrapper.get('[data-testid="more-provider-models"]');
+    expect(more.attributes("aria-expanded")).toBe("false");
+    await more.trigger("click");
+    expect(more.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.8-max",
+      "cmaas-qwen3.8-flash",
+      "qwen3.7-plus",
+      "qwen3.5-plus",
+      "qwen3.8-plus",
+    ]);
+    const select = wrapper.findComponent(SelectStub);
+    select.props("filterMethod")?.("qwen3.8-plus");
     await flushPromises();
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.8-plus",
+    ]);
+    expect(wrapper.find('[data-testid="more-provider-models"]').exists()).toBe(false);
+    select.vm.$emit("visible-change", false);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="more-provider-models"]').attributes("aria-expanded")).toBe(
+      "false",
+    );
+    await wrapper.get("select").setValue("qwen3.7-plus");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it.each([false, true])(
+    "verifies an existing connection without changing registered models or defaults (failure: %s)",
+    async (fail) => {
+      const baseUrl = MANAGED_MODEL_PROVIDERS[0].baseUrl;
+      const config = {
+        models: {
+          providers: {
+            qwen: {
+              baseUrl,
+              apiKey: "existing-key",
+              api: "openai-completions",
+              models: [{ id: "qwen", name: "Qwen" }],
+            },
+          },
+        },
+        agents: { defaults: { model: { primary: "qwen/qwen" } } },
+      };
+      read.mockResolvedValue(config);
+      if (fail) discoverModels.mockResolvedValueOnce({ ok: false, error: "authentication" });
+      const wrapper = mountDialog({
+        inline: true,
+        manageOnly: true,
+        currentProvider: {
+          familyId: "qwen",
+          providerKey: "qwen",
+          modelName: "qwen",
+          baseUrl,
+          apiKey: "existing-key",
+          apiFormat: "openai-chat",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(600);
+      await flushPromises();
+      expect(discoverModels).not.toHaveBeenCalled();
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      expect(discoverModels).toHaveBeenCalledWith({ baseUrl, apiKey: "existing-key" });
+      expect(registerCatalogModel).not.toHaveBeenCalled();
+      expect(restart).not.toHaveBeenCalled();
+      if (fail) {
+        expect(write).not.toHaveBeenCalled();
+        expect(wrapper.text()).toContain("provider rejected the API key");
+        expect(wrapper.emitted("configured")).toBeUndefined();
+      } else {
+        expect(write).toHaveBeenCalledWith(
+          { ...config, models: { ...config.models, mode: "merge" } },
+          config,
+        );
+        expect(wrapper.emitted("configured")).toHaveLength(1);
+      }
+      wrapper.unmount();
+    },
+  );
+
+  it("waits for connection verification and ignores the result after closing", async () => {
+    const response = deferred<{ ok: true; models: string[] }>();
+    discoverModels.mockReturnValueOnce(response.promise);
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "qwen" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture-key");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("Verifying and saving...");
+    expect(write).not.toHaveBeenCalled();
+    await wrapper.setProps({ modelValue: false });
+    response.resolve({ ok: true, models: ["qwen3.7-plus"] });
+    await flushPromises();
+    expect(write).not.toHaveBeenCalled();
+    expect(wrapper.emitted("configured")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("keeps a failed connection save open without registering a model or changing defaults", async () => {
+    write.mockRejectedValueOnce(new Error("Configuration changed while editing"));
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "minimax" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture-key");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Configuration changed while editing");
+    expect(wrapper.emitted("configured")).toBeUndefined();
+    expect(registerCatalogModel).not.toHaveBeenCalled();
+    expect(testConnection).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("edits a custom connection inline without inference or changing the default and preserves its ID", async () => {
+    const config = {
+      models: {
+        providers: {
+          private: {
+            baseUrl: "https://old.example/v1",
+            apiKey: "existing-key",
+            models: [{ id: "model", name: "My model", input: ["text", "image"], reasoning: true }],
+          },
+          cloud: { models: [{ id: "default" }] },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "cloud/default", fallbacks: ["private/model"] },
+          models: { "private/model": {}, "cloud/default": {} },
+        },
+      },
+    };
+    read.mockResolvedValue(config);
+    const wrapper = mountDialog({
+      inline: true,
+      manageOnly: true,
+      currentProvider: {
+        familyId: "custom",
+        providerKey: "private",
+        modelName: "model",
+        displayName: "My model",
+        baseUrl: "https://new.example/v1",
+        apiKey: "existing-key",
+        apiFormat: "openai-chat",
+        reasoningEffort: "low",
+        input: ["text", "image"],
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect(wrapper.find('[role="region"]').exists()).toBe(true);
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    expect(testConnection).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledOnce();
+    const saved = write.mock.calls[0][0];
+    expect(write.mock.calls[0][1]).toEqual(config);
+    expect(saved.models.providers.private.baseUrl).toBe("https://new.example/v1");
+    expect(saved.models.providers.custom).toBeUndefined();
+    expect(saved.models.providers.private.models[0].input).toEqual(["text", "image"]);
+    expect(saved.models.providers.private.models[0].reasoning).toBe(true);
+    expect(saved.agents).toEqual(config.agents);
+    wrapper.unmount();
+  });
+
+  it("opens the local dialog from the family grid without starting an operation", async () => {
+    const wrapper = mountDialog();
+    await wrapper.findAll(".model-family-card")[3].trigger("click");
+    expect(wrapper.find(".primary-action").text()).toBe("Set up a local model");
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".local-model-panel").exists()).toBe(true);
+    expect(testConnection).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("adds a new model from an inline editor without renaming existing session/default references", async () => {
+    const config = {
+      models: {
+        providers: {
+          custom: {
+            baseUrl: "http://127.0.0.1:1234/v1",
+            models: [{ id: "old", name: "Existing model" }],
+          },
+        },
+      },
+      agents: { defaults: { model: { primary: "custom/old", fallbacks: ["custom/old"] } } },
+    };
+    read.mockResolvedValue(config);
+    const wrapper = mountDialog({
+      inline: true,
+      manageOnly: true,
+      currentProvider: {
+        familyId: "custom",
+        providerKey: "custom",
+        modelName: "old",
+        displayName: "Existing model",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        apiKey: "",
+        apiFormat: "openai-chat",
+      },
+    });
+    await flushPromises();
+    await wrapper.findAll("input")[1].setValue("new-model");
+    await wrapper.get(".primary-action").trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    expect(testConnection).not.toHaveBeenCalled();
+    const saved = write.mock.calls[0][0];
+    expect(saved.agents).toEqual(config.agents);
+    expect(saved.models.providers.custom.models.map((model: { id: string }) => model.id)).toEqual([
+      "old",
+      "new-model",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("opens directly on the requested GitHub Copilot recovery form", async () => {
+    const wrapper = mountDialog({ initialFamily: "github-copilot" });
+    await flushPromises();
+
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
+    expect(wrapper.text()).toContain("GitHub Copilot");
+    expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
+  });
+
+  it("opens the selected provider signup flow", async () => {
+    const wrapper = mountDialog();
+
+    await wrapper.findAll(".model-family-card")[1].trigger("click");
+    await wrapper.find(".primary-action").trigger("click");
+
+    expect(openExternal).toHaveBeenCalledOnce();
+    expect(openExternal.mock.calls[0][0]).toBe(
+      MANAGED_MODEL_PROVIDERS.find((provider) => provider.id === "minimax")!.signupUrl,
+    );
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
+  });
+
+  it.each(MANAGED_MODEL_PROVIDERS)(
+    "opens $id signup from its inline editor without losing input, then saves without inference",
+    async (provider) => {
+      const before = {
+        gateway: { port: 18789 },
+        agents: { defaults: { model: { primary: "cloud/keep" } } },
+        models: { providers: { cloud: { models: [{ id: "keep" }] } } },
+      };
+      read.mockResolvedValue(before);
+      const wrapper = mountDialog({
+        inline: true,
+        manageOnly: true,
+        initialFamily: provider.id,
+      });
+      await flushPromises();
+      await wrapper.get('input[placeholder="sk-..."]').setValue("sk-test-fixture");
+      await vi.advanceTimersByTimeAsync(600);
+      await flushPromises();
+      expect(discoverModels).not.toHaveBeenCalled();
+      await wrapper.get(".provider-api-key-link").trigger("click");
+      await flushPromises();
+      expect(openExternal).toHaveBeenCalledWith(provider.signupUrl);
+      expect((wrapper.get('input[placeholder="sk-..."]').element as HTMLInputElement).value).toBe(
+        "sk-test-fixture",
+      );
+      expect(write).not.toHaveBeenCalled();
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(write).toHaveBeenCalledOnce();
+      const saved = write.mock.calls[0][0];
+      expect(saved.models.providers[provider.id].baseUrl).toBe(provider.baseUrl);
+      expect(saved.models.providers[provider.id].models).toEqual([]);
+      expect(saved.models.providers.cloud).toEqual(before.models.providers.cloud);
+      expect(saved.agents.defaults.model).toEqual(before.agents.defaults.model);
+      expect(testConnection).not.toHaveBeenCalled();
+      expect(registerCatalogModel).not.toHaveBeenCalled();
+      expect(restart).not.toHaveBeenCalled();
+      expect(window.openclaw.config.write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("surfaces failures opening a provider website", async () => {
+    openExternal.mockRejectedValueOnce(new Error("Browser unavailable"));
+    const wrapper = mountDialog({ inline: true, manageOnly: true, initialFamily: "minimax" });
+    await flushPromises();
+    await wrapper.get(".provider-api-key-link").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Could not open the provider website: Browser unavailable");
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("disables model selection until a key fetch returns live IDs", async () => {
+    discoverModels.mockResolvedValue({ ok: true, models: ["qwen3.8-max"] });
+    const wrapper = mountDialog({ inline: true, initialFamily: "qwen" });
+    await flushPromises();
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.findAll("option")).toHaveLength(0);
+    expect(discoverModels).not.toHaveBeenCalled();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture-key");
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(discoverModels).toHaveBeenCalledWith({
+      baseUrl: MANAGED_MODEL_PROVIDERS[0].baseUrl,
+      apiKey: "fixture-key",
+    });
+    expect(wrapper.get("select").attributes("disabled")).toBeUndefined();
+    expect(wrapper.findAll("option").map((o) => o.attributes("value"))).toEqual(["qwen3.8-max"]);
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
+    await wrapper.get("select").setValue("qwen3.8-max");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+    expect(testConnection).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it.each(["qwen", "minimax"] as const)(
+    "keeps %s onboarding model selection with adjacent key and refresh actions",
+    async (provider) => {
+      const response = deferred<{ ok: true; models: string[] }>();
+      discoverModels.mockReturnValueOnce(response.promise);
+      const wrapper = mountDialog({ inline: true, initialFamily: provider });
+      await flushPromises();
+      const fields = wrapper
+        .findAll('[data-testid$="-field"]')
+        .map((field) => field.attributes("data-testid"));
+      expect(fields).toEqual(["provider-base-field", "provider-key-field", "provider-model-field"]);
+      const keyRow = wrapper.get('[data-testid="provider-key-field"] .model-field-row');
+      expect(keyRow.findAll("input")).toHaveLength(1);
+      expect(keyRow.get(".provider-api-key-link").text()).toBe("Get API Key");
+      const modelRow = wrapper.get('[data-testid="provider-model-field"] .model-field-row');
+      expect(modelRow.find("select").exists()).toBe(true);
+      const refresh = modelRow.get('[data-testid="refresh-provider-models"]');
+      expect(refresh.text()).toBe("");
+      expect(refresh.attributes("aria-label")).toBe("Refresh model list");
+      expect(refresh.attributes("title")).toBe("Refresh model list");
+      expect(refresh.attributes("disabled")).toBeDefined();
+      await keyRow.get("input").setValue("fixture-key");
+      await vi.advanceTimersByTimeAsync(600);
+      expect(refresh.attributes("aria-busy")).toBe("true");
+      expect(refresh.get("svg").classes()).toContain("refresh-spinning");
+      expect(refresh.attributes("disabled")).toBeDefined();
+      response.resolve({ ok: true, models: ["remote-model"] });
+      await flushPromises();
+      expect(refresh.attributes("aria-busy")).toBe("false");
+      expect(refresh.attributes("disabled")).toBeUndefined();
+      await refresh.trigger("click");
+      await flushPromises();
+      expect(discoverModels).toHaveBeenCalledTimes(2);
+      expect(write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    },
+  );
+
+  it("discards a stale key's response and never falls back to presets on auth failure", async () => {
+    const first = deferred<{ ok: true; models: string[] }>();
+    discoverModels
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ ok: false, error: "authentication" });
+    const wrapper = mountDialog({ inline: true, initialFamily: "qwen" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("old-key");
+    await vi.advanceTimersByTimeAsync(600);
+    await wrapper.get('input[placeholder="sk-..."]').setValue("new-key");
+    await vi.advanceTimersByTimeAsync(600);
+    first.resolve({ ok: true, models: ["stale-model"] });
+    await flushPromises();
+    expect(wrapper.findAll("option")).toHaveLength(0);
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("provider rejected the API key");
+    await wrapper.get(".primary-action").trigger("keydown", { key: "Enter" });
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("invalidates a fetched catalog immediately when the key is cleared", async () => {
+    const wrapper = mountDialog({ inline: true, initialFamily: "minimax" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("fixture");
+    await vi.advanceTimersByTimeAsync(600);
+    await wrapper.get("select").setValue("MiniMax-M3");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+    await wrapper.get('input[placeholder="sk-..."]').setValue("");
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.findAll("option")).toHaveLength(0);
+    await wrapper.get(".primary-action").trigger("keydown", { key: "Enter" });
+    expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("never reuses one provider's key when switching to another provider", async () => {
+    const wrapper = mountDialog();
+    await wrapper.find(".text-action").trigger("click");
+    await wrapper.get('input[placeholder="sk-..."]').setValue("qwen-only-key");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(discoverModels).toHaveBeenCalledOnce();
+    await wrapper.get(".text-action--back").trigger("click");
+    await wrapper.findAll(".model-family-card")[1].trigger("click");
+    await wrapper.find(".text-action").trigger("click");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(discoverModels).toHaveBeenCalledOnce();
+    expect((wrapper.get('input[placeholder="sk-..."]').element as HTMLInputElement).value).toBe("");
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it("returns to a clean provider selection when reopened", async () => {
+    const wrapper = mountDialog();
+
+    await wrapper.findAll(".model-family-card")[1].trigger("click");
+    await wrapper.find(".text-action").trigger("click");
+    expect(wrapper.find(".model-key-form").exists()).toBe(true);
+
+    await wrapper.setProps({ modelValue: false });
+    await wrapper.setProps({ modelValue: true });
+
+    expect(wrapper.find(".model-key-form").exists()).toBe(false);
+    expect(wrapper.findAll(".model-family-card")[0].classes()).toContain("active");
+  });
+
+  it("preserves an existing provider configuration when saving", async () => {
+    const existingProvider = {
+      baseUrl: "https://old.example/v1",
+      apiKey: "old-key",
+      api: "openai-completions",
+      headers: { "X-Custom": "value" },
+      models: [
+        { id: "qwen3.7-plus", name: "Qwen Plus", input: ["text"] },
+        { id: "qwen3-32b", name: "Qwen 32B", input: ["text", "image"] },
+      ],
+    };
+    read.mockResolvedValue({
+      models: {
+        mode: "merge",
+        providers: { qwen: existingProvider },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "qwen/qwen3-32b" },
+        },
+      },
+    });
+    testConnection.mockResolvedValueOnce({
+      ok: true,
+      message: "Connection successful",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    });
+    const wrapper = mountDialog({ singleProvider: true });
+
+    await wrapper.find(".text-action").trigger("click");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0][0].models.providers.qwen).toEqual({
+      ...existingProvider,
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      apiKey: "new-key",
+      models: [
+        {
+          ...existingProvider.models[0],
+          name: "qwen3.7-plus",
+          input: ["text", "image"],
+        },
+        existingProvider.models[1],
+      ],
+    });
+    expect(write.mock.calls[0][0].agents.defaults.model.primary).toBe("qwen/qwen3.7-plus");
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("keeps cloud, official local-service fields, and Copilot authentication when adding a connection", async () => {
+    const retained = {
+      cloud: { models: [{ id: "remote" }], unknown: true },
+      "llama-cpp": { localService: { managed: true }, models: [{ id: "local" }] },
+    };
+    const auth = {
+      profiles: { "github-copilot:github": { provider: "github-copilot", mode: "token" } },
+    };
+    read.mockResolvedValue({
+      models: { providers: retained },
+      auth,
+      agents: { defaults: { models: { "github-copilot/gpt-5.4": { alias: "Copilot" } } } },
+    });
+    const wrapper = mountDialog({ singleProvider: true });
+    await wrapper.find(".text-action").trigger("click");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    const next = write.mock.calls[0][0];
+    expect(write.mock.calls[0][1]).toBe(await read.mock.results.at(-1)!.value);
+    expect(next.models.providers).toMatchObject(retained);
+    expect(next.auth).toEqual(auth);
+    expect(next.agents.defaults.models["github-copilot/gpt-5.4"]).toEqual({ alias: "Copilot" });
+  });
+
+  it("does not use generic configuration for the official llama-cpp provider", async () => {
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+    await wrapper.findAll("input")[0].setValue("llama-cpp");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".local-model-panel").exists()).toBe(true);
+    expect(testConnection).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("keeps configured providers when choosing an authenticated Copilot model in the legacy single-provider flow", async () => {
+    const providers = {
+      "llama-cpp": { models: [{ id: "saved" }], localService: { managed: true } },
+      cloud: { models: [{ id: "remote" }] },
+    };
+    read.mockResolvedValue({ models: { providers } });
+    getGitHubCopilotStatus.mockResolvedValue({ authenticated: true });
+    listGitHubCopilotModels.mockResolvedValue([{ id: "github-copilot/gpt-5.4", name: "GPT 5.4" }]);
+    const wrapper = mountDialog({ initialFamily: "github-copilot", singleProvider: true });
+    await flushPromises();
+    await wrapper.find("select").setValue("github-copilot/gpt-5.4");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    expect(write.mock.calls[0][0].models.providers).toEqual(providers);
+    expect(write.mock.calls[0][1]).toEqual({ models: { providers } });
+  });
+
+  it("uses the original missing-config snapshot for a first cloud setup", async () => {
+    read.mockResolvedValue(null);
+    const wrapper = mountDialog();
+    await wrapper.find(".text-action").trigger("click");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    expect(write.mock.calls[0][1]).toBeNull();
+  });
+
+  it("surfaces a stale config rejection without restarting or claiming configuration success", async () => {
+    write.mockRejectedValueOnce(new Error("Configuration changed; reload before saving"));
+    const wrapper = mountDialog();
+    await wrapper.find(".text-action").trigger("click");
+    await enterCloudKey(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Configuration changed; reload before saving");
+    expect(restart).not.toHaveBeenCalled();
+    expect(wrapper.emitted("configured")).toBeUndefined();
+  });
+
+  it("warns before setup when the default agent has a model override", async () => {
+    read.mockResolvedValue({ agents: { list: [{ id: "main", model: "cloud/override" }] } });
+    const wrapper = mountDialog();
+    await flushPromises();
+    expect(wrapper.get('[data-testid="default-agent-override"]').text()).toContain(
+      "Changing the global default does not change this override",
+    );
+    expect(wrapper.text()).toContain("cloud/override");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("blocks cloud setup while a reply is streaming", async () => {
+    const wrapper = mountDialog({ streaming: true });
+    await wrapper.find(".text-action").trigger("click");
+    await wrapper.findAll("input")[1].setValue("new-key");
+    expect(wrapper.find(".key-actions .primary-action").attributes("disabled")).toBeDefined();
+    await wrapper.find(".key-actions .primary-action").trigger("click");
+    expect(testConnection).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("keeps cloud configuration usable and cancels local setup only after valid connection and consent", async () => {
+    const local = createBrowserOpenClawMock().model.local;
+    const active: LocalModelOperation = {
+      id: "pending-local",
+      kind: "prepare",
+      phase: "step",
+      agentId: "main",
+      busy: true,
+      cancellationPending: false,
+    };
+    local.getOperation = vi.fn().mockResolvedValue({ ok: true, value: active });
+    local.cancel = vi.fn(async () => {
+      const done = { ...active, phase: "cancelled" as const, busy: false };
+      vi.mocked(local.getOperation).mockResolvedValue({ ok: true, value: done });
+      return { ok: true as const, value: done };
+    });
+    window.openclaw.model.local = local;
+    const confirmation = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never);
+    try {
+      const wrapper = mountDialog();
+      await openCustomForm(wrapper);
+      await flushPromises();
+      expect(wrapper.get(".model-setup-close").attributes("disabled")).toBeUndefined();
+      expect(wrapper.get(".key-actions .primary-action").attributes("disabled")).toBeUndefined();
+      expect(local.cancel).not.toHaveBeenCalled();
+      const inputs = wrapper.findAll("input");
+      await inputs[0].setValue("cloud-new");
+      await inputs[1].setValue("model");
+      await inputs[2].setValue("https://model.example/v1");
+      await inputs[3].setValue("key");
+      await wrapper.get(".key-actions .primary-action").trigger("click");
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(testConnection).toHaveBeenCalledBefore(vi.mocked(local.cancel));
+      expect(local.cancel).toHaveBeenCalledExactlyOnceWith("pending-local");
+      expect(write).toHaveBeenCalledOnce();
+      expect(wrapper.emitted("configured")).toHaveLength(1);
+      wrapper.unmount();
+    } finally {
+      confirmation.mockRestore();
+    }
+  });
+
+  it("retains existing custom connection fields but returns to the supported picker", async () => {
+    const wrapper = mountDialog({
+      currentProvider: {
+        familyId: "custom",
+        providerKey: "private",
+        modelName: "my-model",
+        baseUrl: "https://model.example/v1",
+        apiKey: "",
+        apiFormat: "openai-chat",
+      },
+    });
+
+    expect(wrapper.text()).toContain("Provider ID");
+    expect(wrapper.text()).toContain("API Format");
+    expect(wrapper.text()).toContain("API KEY (OPTIONAL)");
+    await wrapper.get(".text-action--back").trigger("click");
+    expect(wrapper.findAll(".model-family-card").map((card) => card.text())).toEqual([
+      "千问",
+      "MiniMax",
+      "GitHub Copilot",
+      "Local model",
+    ]);
+    expect(wrapper.findAll(".model-family-card")[0].classes()).toContain("active");
+    expect(wrapper.find(".primary-action").text()).toBe("Get API Key");
+    expect(wrapper.text()).not.toContain("Configure custom provider");
+    wrapper.unmount();
+  });
+
+  it("signs into GitHub Copilot with a device code and saves a full model reference", async () => {
+    const activation = deferred<void>();
+    restart.mockReturnValueOnce(activation.promise);
+    listGitHubCopilotModels.mockResolvedValueOnce([
+      { id: "github-copilot/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
+      { id: "github-copilot/gpt-5.4", name: "GPT-5.4" },
+    ]);
+    prepareGitHubCopilot.mockResolvedValueOnce({ restartRequired: true });
+    const wrapper = mountDialog();
+    await openGitHubCopilotForm(wrapper);
+    expect(getGitHubCopilotStatus).toHaveBeenCalledOnce();
+    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(wrapper.find(".primary-action").text()).toContain("Sign in with GitHub");
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
+
+    githubCopilotLoginListener?.({
+      sessionId: "copilot-session",
+      status: "code",
+      verificationUrl: "https://github.com/login/device",
+      userCode: "ABCD-1234",
+      expiresInMs: 900_000,
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("ABCD-1234");
+
+    githubCopilotLoginListener?.({
+      sessionId: "copilot-session",
+      status: "success",
+      defaultModel: "github-copilot/gpt-5.4",
+    });
+    await flushPromises();
+    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
+    expect(restart).toHaveBeenCalledOnce();
+    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    activation.resolve(undefined);
+    await flushPromises();
+    expect(listGitHubCopilotModels).toHaveBeenCalledOnce();
+    expect(wrapper.text()).toContain("GitHub Copilot connected");
+    expect(wrapper.find("select").element.value).toBe("github-copilot/gpt-5.4");
+
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0][0]).toMatchObject({
+      agents: {
+        defaults: {
+          model: { primary: "github-copilot/gpt-5.4" },
+        },
+      },
+    });
+    expect(write.mock.calls[0][0].models).toBeUndefined();
+    expect(prepareGitHubCopilot).toHaveBeenCalledTimes(2);
+    expect(restart).toHaveBeenCalledOnce();
+    expect(restart).toHaveBeenCalledWith({ reason: "copilot-plugin-activation" });
+  });
+
+  it("does not restart or load models when closed during Copilot activation", async () => {
+    const preparation = deferred<{ restartRequired: boolean }>();
+    prepareGitHubCopilot.mockReturnValueOnce(preparation.promise);
+    const wrapper = mountDialog();
+    await openGitHubCopilotForm(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+    githubCopilotLoginListener?.({ sessionId: "copilot-session", status: "success" });
+    await flushPromises();
+    expect(prepareGitHubCopilot).toHaveBeenCalledOnce();
+
+    await wrapper.find(".model-setup-close").trigger("click");
+    preparation.resolve({ restartRequired: true });
+    await flushPromises();
+
+    expect(restart).not.toHaveBeenCalled();
+    expect(listGitHubCopilotModels).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("cancels an in-progress GitHub device login when the dialog closes", async () => {
+    const wrapper = mountDialog();
+    await openGitHubCopilotForm(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    await flushPromises();
+
+    await wrapper.find(".model-setup-close").trigger("click");
+    await flushPromises();
+
+    expect(cancelGitHubCopilotLogin).toHaveBeenCalledWith("copilot-session");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("validates and saves a keyless local provider using the tested Base URL", async () => {
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+    const inputs = wrapper.findAll("input");
+
+    await inputs[0].setValue("ollama");
+    await inputs[1].setValue("llama3.2");
+    await inputs[2].setValue("http://localhost:11434");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+
+    expect(testConnection).toHaveBeenCalledWith({
+      baseUrl: "http://localhost:11434",
+      apiKey: "",
+      apiFormat: "openai-chat",
+      modelName: "llama3.2",
+    });
     expect(write).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(500);
+    expect(write.mock.calls[0][0]).toMatchObject({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434/v1",
+            apiKey: "",
+            models: [{ id: "llama3.2", input: ["text"] }],
+          },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "ollama/llama3.2" },
+        },
+      },
+    });
+    expect(restart).not.toHaveBeenCalled();
     expect(wrapper.emitted("configured")).toHaveLength(1);
   });
 
-  it("shows a save failure and restores a usable Start action", async () => {
-    write.mockRejectedValue(new Error("fixture write failure"));
-    await enterKeyForm();
-    await wrapper.get('input[type="password"]').setValue("review-fixture-key");
-    await wrapper.get("button.primary-action").trigger("click");
+  it("does not write after the dialog is closed during connection validation", async () => {
+    const connection = deferred<{
+      ok: boolean;
+      message: string;
+      baseUrl?: string;
+    }>();
+    testConnection.mockReturnValueOnce(connection.promise);
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+    const inputs = wrapper.findAll("input");
+
+    await inputs[0].setValue("ollama");
+    await inputs[1].setValue("llama3.2");
+    await inputs[2].setValue("http://localhost:11434");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
+    await wrapper.find(".model-setup-close").trigger("click");
+    connection.resolve({
+      ok: true,
+      message: "Connection successful",
+      baseUrl: "http://localhost:11434/v1",
+    });
     await flushPromises();
-    expect(wrapper.get(".error-msg").text()).toContain("fixture write failure");
-    expect(wrapper.get<HTMLButtonElement>("button.primary-action").element.disabled).toBe(false);
-    expect(wrapper.emitted("configured")).toBeUndefined();
+
+    expect(testConnection).toHaveBeenCalledTimes(1);
+    expect(write).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("cannot close until the Gateway confirms hot application of the configuration", async () => {
+    const applyPending = deferred<void>();
+    write.mockReturnValueOnce(applyPending.promise);
+    const wrapper = mountDialog();
+    await openCustomForm(wrapper);
+    const inputs = wrapper.findAll("input");
+
+    await inputs[0].setValue("ollama");
+    await inputs[1].setValue("llama3.2");
+    await inputs[2].setValue("http://localhost:11434");
+    await wrapper.find(".key-actions .primary-action").trigger("click");
+    await flushPromises();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(restart).not.toHaveBeenCalled();
+    expect(wrapper.find(".model-setup-close").attributes("disabled")).toBeDefined();
+    await wrapper.find(".model-setup-close").trigger("click");
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+
+    applyPending.resolve();
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(wrapper.emitted("update:modelValue")).toEqual([[false]]);
+    expect(wrapper.emitted("configured")).toHaveLength(1);
   });
 });

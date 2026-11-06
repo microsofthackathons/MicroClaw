@@ -4,11 +4,37 @@
 
 OpenClaw 的微信渠道插件，支持通过扫码完成登录授权。
 
+## 兼容性
+
+本仓库维护上游 **2.4.6** 及适用于 **OpenClaw 2026.10.2+** 的本地 SDK 兼容与 MicroClaw 补丁；这不是腾讯发布的新 npm 版本，原始 vendor 压缩包及校验值保持不变。
+
+MicroClaw 桌面构建通过 `desktop/scripts/prepare-weixin-plugin-resource.mjs` 准备内置插件：覆盖本仓库源码、编译两个入口，并生成内容哈希清单；打包运行时固定使用 OpenClaw **2026.10.5**。启动由自身管理的网关前，MicroClaw 会按清单校验已安装插件，即使包版本号相同也会替换过时内容，但不会替换账号状态。
+
+源码修复只有在包含它的新版 MicroClaw 安装包构建并分发后，才会覆盖新安装与重装。重新安装旧版 MicroClaw，或独立安装腾讯已发布的插件，都不会获得尚未发布的本仓库补丁。
+
+| 插件版本 | OpenClaw 版本            | npm dist-tag | 状态   |
+|---------|--------------------------|--------------|--------|
+| 2.4.6 + MicroClaw 补丁 | >=2026.10.2 | 未发布 | MicroClaw 内置构建 |
+| 2.0.x   | >=2026.3.22              | `latest`     | 活跃   |
+| 1.0.x   | >=2026.1.0 <2026.3.22    | `legacy`     | 维护中 |
+
+> 插件在启动时会检查宿主版本，如果运行的 OpenClaw 版本超出支持范围，插件将拒绝加载。
+
+## 等待中的回合与用户回复
+
+收到新消息后，插件不再等待前一回合结束才将其交给 OpenClaw 回复管线，避免 `ask_user` 的回答排在等待它的回合后面直到超时。会话准入与后续消息处理由 OpenClaw 负责；远程审批回复仍通过独立的拦截链路处理。
+
+同步游标仍按顺序提交，并等待其覆盖的所有消息处理结束。停止监控时会等待未结束的处理；处理失败时保留最后已落盘的游标供重放。
+
 ## 前提条件
 
 已安装 [OpenClaw](https://docs.openclaw.ai/install)（需要 `openclaw` CLI 可用）。
 
+查看版本：`openclaw --version`
+
 ## 一键安装
+
+以下命令安装的是腾讯已发布的插件，不是 MicroClaw 内置修补版。MicroClaw 桌面版会在启动网关时管理自身的内置插件。
 
 ```bash
 npx -y @tencent-weixin/openclaw-weixin-cli install
@@ -54,13 +80,47 @@ openclaw channels login --channel openclaw-weixin
 
 ## 多账号上下文隔离
 
-默认情况下，所有渠道的 AI 会话共享同一个上下文。如果希望每个微信账号的对话上下文相互隔离：
+默认情况下，私聊可能共用同一会话桶。**多个微信号同时登录**时，建议按「账号 + 渠道 + 对端」隔离：
 
 ```bash
-openclaw config set agents.mode per-channel-per-peer
+openclaw config set session.dmScope per-account-channel-peer
 ```
 
-这样每个「微信账号 + 发消息用户」组合都会拥有独立的 AI 记忆，账号之间不会串台。
+## 自定义 BotAgent（可选）
+
+每条出站请求会带一个自我声明的 `bot_agent` 字段——类似 HTTP `User-Agent`——用于
+后台日志归因和监控聚合。**默认值为 `OpenClaw`**。声明自己的应用名能让你的流量
+在后台日志中更容易识别。
+
+在 `openclaw.json` 中加一行即可：
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "botAgent": "MyBot/1.2.0"
+    }
+  }
+}
+```
+
+**格式规范**（UA 风格）：
+
+- 一个或多个 `Name/Version` token，空格分隔
+- 每个 token 可选地跟一个 ` (comment)`
+- 仅允许 ASCII 字符；总长 ≤ 256 字节
+- 不合规的 token 在清洗时静默丢弃；如果最终为空，回退到 `OpenClaw`
+
+可直接使用的示例：
+
+- `MyBot/1.2.0`
+- `MyBot/1.2.0 (region=cn;env=prod)`
+- `MyBot/1.2.0 LangChain/0.3.5`
+- `MyBot/1.2.0-rc.1+build.5`
+
+**注意**：`bot_agent` 仅用于观测，**不参与鉴权或路由**。当前本插件实例下所有
+已注册的 agent 共享同一个 `botAgent` 声明；如有需要按 agent 单独标识的场景，
+可在后续版本扩展配置。
 
 ## 后端 API 协议
 
@@ -227,8 +287,8 @@ openclaw config set agents.mode per-channel-per-peer
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `seq` | `number?` | 消息序列号 |
-| `message_id` | `number?` | 消息唯一 ID |
+| `seq` | `number` / `string`（可选） | 消息序列号 |
+| `message_id` | `number` / `string`（可选） | 消息唯一 ID |
 | `from_user_id` | `string?` | 发送者 ID |
 | `to_user_id` | `string?` | 接收者 ID |
 | `create_time_ms` | `number?` | 创建时间戳（ms） |
@@ -237,6 +297,10 @@ openclaw config set agents.mode per-channel-per-peer
 | `message_state` | `number?` | `0` = NEW, `1` = GENERATING, `2` = FINISH |
 | `item_list` | `MessageItem[]?` | 消息内容列表 |
 | `context_token` | `string?` | 会话上下文令牌，回复时需回传 |
+
+`getUpdates` 将数值形式的 `message_id` 和 `seq` 原始 JSON 字面量保留为十进制字符串，
+因此不会丢失超过 JavaScript 安全整数范围的精度。远程审批要求两个字段均为有效的非负
+uint64 十进制值；不会还原已舍入的数值，也不会补造缺失的游标。普通聊天仍允许这些字段缺省。
 
 #### MessageItem
 
@@ -269,3 +333,34 @@ openclaw config set agents.mode per-channel-per-peer
 6. 使用返回的 `encrypt_query_param` 构造 `CDNMedia` 引用，放入 `MessageItem` 发送
 
 > 完整的类型定义见 [`src/api/types.ts`](src/api/types.ts)，API 调用实现见 [`src/api/api.ts`](src/api/api.ts)。
+
+## 卸载
+
+```bash
+openclaw plugins uninstall @tencent-weixin/openclaw-weixin
+```
+
+## 故障排查
+
+### "requires OpenClaw >=2026.3.22" 报错
+
+你的 OpenClaw 版本太旧，不兼容当前插件版本。检查版本：
+
+```bash
+openclaw --version
+```
+
+安装旧版插件线：
+
+```bash
+openclaw plugins install @tencent-weixin/openclaw-weixin@legacy
+```
+
+### Channel 显示 "OK" 但未连接
+
+确保 `~/.openclaw/openclaw.json` 中 `plugins.entries.openclaw-weixin.enabled` 为 `true`：
+
+```bash
+openclaw config set plugins.entries.openclaw-weixin.enabled true
+openclaw gateway restart
+```

@@ -19,7 +19,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Instant Availability
 
 - **Familiar Windows install flow**: packaged installer with desktop shortcut, Start menu entry, and one-click uninstall
-- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, managed skills, and AppContainer provisioning
+- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, managed skills, and native MXC components
 - **Ready after install**: launch the app immediately after setup instead of building a local OpenClaw environment by hand
 
 ### Ready-to-Use Experience
@@ -27,14 +27,14 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 - **Only the LLM is bring-your-own**: the user supplies the model endpoint, API key, and model name; the rest of the stack is installed and configured by MicroClaw
 - **Fast path on first launch**: if no provider is configured, the app opens a setup wizard that asks only for model credentials; if `MODEL_*` values already exist in `.env`, MicroClaw can auto-configure them
 - **Recommended tasks on day one**: the home screen ships with starter task cards and prompt suggestions so users can begin with concrete tasks instead of a blank chat box
-- **Preloaded capability surface**: 52 bundled skills plus 7 managed skills are available as part of the default Windows experience
+- **Preloaded capability surface**: 52 bundled skills plus 6 managed skills are available as part of the default Windows experience; specialist agents add their own skills on demand
 
 ### Built-In Trust
 
 - **Transparent, permission-controlled actions**: file and tool access requests are surfaced to the user instead of being silently granted
-- **Sandboxed with Windows AppContainer**: tool execution runs inside an OS-enforced AppContainer boundary on supported systems
-- **Hooks plus sandbox, defense in depth**: hook-based prechecks improve UX while AppContainer ACL enforcement remains the actual security boundary
-- **Hard blocks for sensitive paths**: credential-heavy locations such as `.ssh` and cloud config folders are denied rather than merely warned about
+- **MXC is the only execution sandbox**: explicitly select Full or Limited containment; there is no legacy AppContainer backend
+- **Honest Off mode**: tools run directly with your Windows account's permissions when MXC is Off; no execution sandbox is active
+- **Mode-bound native enforcement**: Full uses an exclusive folder ceiling; Limited uses additional grants and assesses ambient access before activation
 
 ---
 
@@ -46,7 +46,7 @@ graph TB
 
     Desktop["Desktop App"]
     Gateway["OpenClaw Gateway"]
-    Skills["Skills<br/><i>52 built-in + 7 managed</i>"]
+    Skills["Skills<br/><i>52 built-in + 6 managed</i>"]
     Plugins["Plugins<br/><i>WeChat · Teams</i>"]
     PermMgr["Permission Manager"]
     Installer["Installer"]
@@ -88,7 +88,7 @@ graph TB
 | Gateway → LLM | HTTPS | Streaming API calls to Claude / OpenAI / Gemini |
 | Gateway → Skills | In-process | Agent loop invokes tool calls; results fed back to LLM |
 | WeChat Plugin → WeChat | HTTPS | Long-poll `getUpdates` + `sendMessage` |
-| Permission Manager → AppContainer | Win32 API | AppContainer security capabilities + Job Object resource limits |
+| Gateway → Windows Node → MXC | Authenticated native execution | Exact approvals, mode-bound containment and explicit folder grants |
 
 ---
 
@@ -97,8 +97,8 @@ graph TB
 | Component | Path | Stack | Description |
 |---|---|---|---|
 | **Desktop App** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
-| **AppContainer Sandbox** | `appcontainer/` | .NET 9 + Node.js preload hooks | Windows AppContainer launcher + permission hooks for tool isolation |
-| **Installer** | `deploy.py` + `deployer/` | Python 3 + Tkinter | Wizard-style graphical installer (can be packaged as a single exe) |
+| **Native MXC host** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | Native Windows tool execution with exact approvals and Full/Limited containment |
+| **Installer** | `deploy.py` + `deployer/` | Python 3 + pywebview | Wizard-style graphical installer (can be packaged as a single exe) |
 | **Skill Packs** | `skills/` | Markdown + JSON + Python/Node | Office, search, browser automation managed skills |
 | **WeChat Plugin** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | WeChat channel integration |
 
@@ -114,7 +114,7 @@ MicroClaw targets **Windows 10/11**. For most users, the only thing you need to 
 
 Build the installer from source, then run it:
 
-> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 22+** and **Python 3.10+**. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
+> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.10.5** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
 
 ```powershell
 .\build.ps1                                        # produces dist/MicroClawInstaller/MicroClawInstaller.exe
@@ -124,13 +124,21 @@ Build the installer from source, then run it:
 The installer handles the Windows-side setup in a single run:
 
 - Git for Windows (PortableGit → `~/.openclaw-git`)
-- Node.js 22+ via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing system Node ≥22.16 at that path is reused as-is)
-- OpenClaw Gateway (`npm install -g openclaw`)
+- Node.js 26 via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing supported system Node at that path is reused as-is; supported range: `>=24.16.0 <25 || >=26.1.0`, download fallback: `26.1.0`)
+- OpenClaw Gateway, pinned to **2026.10.5** on the default `stable` channel (`npm install -g openclaw@2026.10.5`)
 - Configures the npm registry mirror and V8 compile cache
-- Installs the MicroClaw desktop client, managed skills, AppContainer sandbox, WeChat plugin
+- Installs the MicroClaw desktop client, managed skills, and Windows sandbox components; the WeChat plugin is not bundled or automatically installed
 - Adds Windows Defender exclusions, creates desktop shortcuts (including one-click Uninstall)
 
-After install, launch **MicroClaw** from the Start menu or the desktop shortcut. The desktop app auto-starts the Gateway.
+The installer only installs and validates files; it does not automatically launch **MicroClaw** or start the Gateway. After install, manually launch **MicroClaw** from the Start menu or the desktop shortcut. The desktop app auto-starts the Gateway.
+
+Installation and uninstallation use the same WebView interface. The compatibility UI, `--legacy-ui` switch, and `LEGACY_INSTALL_UI` environment override have been removed. If the interface cannot start, setup shows the dependency error and available log path, then exits without installing or uninstalling.
+
+App shortcuts and the Installed apps entry use the icon embedded in the installed desktop executable, not a separate `~/.openclaw/microclaw.ico` file. Rerunning the updated installer refreshes older icon references. To repair an existing shortcut manually, open **Properties → Change Icon → Browse** and select the executable shown in the shortcut's **Target** field (normally `%USERPROFILE%\.microclaw\MicroClawDesktop.exe`).
+
+To upgrade an existing installation, rerun the MicroClaw installer. It stops the Gateway, creates and verifies a full OpenClaw data/workspace backup, checks the backup's SHA-256, installs the exact target with npm at the existing prefix, and runs the new runtime's `doctor --fix --non-interactive` once. It does not run `openclaw update` or `update repair`, snapshot the old runtime's `node_modules`, or reject a data backup because its `ctime`/`mtime` changed. The installer validates the installed runtime without launching the desktop or Gateway; startup health checks run when the user manually opens MicroClaw. Failed upgrades retain the backup and a resumable record without automatically restoring older user data. The legacy dependency helper refuses in-place upgrades. Old Node 22/23/25 configurations are advanced to a supported line. `stable` is an exact version pin, not npm's moving `latest` tag.
+
+Desktop updates extract the archive into a staging directory and replace bundled directories as complete trees, rather than overlaying files. This removes obsolete native runtime files that would otherwise fail integrity checks, while preserving the installer's upgrade records, backups, and install state. Extraction or publication failures leave or restore the previous desktop payload; recovery files are retained if restoration fails.
 
 ### 2. Add your model credentials
 
@@ -141,6 +149,94 @@ On first launch, the desktop app opens a SetupWizard only when model configurati
 - Model name
 
 You can add or edit models any time under **Settings → Models**. Credentials are stored locally by the desktop app. If `.env` already contains `MODEL_BASE_URL`, `MODEL_API_KEY`, and `MODEL_NAME`, MicroClaw can prefill or auto-apply that configuration.
+
+#### Internal provider testing
+
+GitHub Copilot setup is hidden by default: it is absent from onboarding and provider-management cards, and the desktop rejects its setup and sign-in requests. This flag does not disable models already configured in OpenClaw: existing Copilot defaults and session overrides remain usable, count as configured models for onboarding, and appear in model pickers. Authentication and model-availability checks still apply; catalog reads do not start sign-in or modify credentials. Internal testing can expose the setup entry points by setting `MICROCLAW_INTERNAL_GITHUB_COPILOT=1` in the process environment **before starting MicroClaw** (including packaged builds). Fully exit an existing app instance first; the flag is not a persisted user setting and takes effect after restart. Browser-only development keeps Copilot setup hidden and does not provide real authentication or catalogs.
+
+```powershell
+$env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
+& "$HOME\.microclaw\MicroClawDesktop.exe"
+```
+
+Remove the environment variable and fully restart the app to hide the setup entry points again. Existing OpenClaw model configuration and credentials are preserved and remain usable without the flag. Other cloud and local model providers remain available.
+
+#### Local models (experimental)
+
+The managed catalog contains **Qwen3.5 4B Q4_K_M**, **Qwen3.5 9B Q4_K_M**, **Qwen3.5 35B-A3B Q4_K_M**, and **Qwen3.8 27B UD-Q4_K_M**. Chat and embedding weights download **only from ModelScope**, using pinned repository revisions, byte sizes and SHA-256 hashes. Hugging Face resolution and download fallback are disabled; weight redirects are restricted to ModelScope domains. Existing verified 4B/9B and embedding caches retain their historical filenames and can be reused without downloading again. Runtime components still use their upstream distribution sources. Larger models must pass the provider's memory, accelerator and disk admission checks; 4B remains the lightweight default. The 35B-A3B preset reserves a conservative 28 GiB model memory budget and requires at least 48 GiB system memory; the 27B preset retains upstream's GPU requirement and 22 GiB model memory budget. These are admission budgets, not guaranteed inference measurements.
+
+**Settings → Models** lists cloud providers and **Local model** (llama.cpp) in compact cards. Existing saved custom API connections remain manageable, but the overview has no generic add-compatible-API button or unconfigured placeholder card. The card's arrow expands the connection editor inline. Saving a connection there does not change the default model or send an AI test prompt; initial onboarding retains its existing flow. The default model is selected separately.
+
+Provider cards expand/collapse with down/up arrow buttons. Embedded editors show the fields without repeating the provider title, setup introduction, or close button. Qwen/MiniMax use only the model dropdown, without a separate saved-model list or per-model Edit/Remove buttons above the form; saved configurations are preserved. **Get API Key** appears beside the API-key input inside the Qwen/MiniMax editor, linking to the [Bailian Beijing API-key console](https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key) and [MiniMax API-key console](https://platform.minimax.cn/user-center/basic-information/interface-key). The model selector follows the API key, with a refresh icon on its right.
+
+The Qwen/MiniMax model dropdown stays disabled until a nonempty credential is supplied and an authenticated, read-only `GET /models` succeeds. The list contains only IDs returned by that endpoint, not the preset suggestions; individual model access still depends on the provider's permissions and quota. Key/endpoint changes invalidate the previous list immediately, stale responses are ignored, and a refresh action retries discovery. Authentication, masked keys, empty catalogs and unsupported endpoints are shown explicitly with no static-list fallback. Discovery does not save configuration, restart the Gateway, or send inference requests. New MiniMax connections use the documented `https://api.minimax.cn/v1` endpoint; existing saved endpoints are preserved.
+
+The provider form, default-model picker and conversation-model picker share the same full live catalog for each configured Qwen/MiniMax connection, rather than limiting the latter two to previously saved model IDs. Refreshing a matching connection updates all three; unsaved credentials have a separate in-memory catalog. Catalog failures remain visible, with saved entries retained in the default/conversation pickers rather than presented as a complete live list.
+
+The full directory also contains models that are not compatible with ordinary chat completions. Known realtime, embedding, reranking, speech, and media-generation families remain visible in all three controls but are disabled with a reason; the main process also rejects their selection and use by an existing conversation. In particular, [Qwen3.8-Omni-Flash-Realtime requires a realtime transport](https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash-realtime), not this chat endpoint. These compatibility checks do not prove account entitlement: HTTP 403 and upstream-normalized access rejections are reported as provider access failures, not automatically as an invalid API key. Check model permissions, region and billing in the provider console.
+
+Selecting a live model that is not yet registered first verifies it against the saved provider credentials, registers only that model using a revision-guarded Gateway patch, and waits for the applied revision before switching. This does not restart the Gateway, send inference, change credentials or relax model policies. The default selector changes only the default; the conversation selector changes only that conversation. Saving only a different model within an unchanged managed connection also uses this hot-registration path, without changing the default or session. Actual API-key/endpoint changes still use the connection-update path.
+
+The last model saved in each managed provider form is remembered separately in desktop preferences, so reopening the editor does not jump back to the first registered model. This preference does not select a default or change any conversation. The two grouped pickers expose named dialogs and expanded state through the real Element Plus popover, without adding a duplicate visible heading.
+
+The model button beside the chat composer searches full live cloud catalogs, saved custom connections and the four managed local presets listed above. Selection changes **only the current conversation**, using OpenClaw session overrides. New conversations carry their selected agent's explicit session key, including the main agent, so a model can be selected before the first message in multi-agent configurations. **Use agent default** clears that override without changing agent/global defaults, fallbacks, or other conversations. First use shows the exact model download size, missing embeddings, runtime disk reserve and CPU/GPU mode. Downloads require confirmation; selection changes only after successful preparation. Cancel/failure keeps the previous selection. Already-prepared models switch directly with an inline **Switching...** indicator, without briefly opening a preparation dialog or running setup/inference tests again. Preparation, failures and interrupted-operation recovery still use a persistent dialog.
+
+Both the chat model picker and **Settings → Models → Default model** use the same collapsible provider groups. Only the currently selected model's provider opens by default; headings can be toggled with a click, Enter or Space. Search reveals matching groups, and clearing it restores the previous folds. Folding only changes the list display, never model configuration or downloads. The settings picker still changes the global default, while the chat picker changes only its conversation.
+
+The chat picker shows **Loading models...** on its button for the first catalogue read, then opens the complete list. Later openings retain the previous list and file statuses while refreshing, replacing them together instead of repeatedly shrinking and repositioning the panel. Closing or leaving the button while the first read is pending prevents a late popup.
+
+Changing an existing cloud **default model** uses a revision-guarded `config.patch` and waits for the Gateway's applied revision, rather than restarting the entire Gateway. Only the primary default changes; fallbacks, model policy, credentials, agent overrides and session overrides are retained. Copilot selection/catalogue reads use prepared model metadata, not full provider discovery. A rejected, uncertain or still-applying change reports an error without an automatic retry or rollback; an explicit upstream restart requirement is not reported as a successful hot switch.
+
+If a conversation-model change becomes uncertain, the chat picker and model settings expose recovery rather than leaving all conversations locked. A fresh read can reconcile a completed RPC or a request whose original managed Gateway process has demonstrably stopped. Otherwise **Restart Gateway and recover** requires explicit confirmation, verifies shutdown of the owned process, and accepts the saved state without resending the patch or deleting history. A WebSocket reconnect or a matching model value alone is not proof that a delayed write has finished. Ordinary model switches still do not restart the Gateway.
+
+For an opt-in **real provider/Gateway** smoke test (not a desktop UI test), set `MICROCLAW_TEST_OPENCLAW_ENTRY` to an installed `openclaw.mjs` and `MICROCLAW_TEST_LIVE_QWEN_CONFIG` to a configuration containing an authorized Qwen key, then run `npx vitest run src\provider-model-live.integration.test.ts` from `desktop`. It uses isolated temporary state, changes default/session models, and requests short real replies from Qwen3.8 Max and Flash with a 512-token output budget. It can consume quota or incur provider charges, is skipped without both opt-ins, does not write the supplied configuration, and never operates desktop input or windows.
+
+For non-interrupting automation, launch the installer or desktop with the process-local environment variable `MICROCLAW_BACKGROUND=1`. The installer does not activate its window, and desktop startup uses `showInactive` while keeping renderer timers responsive for background checks. Normal launches are unchanged. This mode does not disable sandboxing or authorize keyboard/mouse control; automation should use app-local actions and verify that it never activates a window. Installer captions distinguish **MicroClaw Setup** from the desktop.
+
+The installer does not install or enable the official llama.cpp provider. In **Settings → Models → Local model**, choose **Install and enable** to explicitly install the official component, or **Enable component** if it is already installed. Additional declared capabilities, if any, require a separate confirmation. Opening settings alone never installs the provider or downloads models; model weights and the inference runtime require a separate first-use confirmation. Upgrades preserve existing local providers and explicit user-disabled plugin policies. The local card shows **Connected** when the provider is installed and enabled with no known load failure, independently of whether any model is downloaded. An unloaded on-demand provider is not itself a load failure. This is provider availability, not an inference health check.
+
+Local component installation, enabling, download completion and model selection never restart the Gateway. Installation first checks the live runtime application receipt and plugin state; an incomplete application, including an installation durably saved before loading failed, uses targeted `plugins.reload` without downloading the component again. Explicit loading also verifies setup availability for an on-demand provider. Failed hot loads retain downloaded files and offer **Retry loading component** rather than a restart fallback. A Gateway without plugin hot-reload support refuses component installation/enabling instead of restarting; an unconfirmed runtime application is never reported as successful. Model preparation/selection also refuses to write configuration when `gateway.reload.mode` is `off`, preventing an implicit configuration restart.
+
+When the pinned OpenClaw version is unchanged, a desktop update refreshes managed files without rerunning database migrations outside its lightweight rollback snapshot. Runtime upgrades still run the full migration flow; both paths require the installed desktop and Gateway to become ready before committing.
+
+- Opening model settings reads saved configuration, small router presets and metadata of the four pinned cache files. Plugin status reads never call ClawHub search, full hardware discovery, inference or downloads. Online component lookup occurs only during an explicit component review/install action.
+- Opening the managed local-model chooser also takes one read-only CPU/memory snapshot and a bounded NVIDIA utility query, without a shell, elevation, network calls or periodic polling. One suggested model is highlighted using the catalog's existing memory budgets, system/GPU headroom and currently available memory. CPU-only estimates prefer a lightweight starting point; separate GPUs' VRAM is never added together. Unknown hardware is not labeled as a personalized recommendation, and tight resources do not silently disable manual choices. This estimate does not certify GPU support, disk capacity or inference speed; the provider still checks the exact model during preparation, and downloads still require confirmation.
+- Model rows show downloaded/not-downloaded or unknown file state. Missing files go through first-use preparation rather than becoming the active model. Cached weights can be reused after cancelled preparation; merely browsing never reads GGUF contents or scans the cache. Existing external connections remain separate.
+- **Download and select** immediately replaces confirmation with progress and shows the Gateway's current download/runtime message. Repeated clicks cannot resubmit consent. Preparation errors stay visible; retrying reuses complete, hash-verified cached weights rather than downloading them again.
+- **Model selection does not run “Test AI connection” or a tool-use probe.** **Start using** submits a revision-guarded `config.patch` and confirms the saved configuration has been applied using read-only revision checks. It does not generate a test reply or read a temporary file. Connection and model/tool compatibility errors are reported during actual chats. Configuration validation, conflicting-write protection and sandbox permissions remain unchanged; selection success does not certify model capabilities.
+- **Managed models**: the chooser highlights one estimated fit and lists other models with download sizes, minimum system memory and resource cautions. 4B remains the lightweight starting point when hardware is unknown. The exact selected model is prepared, never an automatic replacement. OpenClaw still owns hardware admission, download hashes, runtime installation and cancellation. A version/source-hash-pinned in-memory adapter adds exact selection and ModelScope-only artifacts to the verified 2026.10.5 and legacy 2026.9.3 provider builds, preserves existing model routes, and fails closed if either provider module or exact-model receipts change. The underlying OpenClaw installation is not modified.
+- **Existing server**: expand **Advanced options and information** to connect to a llama-server you already run on `localhost`, `127.0.0.1`, or `::1`. Supply a key only if that service requires it. MicroClaw does not own or stop this server.
+- Cloud and local connections are retained when changing models. Selection does not add automatic cloud fallbacks; any previously authored OpenClaw fallback or agent/session override still needs to be reviewed separately. Local inference does not make network-dependent skills offline.
+- Cloud setup remains accessible while a local wizard is unfinished. Only saving or switching a model asks to cancel conflicting local setup first; declining leaves it untouched. For local models, the only unconfigured catalog entries offered are the four pinned presets; existing saved connections are retained. Local connection management stays under advanced local settings.
+- The default installer pins OpenClaw to **2026.10.5**. The integration checks the Gateway's advertised setup methods and supports 2026.10.5 as well as the legacy 2026.10.2, 2026.10.3 and 2026.9.3+ (2026.9.x) hosts. Every provider installation uses an explicit official ClawHub package version: `@openclaw/llama-cpp-provider@2026.10.5` for a 2026.10.5 host, or the verified 2026.9.3 provider for legacy hosts. The built-in official catalog and search fallback follow the same pin; neither may request a floating latest release or silently fall back to one. Downloads, runtime prerequisites and GPU support remain subject to the official provider.
+- Actual configuration writes remain protected in Windows Node + MXC mode, while a response is active, or until conflicting setup has safely ended. Preparing a local model does not itself block existing chats; applying a model change still does. After a disconnection, resume the retained operation rather than starting it again. Cancellation can be refused while OpenClaw finishes a protected step.
+
+**Windows compatibility:** MicroClaw includes the [upstream Windows file-open timestamp fix](https://github.com/openclaw/fs-safe/commit/6ae2e2e5086f2c48b813f78cb65fd787c9879a3f) for the exact `fs-safe@0.8.5` dependency bundled with the supported OpenClaw runtime. MicroClaw additionally handles deferred `ctime` changes after copying: only regular, single-link files with unchanged identity, size and modification time can be reconsidered, and their contents must match the SHA-256 captured during copying. Verification uses bounded buffers, rechecks the open handle and path, and checks the exact fingerprint again after mutation authorization before deletion. Genuine changes remain errors; hardlink aliases do not use this exception. A version- and SHA-256-pinned preload validates both move and cleanup modules and applies the changes in memory; installed OpenClaw files are not modified. Other dependency versions are left unchanged, and modified 0.8.5 source is rejected rather than patched speculatively. These checks run during file moves, not when opening model settings.
+
+The pinned llama.cpp adapter also retries transient Windows runtime-directory publication failures (`EPERM`, `EACCES`, `EBUSY`) up to five times over 3.1 seconds. Each attempt checks the original directory identities and requires the destination to remain absent. Permanent errors remain visible; archive hashes, pre/post-install version checks, cancellation and sandbox enforcement are unchanged.
+
+Exact-model selection also applies when OpenClaw 10.2 loads an immutable provider copy under the state's `tmp/plugin-captures` directory. The adapter requires the original and captured provider identities and source bytes to match the pinned artifact, rejects redirected paths, and never modifies installed plugin files. Model identity and download-consent checks remain mandatory.
+
+Official plugin installation and the real Electron setup flow have been verified through model download consent on Windows, and complete preparation has been checked with private copies of cached 4B/embedding weights and a freshly installed runtime. This does not run inference or certify its speed. GGUF weights are never downloaded automatically. The existing **Other models** OpenAI-compatible endpoint configuration also remains available for a separately managed local server.
+
+Local CPU replies can take longer, especially with the initial agent context. While the Gateway remains connected, the chat UI allows a bounded longer wait and checks history for a completed reply. Inactivity alone is shown as a waiting notice, not a model connection failure; a successful reply clears that inferred notice without hiding actual provider errors.
+
+For developers, run the opt-in contract check against an installed OpenClaw entry:
+
+```powershell
+$env:MICROCLAW_TEST_OPENCLAW_ENTRY = 'C:\path\to\openclaw\openclaw.mjs'
+npm --prefix desktop test -- src/local-model-gateway.integration.test.ts
+```
+
+Setting `MICROCLAW_TEST_INSTALL_LOCAL_PROVIDER=1` additionally installs the official plugin and checks separate exact-4B and exact-9B download consent steps in a disposable state directory. It checks cancellation without accepting the model download or modifying the user's OpenClaw configuration. Set `MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR` to the OpenClaw package directory when running `src/openclaw-fs-safe-compat.test.ts` to verify both real pinned modules and confirm their installed bytes remain unchanged. Also set `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` to an existing official plugin directory to exercise 100 offline copy/cleanup cycles and preservation of a concurrently changed source. `src/openclaw-fs-safe-cleanup.test.ts` covers timestamp, content, path and authorization races without an installed runtime.
+
+Alternatively, set `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` to an existing official llama.cpp plugin directory to exercise direct selection against a disposable Gateway and a local endpoint that rejects all inference requests. The check requires a successful configuration switch with zero inference requests and does not touch the user's selected model.
+
+Run `npm --prefix desktop test -- src/local-model-preparation.integration.test.ts` with `MICROCLAW_TEST_OPENCLAW_ENTRY` and `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` to verify exact-model download consent through the real provider loader, then cancel without downloading or changing defaults. Without `MICROCLAW_TEST_LOCAL_CACHE`, also set `MICROCLAW_TEST_LOCAL_PLUGIN_ARCHIVE` to the absolute path of the official `@openclaw/llama-cpp-provider@2026.10.5` npm `.tgz` (obtain it with `npm pack @openclaw/llama-cpp-provider@2026.10.5` in an isolated directory). A missing or altered archive fails validation rather than skipping it. The check verifies the pinned SHA-512, starts the disposable Gateway before the provider exists, then installs the archive through the real archive installation pipeline, which prepares its runtime dependencies. It explicitly disables the installed fixture to preserve the original service enable/reload fallback coverage. The service enables it, simulates a missing application receipt, and verifies a real targeted hot reload without reconnecting or replacing the Gateway process. To exercise complete preparation, additionally set `MICROCLAW_TEST_LOCAL_CACHE` to a cache containing the pinned 4B and embedding files; this path continues to use the copied installed provider directory and does not require the archive. It copies those files into a disposable state directory, requires zero model/embedding download bytes in the consent receipt, and installs/verifies the official runtime. The runtime archive may be downloaded; model weights are not. The check does not select the model, run inference or change the source cache/user configuration.
+
+llama.cpp and CUDA runtime dependencies are not bundled with the installer or required before `npm run dev`. The official provider downloads and verifies the required runtime on demand when a local model is prepared, reusing an existing usable installation. See [the on-demand runtime contract](docs/local-model-runtime.md) for ownership, bounded official-CDN recovery and isolated validation.
+
+`src/local-model-sources.test.ts` verifies the shared four-model manifest and refuses unpinned remote sources. Set `MICROCLAW_TEST_LOCAL_PLUGIN_DIR` to the exact official 2026.10.5 provider directory to additionally exercise both pinned source adapters, cache reuse, streamed hash/size checks, cancellation and failed downloads with tiny local fixtures. Set `MICROCLAW_TEST_OPENCLAW_DIR` to the supported OpenClaw package directory to test the real redirect guard, including refusing Hugging Face and non-ModelScope redirects before sending a request. These tests do not download model weights or modify the installed provider.
 
 ### 3. Start working immediately
 
@@ -172,6 +268,10 @@ npm install
 npm run dev
 ```
 
+### Usage snapshots
+
+The sidebar retains the last complete 30-day token total while statistics refresh silently. Model changes, Gateway reconnects, refresh failures and date changes do not clear the displayed summary or replace it with a partial subtotal. Complete snapshots are saved in the desktop user-data directory at `usage/snapshots.json` without a time-based expiry; the sidebar also restores its last display immediately from local storage. Incomplete Gateway results receive a bounded background retry, and newer complete results replace the cache, including legitimate decreases as old usage leaves the reporting window. Explicit dashboard date ranges remain separately cached.
+
 ### Linting
 
 ESLint is configured for both the main process and renderer. **Run lint before committing** to avoid CI failures:
@@ -196,13 +296,19 @@ npm run lint:sarif    # outputs eslint-results.sarif
 
 ## Sandbox Isolation
 
-`appcontainer/` provides a Windows AppContainer-based sandbox for isolating tool execution:
+**Settings → Security** offers MXC Full, MXC Limited (DACL), and Off. MXC is the only tool
+execution sandbox. Full requires an attested exclusive filesystem boundary; Limited requires
+explicit acknowledgement of additive grants and possible ambient Windows ACL access. Failed
+activation stays locked and never silently falls back to unsandboxed execution.
 
-- **.NET launcher** (`AppContainerLauncher.exe`) runs child processes inside an AppContainer with restricted ACLs
-- **Node.js preload hooks** (`sandbox-preload.js`, `sandbox-fs-hooks.js`, …) intercept `fs.*` / `child_process.*` calls and prompt the user for permission
-- **Sensitive-path shield** hard-denies access to `~/.ssh`, `~/.azure`, and other credential directories — no override
+**Off intentionally runs agent tools without an execution sandbox**, with the permissions of
+your Windows account. Fresh installs and retired AppContainer settings migrate to Off; explicit
+native MXC selections and folder policies are preserved. Switching Off restores the saved Gateway
+policy, revokes native execution authority, and keeps scheduled tasks fenced until explicit resume.
+The old launcher, preload hooks, provisioning and renderer controls are removed. MXC may itself
+use Windows AppContainer primitives; those are not a second selectable backend.
 
-See [appcontainer/README.md](appcontainer/README.md) for details.
+See [native Windows Node + MXC](docs/experimental-windows-node-mxc.md) for the containment model.
 
 ---
 
@@ -216,13 +322,13 @@ Installed alongside OpenClaw and controlled via the `skills.allowBundled` allowl
 |---|---|
 | Productivity | obsidian, notion, trello, slack, discord, things-mac |
 | AI / Coding | coding-agent, gh-issues, oracle, skill-creator |
-| Communication | imsg, bluebubbles, wacli, voice-call |
+| Communication | bluebubbles, wacli, voice-call |
 | Smart Home | openhue, blucli, sonoscli, eightctl |
 | Media | spotify-player, songsee, video-frames |
-| Utilities | weather, healthcheck, session-logs, model-usage, tmux |
+| Utilities | weather, healthcheck, session-logs |
 | Voice | openai-whisper, sherpa-onnx-tts, sag |
 
-### Managed Skills (7)
+### Managed Skills (6)
 
 Installed to `~/.openclaw/skills/`, these are custom advanced skills included in this project:
 
@@ -233,8 +339,16 @@ Installed to `~/.openclaw/skills/`, these are custom advanced skills included in
 | word-docx | Create and edit Word documents |
 | officecli | Office document CLI tool (create/edit .docx/.xlsx/.pptx) |
 | desktop-organizer | Scan and organize files on the Windows desktop |
-| desktop-beautify | Tidy desktop files and create sticky notes |
 | security-practice | AI agent safety practices (red/yellow line rules, install audit protocol) |
+
+### Agent-Owned Skills
+
+Agent-owned skills are dormant resources in the desktop package and are installed only
+when their owning specialist agent is added:
+
+| Agent | Skill | Description |
+|---|---|---|
+| Creative Muse | rednote-publisher | Create staged topic ideas, sourced material kits, and publish-ready Rednote packages |
 
 ---
 
@@ -256,7 +370,7 @@ Installed to `~/.openclaw/skills/`, these are custom advanced skills included in
 | **Skill Integrity Checks** | SHA-256 hashes + Ed25519 signatures — detects tampering of all skill files at startup |
 | **Device Authentication** | Each device generates an Ed25519 key pair; Gateway connections are signature-authenticated |
 | **Skill Allowlist** | `allowBundled` / `allowManaged` control the available skill scope |
-| **Sandbox Isolation** | OS-native AppContainer + Job Object isolation for file system, network, and resource limits |
+| **Sandbox Isolation** | Native MXC Full or Limited containment; explicit Off runs unsandboxed |
 | **Local Gateway** | Binds to loopback only — does not accept remote connections |
 
 ---
@@ -273,13 +387,90 @@ This script sequentially:
 
 1. Builds the desktop app (`desktop/` → Electron Builder)
 2. Creates portable zip package (`dist/microclaw-portable.zip`)
-3. Packages the installer exe (PyInstaller → `dist/MicroClawInstaller.exe`)
+3. Packages the installer directory (PyInstaller → `dist/MicroClawInstaller/`)
+4. Builds and verifies the complete single-file installer (`dist/MicroClawSetup.exe`)
+
+The default build uses faster zlib compression for the setup EXE and skips the
+additional installer ZIP. The EXE still contains the complete installer payload;
+native resource preparation, extraction verification, and optional signing are unchanged.
+Use `-SetupCompression lzma` for the previous compression method, or
+`-IncludeInstallerZip` to also create `dist/MicroClawInstaller.zip` (CI requests it explicitly).
+An existing installer ZIP is not refreshed unless that switch is supplied.
+
+The portable ZIP defaults to `Fastest` compression. Use `-PortableCompression Optimal`
+for the previous ZIP compression level, or `-PortableCompression NoCompression` to
+leave compression to the outer setup EXE. Compare total build time and final EXE size
+when changing this setting; the installer still consumes the same ZIP layout.
+
+Repeated builds automatically reuse unchanged native resources, the packaged desktop,
+portable ZIP, installer directory, and setup EXE. Cache hits require matching SHA-256
+content fingerprints of the stage's inputs and existing outputs, not just timestamps.
+Content hashing uses smaller read buffers for dependency-heavy input trees; installed
+dependency contents remain part of the cache inputs.
+Source, dependency, toolchain, resource, or compression changes rebuild the affected
+stages; missing or changed outputs also invalidate their cache. Final EXE extraction
+verification and the signing gate still run on every build. Signing-configured builds
+always repack the desktop and setup EXE. Installer caching requires the local `.venv`
+PyInstaller environment; other Python build strategies continue to work without reuse.
+The first build populates `build/package-cache/`; use `.\build.ps1 -Rebuild` to force
+all stages to run again. The optional installer ZIP is recreated when requested.
+
+Each build logs stage start/completion timings and ends with a summary of seconds,
+percentage of total time, and total build duration. Cache checks and cache writes
+are timed separately from resource preparation, desktop packaging, ZIP creation,
+manifest/payload hashing, PyInstaller, NSIS compression, setup extraction/verification,
+and signing. Failed builds also print the summary, marking the active stage as failed.
+Desktop toolchain version discovery is timed separately from its cache check. Cache
+checks also report input fingerprint time and cache lookup/output verification time.
+
+During installation, the desktop's bundled OpenClaw runtime is extracted in a dedicated
+preparation mode, with a separate extraction timeout.
+Plugin installation and peer-link repair use the same bundled host as the desktop.
+Setup no longer starts a temporary Gateway to warm the compile cache.
+Setup validates the installed version and entry file before
+committing the installation transaction; validation or commit failures still roll back.
+Setup does not open the desktop app, start the Gateway, or wait for application
+readiness or HTTP health checks. Startup and service health checks run when the user
+manually opens MicroClaw.
+
+### MSIX package
+
+The CI and release workflows also build `desktop/release/MicroClawDesktop-<version>-x64.msix`
+with Electron Builder. The package includes the Electron app, the pinned OpenClaw
+runtime, Node.js, native Windows Node + MXC, and WeChat resources. On first launch, the
+read-only bundled runtime archive is expanded under Electron's per-user
+`userData` directory; configuration and other writable state remain in per-user
+application data.
+
+Build and validate it locally on Windows:
+
+```powershell
+npm ci --prefix desktop
+npm run dist:msix --prefix desktop
+$msix = Get-ChildItem .\desktop\release\MicroClawDesktop-*-x64.msix | Select-Object -First 1
+.\scripts\windows\validate-msix.ps1 -Path $msix.FullName
+```
+
+Without configuration, the build uses a non-production `MicroClaw.Test` identity
+for CI validation. Before Partner Center submission, configure
+`MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER`, `MSIX_PUBLISHER_DISPLAY_NAME`, and
+`MSIX_APPLICATION_ID` from the reserved app identity. The publisher must exactly
+match Partner Center (and the subject of any sideloading certificate). Store
+submissions may remain unsigned because Microsoft signs accepted packages;
+sideloaded packages must be signed with a trusted certificate after packaging.
+The Partner Center identity values should be stored as GitHub Actions secrets,
+not committed. Tagged workflows derive the MSIX version from the `vX.Y.Z` tag
+and only attach the MSIX to the GitHub Release when all four production identity
+secrets are configured; validation-identity packages remain Actions artifacts.
+Store/MSIX installs use package-managed updates rather than the EXE
+download-update path.
 
 ### Prerequisites
 
-- Node.js 22+
+- Node.js 26.1+ (recommended), or 24.16+ on the 24.x line
 - Python 3.10+ — install build deps with `pip install -r requirements.txt` (includes PyInstaller)
-- .NET 9 SDK (for the AppContainer launcher)
+- .NET SDK (for the native Windows Node + MXC host; follow the pinned project targets)
+- .NET 10 SDK (for the bundled Windows Node host)
 - npm dependencies installed (`cd desktop && npm install`)
 
 ---
@@ -289,23 +480,22 @@ This script sequentially:
 Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `.ps1` files are retained as compatibility wrappers so existing commands keep working.
 
 ```
-├── deploy.py                    # Stable installer entry point (Tkinter GUI)
+├── deploy.py                    # WebView installer and uninstaller entry point
 ├── deployer/
 │   ├── config.py                # Configuration management (.env + YAML)
 │   ├── logger.py                # Thread-safe logger + in-memory ring buffer
-│   ├── skill_catalog.py         # 52 built-in + 7 managed skill catalog
+│   ├── skill_catalog.py         # 52 built-in + 6 managed skill catalog
 │   ├── skill_manager_ui.py      # Skill selector dialog
 │   └── windows_setup.py         # Windows install logic (Node/npm/OpenClaw)
 ├── desktop/                     # Electron desktop app
 │   ├── src/                     # Main process (TypeScript)
 │   └── renderer/                # Vue 3 renderer process
-├── appcontainer/                # Windows AppContainer sandbox (.NET + preload hooks)
+├── windows-node-host/           # Native MXC execution and exact approval enforcement
 ├── skills/                      # Managed skill definitions
 ├── plugins/openclaw-weixin/     # WeChat channel plugin
 ├── scripts/
 │   ├── windows/                 # Canonical Windows helper scripts
-│   ├── generate-skill-snapshot.js
-│   └── sync-studio-assets.js
+│   └── generate-skill-snapshot.js
 ├── docs/
 │   ├── architecture/            # Repo structure and architectural decisions
 │   ├── plans/                   # Planning docs
@@ -326,6 +516,12 @@ See [docs/architecture/repository-layout.md](docs/architecture/repository-layout
 ## Configuration
 
 Most users can do everything from **Settings** inside the desktop app — models, Brave API key, skill allowlist, etc. Runtime settings live in `~/.openclaw/openclaw.json`; you can hand-edit it if needed.
+
+Fresh installs include the official Parallel web-search plugin pinned to **2026.10.5**, matching
+the default OpenClaw runtime, and select its keyless
+`parallel-free` provider, so web search works without additional setup. Usable existing web-search
+provider choices are preserved during upgrades; Brave or Tavily without an API key falls back to
+Parallel. The provider can be changed later in **Settings**.
 
 For developers / unattended installs, the installer also accepts a `.env` file (`MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_API_FORMAT`, `MODEL_REASONING_EFFORT`, `BRAVE_API_KEY`) — see [.env.example](.env.example). `python deploy.py` reads `.env` from the repo root; the packaged `MicroClawInstaller.exe` reads `.env` from next to the exe.
 

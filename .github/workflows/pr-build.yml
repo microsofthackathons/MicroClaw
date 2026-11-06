@@ -2,7 +2,8 @@
 #
 # Runs the end-to-end packaging script (build.ps1) on every PR.
 # Verifies that the entire pipeline still produces:
-#   - AppContainerLauncher.exe (.NET 9)
+#   - Native Windows Node + MXC runtime and WeChat resources
+#   - bundled Windows Node host (.NET 10) + official MXC runtime
 #   - desktop\release\win-unpacked\ (electron-builder)
 #   - dist\microclaw-portable.zip
 #   - dist\MicroClawInstaller\ + dist\MicroClawInstaller.zip (PyInstaller)
@@ -28,8 +29,8 @@ permissions:
 
 jobs:
   # ── ESLint + Prettier + Vitest on JS/TS sources ─────────────────
-  # Runs lint, prettier check, and Vitest across all four JS/TS packages
-  # (desktop, desktop/renderer, desktop/studio-backend, plugins/openclaw-weixin).
+  # Runs lint, prettier check, and Vitest across the app packages, and lints
+  # the source mirrored from the vendored Weixin release.
   lint-js:
     name: Lint, Format & Test (JS/TS)
     runs-on: [self-hosted, Windows, X64]
@@ -40,23 +41,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Toolchain (Node 22) is pre-installed on the self-hosted runner.
+      # Toolchain (Node 26.1+) is pre-installed on the self-hosted runner.
       # actions/setup-node is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues), so just verify the version.
       - name: Verify pre-installed Node.js
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.10.5 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
 
       - name: Install dependencies (all packages)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($d in '.', 'desktop', 'desktop/renderer', 'desktop/studio-backend', 'plugins/openclaw-weixin') {
+          foreach ($d in '.', 'desktop', 'desktop/renderer') {
             Write-Host "── npm ci in $d ──"
             Push-Location $d
             try {
@@ -91,7 +95,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python 3.12+
         uses: ./.github/actions/setup-python-windows
@@ -111,6 +115,9 @@ jobs:
       - name: Run ruff format --check
         run: python -m ruff format --check .
 
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tests -v
+
   # ── Run build.ps1 end-to-end on Windows ─────────────────────────
   # Serialised after `lint-python` so lint failures short-circuit the build
   # and we never hold two self-hosted runners at once.
@@ -125,21 +132,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
 
-      # Toolchain (Node 22, .NET 9 SDK, Python 3.12+) is pre-installed on
+      # Toolchain (Node 26.1+, .NET 10 SDK, Python 3.12+) is pre-installed on
       # the self-hosted runner. We only verify versions here; installing
       # via actions/setup-* is unreliable under the NetworkService account
       # (HKLM/tool-cache permission issues).
       - name: Verify pre-installed toolchain
         run: |
           $ErrorActionPreference = 'Stop'
-          $node = (& node --version).TrimStart('v')
-          if ([version]$node -lt [version]'22.0') { throw "Node $node < 22" }
+          . .\scripts\windows\node-runtime.ps1
+          $node = & node --version
+          if ($LASTEXITCODE -ne 0 -or -not (Test-SupportedNodeVersion $node)) {
+            throw "Node $node is unsupported by OpenClaw 2026.10.5 (need >=24.16.0 <25 || >=26.1.0; install Node 26)"
+          }
           Write-Host "node $node"
-          $dotnet = & dotnet --version
-          if ([version]($dotnet -split '-')[0] -lt [version]'9.0') { throw "dotnet $dotnet < 9.0" }
-          Write-Host "dotnet $dotnet"
+          $sdks = & dotnet --list-sdks
+          if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
+          Write-Host $sdks
 
       # Resolve a Python 3.12+ interpreter for the NetworkService account.
       - name: Setup Python 3.12+
@@ -153,7 +165,10 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Run build.ps1
-        run: .\build.ps1
+        run: .\build.ps1 -IncludeInstallerZip
+
+      - name: Build unsigned MSIX
+        run: npm run dist:msix --prefix desktop
 
       - name: Verify build artifacts
         run: |
@@ -163,8 +178,16 @@ jobs:
             'dist\MicroClawInstaller'
           )
           $missing = $expected | Where-Object { -not (Test-Path $_) }
+          if (-not (Get-ChildItem 'desktop\release\MicroClawDesktop-*-x64.msix')) {
+            $missing += 'desktop\release\MicroClawDesktop-<version>-x64.msix'
+          }
           if ($missing) {
             Write-Host "::error::Missing expected artifacts: $($missing -join ', ')"
             exit 1
           }
           Get-ChildItem dist | Format-Table Name, Length, LastWriteTime
+
+      - name: Validate MSIX contents
+        run: |
+          Get-ChildItem desktop\release\MicroClawDesktop-*-x64.msix |
+            ForEach-Object { .\scripts\windows\validate-msix.ps1 -Path $_.FullName }

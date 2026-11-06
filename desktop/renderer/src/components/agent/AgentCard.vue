@@ -13,12 +13,24 @@
       <div v-if="agent.tags?.length" class="agent-card-tags">
         <span v-for="tag in agent.tags" :key="tag" class="agent-card-tag">{{ tag }}</span>
       </div>
-      <span v-if="agent.isAdded" class="agent-card-added-text" @click="$emit('toggle', agent.id)">{{
-        t("agentMarket.added")
-      }}</span>
-      <button v-else class="agent-card-action" @click="$emit('toggle', agent.id)">
-        <IconPlus :size="14" />
-        {{ t("agentMarket.add") }}
+      <button
+        v-if="agent.isAdded"
+        class="agent-card-action agent-card-action-danger"
+        @click="$emit('remove', agent.id)"
+      >
+        <IconClose :size="14" />
+        {{ t("agentMarket.remove") }}
+      </button>
+      <button
+        v-else
+        class="agent-card-action"
+        :disabled="adding"
+        :aria-busy="adding"
+        @click="$emit('add', agent.id)"
+      >
+        <span v-if="adding" class="agent-card-spinner" aria-hidden="true"></span>
+        <IconPlus v-else :size="14" />
+        {{ t(adding ? "agentMarket.adding" : "agentMarket.add") }}
       </button>
     </div>
   </div>
@@ -29,13 +41,16 @@ import type { Agent } from "@/stores/agents";
 import { t } from "@/i18n";
 import IconPlus from "@/components/icons/IconPlus.vue";
 import IconCheck from "@/components/icons/IconCheck.vue";
+import IconClose from "@/components/icons/IconClose.vue";
 
 defineProps<{
   agent: Agent;
+  adding?: boolean;
 }>();
 
 defineEmits<{
-  toggle: [agentId: string];
+  add: [agentId: string];
+  remove: [agentId: string];
 }>();
 </script>
 
@@ -61,7 +76,6 @@ defineEmits<{
 }
 
 .agent-card.is-added {
-  opacity: 0.6;
   cursor: default;
 }
 
@@ -77,15 +91,6 @@ defineEmits<{
   z-index: 1;
   line-height: 0;
   color: var(--success);
-}
-
-.agent-card-added-text {
-  align-self: flex-start;
-  margin-top: 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--success);
-  cursor: pointer;
 }
 
 .agent-card-avatar {
@@ -170,5 +175,39 @@ defineEmits<{
 .agent-card-action:hover {
   background: var(--accent);
   color: var(--bg-primary);
+}
+
+.agent-card-action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.agent-card-action:disabled:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.agent-card-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: agent-card-spin 0.7s linear infinite;
+}
+
+@keyframes agent-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-card-action-danger {
+  color: var(--danger, #c0392b);
+}
+
+.agent-card-action-danger:hover {
+  background: var(--danger, #c0392b);
+  color: #fff;
 }
 </style>
