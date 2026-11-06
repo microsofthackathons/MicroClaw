@@ -124,6 +124,9 @@ export default {
   "chat.addAttachment": "Add attachment",
   "chat.attachment": "Attachment",
   "chat.image": "Image",
+  "chat.previewImage": "Preview image",
+  "chat.imageLoading": "Loading image…",
+  "chat.imageUnavailable": "Preview unavailable. Click to open the original.",
   "chat.removeAttachment": "Remove {file}",
   "chat.attachment.fileTooLarge": "{file} exceeds the {limit} per-file attachment limit.",
   "chat.attachment.totalTooLarge":

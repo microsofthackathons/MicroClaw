@@ -2253,6 +2253,132 @@ describe("useChatStore — attachments", () => {
     ]);
   });
 
+  it("normalizes canonical Weixin image metadata without text or inline image blocks", () => {
+    const store = useChatStore();
+    const message = {
+      role: "user",
+      content: [],
+      __openclaw: {
+        media: [
+          {
+            path: "media://inbound/1be4ae56-6c48-4787-8fef-04c0cb29e130.png",
+            contentType: "image/png",
+            kind: "image",
+            sizeBytes: 1234,
+          },
+        ],
+      },
+    };
+
+    expect(store.getMessageAttachments(message)).toEqual([
+      {
+        type: "image",
+        mimeType: "image/png",
+        fileName: "",
+        size: 1234,
+        content: "",
+        mediaPath: message.__openclaw.media[0].path,
+      },
+    ]);
+  });
+
+  it("prefers canonical media facts over legacy metadata and inline blocks", () => {
+    const store = useChatStore();
+    const attachments = store.getMessageAttachments({
+      role: "user",
+      content: [{ type: "image", mimeType: "image/png", omitted: true }],
+      MediaPath: "media://inbound/old.png",
+      MediaType: "image/png",
+      __openclaw: {
+        media: [
+          {
+            path: "media://inbound/report---499c16ac-1817-41d4-8e5c-c3cb98942c1a.pdf",
+            contentType: "application/pdf",
+            fileName: "Original report.pdf",
+            sizeBytes: 2048,
+          },
+          { url: "media://inbound/photo", kind: "image" },
+        ],
+      },
+    });
+
+    expect(attachments).toHaveLength(2);
+    expect(attachments[0]).toMatchObject({
+      type: "file",
+      fileName: "Original report.pdf",
+      mimeType: "application/pdf",
+      size: 2048,
+    });
+    expect(attachments[1]).toMatchObject({
+      type: "image",
+      mimeType: "image/*",
+      mediaPath: "media://inbound/photo",
+    });
+  });
+
+  it.each([undefined, null, [], {}, { media: "invalid" }, { media: [null, [], {}, 1] }])(
+    "falls back to legacy media when canonical metadata is malformed: %j",
+    (metadata) => {
+      const store = useChatStore();
+
+      expect(
+        store.getMessageAttachments({
+          role: "user",
+          content: [],
+          MediaPath: "media://inbound/photo.png",
+          MediaType: "image/png",
+          __openclaw: metadata,
+        }),
+      ).toMatchObject([{ type: "image", mediaPath: "media://inbound/photo.png" }]);
+      expect(
+        store.extractText({ role: "user", content: "<file>literal</file>", __openclaw: metadata }),
+      ).toBe("<file>literal</file>");
+    },
+  );
+
+  it("sanitizes attachment-only text using canonical media evidence", () => {
+    const store = useChatStore();
+
+    expect(
+      store.extractText({
+        role: "user",
+        content: '<file name="notes.txt">contents</file>',
+        __openclaw: { media: [{ path: "media://inbound/notes.txt", contentType: "text/plain" }] },
+      }),
+    ).toBe("");
+  });
+
+  it("refreshes the media reference when canonical history metadata changes", async () => {
+    const store = useChatStore();
+    const message = {
+      role: "user",
+      content: [],
+      __openclaw: {
+        media: [
+          { path: "media://inbound/first.png", contentType: "image/png", fileName: "photo.png" },
+        ],
+      },
+    };
+    mockLoadHistory.mockResolvedValueOnce({ messages: [message] });
+    await store.loadHistory();
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [
+        {
+          ...message,
+          __openclaw: {
+            media: [{ ...message.__openclaw.media[0], path: "media://inbound/second.png" }],
+          },
+        },
+      ],
+    });
+
+    await store.loadHistory();
+
+    expect(store.getMessageAttachments(store.messages[0])[0]?.mediaPath).toBe(
+      "media://inbound/second.png",
+    );
+  });
+
   it("keeps distinct extensionless media paths as separate attachments", () => {
     const store = useChatStore();
     const attachments = store.getMessageAttachments({

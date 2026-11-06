@@ -25,6 +25,9 @@ export interface ChatMessage {
   timestamp?: number;
   text?: string;
   attachments?: ChatAttachment[];
+  __openclaw?: {
+    media?: unknown[];
+  };
   originalText?: string;
   stopReason?: string;
   performanceRunId?: string;
@@ -646,9 +649,27 @@ export const useChatStore = defineStore("chat", () => {
       .trim();
   }
 
+  function getPersistedMediaFacts(message: unknown): Record<string, unknown>[] {
+    const metadata = (message as Record<string, unknown>).__openclaw;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+    const media = (metadata as Record<string, unknown>).media;
+    if (!Array.isArray(media)) return [];
+    return media.filter((candidate): candidate is Record<string, unknown> => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+      const fact = candidate as Record<string, unknown>;
+      return (
+        [fact.path, fact.url, fact.contentType].some(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        ) ||
+        (typeof fact.kind === "string" && fact.kind.trim().length > 0 && fact.kind !== "unknown")
+      );
+    });
+  }
+
   function hasAttachmentEvidence(message: unknown): boolean {
     const m = message as Record<string, unknown>;
     if (
+      getPersistedMediaFacts(message).length > 0 ||
       (Array.isArray(m.attachments) && m.attachments.length > 0) ||
       (Array.isArray(m.MediaPaths) && m.MediaPaths.length > 0) ||
       typeof m.MediaPath === "string"
@@ -732,50 +753,73 @@ export const useChatStore = defineStore("chat", () => {
 
   function getMessageAttachments(message: unknown): ChatAttachment[] {
     const m = message as Record<string, unknown>;
-    const mediaPaths = [
-      ...(Array.isArray(m.MediaPaths) ? m.MediaPaths : []),
-      ...(typeof m.MediaPath === "string" ? [m.MediaPath] : []),
-    ];
-    const mediaTypes = [
-      ...(Array.isArray(m.MediaTypes) ? m.MediaTypes : []),
-      ...(typeof m.MediaType === "string" ? [m.MediaType] : []),
-    ];
+    const mediaFacts = getPersistedMediaFacts(message);
+    const mediaPaths = mediaFacts.length
+      ? mediaFacts.map(
+          (fact) =>
+            (typeof fact.path === "string" && fact.path) ||
+            (typeof fact.url === "string" && fact.url) ||
+            "",
+        )
+      : [
+          ...(Array.isArray(m.MediaPaths) ? m.MediaPaths : []),
+          ...(typeof m.MediaPath === "string" ? [m.MediaPath] : []),
+        ];
+    const mediaTypes = mediaFacts.length
+      ? mediaFacts.map(
+          (fact) =>
+            (typeof fact.contentType === "string" && fact.contentType) ||
+            (fact.kind === "image" ? "image/*" : "application/octet-stream"),
+        )
+      : [
+          ...(Array.isArray(m.MediaTypes) ? m.MediaTypes : []),
+          ...(typeof m.MediaType === "string" ? [m.MediaType] : []),
+        ];
     const optimisticAttachments = Array.isArray(m.attachments) ? m.attachments : [];
     const candidates =
       optimisticAttachments.length > 0
         ? optimisticAttachments
         : mediaPaths.length > 0
           ? mediaPaths.map((mediaPath, index) => {
+              const mediaFact = mediaFacts[index];
               const mimeType =
                 typeof mediaTypes[index] === "string"
                   ? (mediaTypes[index] as string)
                   : "application/octet-stream";
+              const isImage = mimeType.startsWith("image/") || mediaFact?.kind === "image";
               const rawName =
-                typeof mediaPath === "string"
-                  ? mediaPath
-                      .replace(/^media:\/\/inbound\//i, "")
-                      .split(/[\\/]/)
-                      .at(-1) || ""
-                  : "";
+                typeof mediaFact?.fileName === "string" && mediaFact.fileName
+                  ? mediaFact.fileName
+                  : typeof mediaPath === "string"
+                    ? mediaPath
+                        .replace(/^media:\/\/inbound\//i, "")
+                        .split(/[\\/]/)
+                        .at(-1) || ""
+                    : "";
               const extensionIndex = rawName.lastIndexOf(".");
               const nameWithoutExtension =
                 extensionIndex > 0 ? rawName.slice(0, extensionIndex) : rawName;
               const isBareUuid =
-                mimeType.startsWith("image/") &&
+                isImage &&
                 /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
                   nameWithoutExtension,
                 );
-              const displayName = mimeType.startsWith("image/")
+              const displayName = isImage
                 ? rawName
                 : rawName.replace(
                     /---[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?=\.[^.]+$)/i,
                     "",
                   );
               return {
-                type: mimeType.startsWith("image/") ? "image" : "file",
+                type: isImage ? "image" : "file",
                 mimeType,
                 fileName: isBareUuid ? "" : displayName,
-                size: 0,
+                size:
+                  typeof mediaFact?.sizeBytes === "number" &&
+                  Number.isFinite(mediaFact.sizeBytes) &&
+                  mediaFact.sizeBytes >= 0
+                    ? mediaFact.sizeBytes
+                    : 0,
                 content: "",
                 mediaPath: typeof mediaPath === "string" ? mediaPath : undefined,
               };
@@ -1019,13 +1063,24 @@ export const useChatStore = defineStore("chat", () => {
       const ta = extractText(a[i]);
       const tb = extractText(b[i]);
       if (ta !== tb) return false;
-      const aa = getMessageAttachments(a[i])
-        .map((attachment) => `${attachment.fileName}:${attachment.mimeType}:${attachment.size}`)
-        .join("|");
-      const ab = getMessageAttachments(b[i])
-        .map((attachment) => `${attachment.fileName}:${attachment.mimeType}:${attachment.size}`)
-        .join("|");
-      if (aa !== ab) return false;
+      const attachmentsA = getMessageAttachments(a[i]);
+      const attachmentsB = getMessageAttachments(b[i]);
+      if (attachmentsA.length !== attachmentsB.length) return false;
+      if (
+        attachmentsA.some((attachment, index) => {
+          const other = attachmentsB[index];
+          return (
+            attachment.type !== other.type ||
+            attachment.fileName !== other.fileName ||
+            attachment.mimeType !== other.mimeType ||
+            attachment.size !== other.size ||
+            attachment.content !== other.content ||
+            attachment.mediaPath !== other.mediaPath
+          );
+        })
+      ) {
+        return false;
+      }
     }
     return true;
   }
