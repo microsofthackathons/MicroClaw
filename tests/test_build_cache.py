@@ -129,6 +129,7 @@ class BuildCacheTests(unittest.TestCase):
             "desktop/package-lock.json",
             "desktop/node_modules/@microsoft/mxc-sdk/bin/x64/wxc-exec.exe",
             "plugins/openclaw-weixin/vendor/plugin.tgz",
+            "plugins/openclaw-weixin/src/monitor/monitor.ts",
             "Directory.Build.props",
         ):
             with self.subTest(name=name):

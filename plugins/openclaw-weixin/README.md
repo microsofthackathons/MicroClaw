@@ -6,18 +6,26 @@ OpenClaw's WeChat channel plugin, supporting login authorization via QR code sca
 
 ## Compatibility
 
-This repository maintains upstream **2.4.6** with a local **OpenClaw 2026.10.2+** SDK compatibility patch. This is not a new Tencent npm release. The default MicroClaw installer does not bundle or automatically install WeChat. The original checksummed vendor archives are unchanged; `desktop/scripts/stage-weixin-runtime.mjs` remains a standalone tool for explicitly prepared plugin staging directories. Both the TypeScript and compiled JavaScript entries receive the patch when this tool is used.
+This repository maintains upstream **2.4.6** with local **OpenClaw 2026.10.2+** SDK compatibility and MicroClaw patches. This is not a new Tencent npm release, and the original checksummed vendor archives are unchanged.
 
-The patch replaces retired SDK imports, uses atomic config mutation after login, and retains the existing pairing-store/legacy-owner and command access-group behavior. `build.ps1` and `deploy.py` do not install this optional plugin.
+MicroClaw Desktop builds prepare the bundled plugin through `desktop/scripts/prepare-weixin-plugin-resource.mjs`, which overlays this repository's sources, compiles both entry paths, and generates a content-hash manifest. The packaged runtime is pinned to OpenClaw **2026.10.5**. Before starting its managed Gateway, MicroClaw verifies the installed plugin against that manifest and replaces stale content even when the package version is unchanged, without replacing account state.
+
+A source fix reaches new installations and reinstalls only after a new MicroClaw package containing it is built and distributed. Reinstalling an older MicroClaw package or independently installing Tencent's published package does not provide unpublished repository patches.
 
 | Plugin Version | OpenClaw Version       | npm dist-tag | Status      |
 |---------------|------------------------|--------------|-------------|
-| 2.4.6 + MicroClaw patch | >=2026.10.2    | Not published | Optional source |
+| 2.4.6 + MicroClaw patch | >=2026.10.2    | Not published | MicroClaw bundled build |
 | 2.0.x         | >=2026.3.22            | `latest`     | Active      |
 | 1.0.x         | >=2026.1.0 <2026.3.22  | `legacy`     | Maintenance |
 
 > The plugin checks the host version at startup and will refuse to load if the
 > running OpenClaw version is outside the supported range.
+
+## Inbound replies while a turn is waiting
+
+Inbound messages reach the OpenClaw reply pipeline without waiting for earlier turns to finish. This lets `ask_user` answers reach a waiting turn instead of sitting behind it until its timeout. OpenClaw owns session admission and follow-up handling; remote approval replies still use their dedicated interception path.
+
+Sync cursors remain ordered and are saved only after all covered dispatches finish. Shutdown drains outstanding dispatches, and a failed dispatch retains the last durable cursor for replay.
 
 ## Prerequisites
 
@@ -26,6 +34,8 @@ The patch replaces retired SDK imports, uses atomic config mutation after login,
 Check your version: `openclaw --version`
 
 ## Quick Install
+
+These commands install Tencent's published package, not MicroClaw's patched bundle. MicroClaw Desktop manages its bundled plugin on Gateway startup.
 
 ```bash
 npx -y @tencent-weixin/openclaw-weixin-cli install

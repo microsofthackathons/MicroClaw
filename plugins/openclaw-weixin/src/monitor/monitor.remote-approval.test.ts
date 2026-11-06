@@ -144,6 +144,105 @@ describe("WeChat long-poll remote approval ordering", () => {
     expect(mocks.saveCursor).toHaveBeenCalledWith("cursor.json", "cursor-1");
   });
 
+  it.each([false, true])(
+    "dispatches an ask_user answer before the waiting turn completes (same poll: %s)",
+    async (samePoll) => {
+      const abort = new AbortController();
+      let finishTurn!: () => void;
+      const turn = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      let rejectPoll!: (error: Error) => void;
+      mocks.process.mockImplementation((full) =>
+        full.message_id === 1 ? turn : Promise.resolve(),
+      );
+      mocks.getUpdates.mockResolvedValueOnce({
+        ret: 0,
+        get_updates_buf: "cursor-1",
+        msgs: samePoll ? [message(1), message(2)] : [message(1)],
+      });
+      if (!samePoll) {
+        mocks.getUpdates.mockResolvedValueOnce({
+          ret: 0,
+          get_updates_buf: "cursor-2",
+          msgs: [message(2)],
+        });
+      }
+      mocks.getUpdates.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectPoll = reject;
+          }),
+      );
+
+      const monitoring = monitorWeixinProvider(options(abort.signal));
+      try {
+        await waitFor(() => mocks.process.mock.calls.length === 2 && Boolean(rejectPoll));
+        expect(mocks.process.mock.calls.map(([full]) => full.message_id)).toEqual([1, 2]);
+        expect(mocks.saveCursor).not.toHaveBeenCalled();
+      } finally {
+        finishTurn();
+        abort.abort();
+        rejectPoll?.(new Error("aborted"));
+        await monitoring;
+      }
+
+      expect(mocks.saveCursor.mock.calls).toEqual(
+        samePoll
+          ? [["cursor.json", "cursor-1"]]
+          : [["cursor.json", "cursor-1"], ["cursor.json", "cursor-2"]],
+      );
+      expect(mocks.intercept).toHaveBeenCalledWith(
+        expect.objectContaining({ message_id: 2 }),
+        expect.anything(),
+        "complete",
+      );
+    },
+  );
+
+  it("keeps later cursors behind an unfinished dispatch even when its answer finishes first", async () => {
+    const abort = new AbortController();
+    let finishTurn!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      finishTurn = resolve;
+    });
+    let rejectPoll!: (error: Error) => void;
+    mocks.process.mockReturnValueOnce(turn).mockResolvedValueOnce(undefined);
+    mocks.getUpdates
+      .mockResolvedValueOnce({ ret: 0, get_updates_buf: "cursor-1", msgs: [message(1)] })
+      .mockResolvedValueOnce({ ret: 0, get_updates_buf: "cursor-2", msgs: [message(2)] })
+      .mockResolvedValueOnce({ ret: 0, get_updates_buf: "cursor-3", msgs: [] })
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectPoll = reject;
+          }),
+      );
+
+    const monitoring = monitorWeixinProvider(options(abort.signal));
+    try {
+      await waitFor(() => mocks.process.mock.calls.length === 2 && Boolean(rejectPoll));
+      await waitFor(() =>
+        mocks.intercept.mock.calls.some(
+          ([full, , phase]) => full.message_id === 2 && phase === "complete",
+        ),
+      );
+      expect(mocks.saveCursor).not.toHaveBeenCalled();
+      finishTurn();
+      await waitFor(() => mocks.saveCursor.mock.calls.length === 3);
+      expect(mocks.saveCursor.mock.calls).toEqual([
+        ["cursor.json", "cursor-1"],
+        ["cursor.json", "cursor-2"],
+        ["cursor.json", "cursor-3"],
+      ]);
+    } finally {
+      finishTurn();
+      abort.abort();
+      rejectPoll?.(new Error("aborted"));
+      await monitoring;
+    }
+  });
+
   it("reuses the last durable cursor after dispatch failure instead of losing the message", async () => {
     const abort = new AbortController();
     let releaseSecondPoll!: () => void;
