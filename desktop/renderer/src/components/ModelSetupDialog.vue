@@ -1,6 +1,6 @@
 <template>
   <div v-if="modelValue" class="model-setup-overlay">
-    <div class="model-setup-panel">
+    <div class="model-setup-panel" role="dialog" aria-modal="true">
       <button class="model-setup-close" type="button" :aria-label="t('common.close')" @click="close">
         <svg
           width="12"
@@ -135,7 +135,7 @@
             class="text-action text-action--back"
             variant="outline"
             size="lg"
-            @mousedown.prevent.stop="goToSelectStep"
+            @click.stop="goToSelectStep"
           >
             {{ t("common.back") }}
           </UiButton>
@@ -144,7 +144,7 @@
             variant="default"
             size="lg"
             :disabled="saving"
-            @mousedown.prevent.stop="saveAndStart"
+            @click.stop="saveAndStart"
           >
             {{ saving ? t("modelSetup.saving") : t("modelSetup.start") }}
           </UiButton>
