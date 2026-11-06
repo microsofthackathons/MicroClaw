@@ -452,6 +452,114 @@ describe("GatewayClient.sendChat", () => {
 });
 
 describe("GatewayClient.loadHistory", () => {
+  it("loads older pages so a tool-heavy turn does not lose its user message", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    Object.assign(client, { _mainSessionKey: null, _connectionGeneration: 1 });
+    const tools = Array.from({ length: 200 }, (_, index) => ({
+      role: "assistant",
+      content: [{ type: "thinking", thinking: `Step ${index}` }],
+    }));
+    const user = { role: "user", content: "Compare controller prices" };
+    const latest = {
+      sessionKey: "main",
+      sessionId: "controller-session",
+      messages: tools,
+      olderCursor: "older-tools",
+      hasMore: true,
+      nextOffset: 200,
+      sessionInfo: {
+        key: "agent:main:main",
+        isMain: true,
+        hasActiveRun: false,
+        activeRunIds: [],
+      },
+    };
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValueOnce(latest)
+      .mockResolvedValueOnce({
+        ...latest,
+        sessionKey: "agent:main:main",
+        messages: [{ role: "assistant", content: "Starting comparison" }],
+        olderCursor: "oldest-turn",
+      })
+      .mockResolvedValueOnce({
+        ...latest,
+        sessionKey: "agent:main:main",
+        messages: [user],
+        olderCursor: undefined,
+        hasMore: false,
+        sessionInfo: { ...latest.sessionInfo, hasActiveRun: true, activeRunIds: ["old-run"] },
+      });
+
+    const history = await client.loadHistory("main");
+
+    expect(history.messages).toEqual([
+      user,
+      { role: "assistant", content: "Starting comparison" },
+      ...tools,
+    ]);
+    expect(history.sessionInfo).toEqual(latest.sessionInfo);
+    expect(history.sessionKey).toBe("agent:main:main");
+    expect(request).toHaveBeenNthCalledWith(2, "chat.history", {
+      sessionKey: "agent:main:main",
+      limit: 200,
+      cursor: "older-tools",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "chat.history", {
+      sessionKey: "agent:main:main",
+      limit: 200,
+      cursor: "oldest-turn",
+    });
+  });
+
+  it("follows the gateway's nextOffset when history has no page cursor", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi
+      .spyOn(client, "request")
+      .mockResolvedValueOnce({
+        messages: [{ role: "assistant", content: "Latest reply" }],
+        hasMore: true,
+        nextOffset: 17,
+      })
+      .mockResolvedValueOnce({
+        messages: [{ role: "user", content: "Original question" }],
+        hasMore: false,
+      });
+
+    await expect(client.loadHistory("agent:main:main")).resolves.toMatchObject({
+      messages: [
+        { role: "user", content: "Original question" },
+        { role: "assistant", content: "Latest reply" },
+      ],
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "chat.history", {
+      sessionKey: "agent:main:main",
+      limit: 200,
+      offset: 17,
+    });
+  });
+
+  it("rejects repeated pagination selectors rather than looping or hiding missing history", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    const request = vi.spyOn(client, "request").mockResolvedValue({
+      messages: [],
+      olderCursor: "same-page",
+    });
+
+    await expect(client.loadHistory("agent:main:main")).rejects.toThrow(/pagination/i);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not combine history from different transcripts after a reset", async () => {
+    const client = Object.create(GatewayClient.prototype) as GatewayClient;
+    vi.spyOn(client, "request")
+      .mockResolvedValueOnce({ sessionId: "before-reset", messages: [], olderCursor: "older" })
+      .mockResolvedValueOnce({ sessionId: "after-reset", messages: [] });
+
+    await expect(client.loadHistory("agent:main:main")).rejects.toThrow(/session/i);
+  });
+
   it("canonicalizes an echoed alias and learns main identity without hello defaults", async () => {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;
     Object.assign(client, { _mainSessionKey: null, _connectionGeneration: 1 });

@@ -55,6 +55,68 @@ describe("chat waiting feedback", () => {
     wrapper.unmount();
   });
 
+  it("renders only visible bubbles while keeping reasoning and tools in their group panels", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    store.messages = [
+      { role: "user", content: "Compare controller prices" },
+      ...Array.from({ length: 50 }, (_, index) => ({
+        role: "assistant",
+        content: [{ type: "thinking", thinking: `Reasoning ${index}` }],
+      })),
+      { role: "assistant", content: [{ type: "reasoning", reasoning: "Price analysis" }] },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "search", name: "search", input: { query: "prices" } }],
+      },
+      { role: "toolResult", content: [{ type: "text", text: "Search result" }] },
+      { role: "assistant", content: [] },
+      { role: "assistant", content: "   " },
+      { role: "assistant", content: "\u001b[0m" },
+      { role: "assistant", content: "<!-- step:1:done -->" },
+      { role: "assistant", content: [{ type: "tool_use", name: "search", input: {} }] },
+      { role: "assistant", content: "Controller comparison" },
+    ];
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+
+    expect(wrapper.findAll(".chat-bubble")).toHaveLength(2);
+    expect(wrapper.get(".chat-group.user").text()).toContain("Compare controller prices");
+    expect(wrapper.get(".chat-bubble.assistant").text()).toBe("Controller comparison");
+    expect(wrapper.findAll(".chat-copy-btn")).toHaveLength(2);
+    expect(wrapper.get(".exec-panel__count").text()).toBe("1");
+    await wrapper.get(".context-panel__header").trigger("click");
+    expect(wrapper.findAll(".thinking-block")).toHaveLength(51);
+    expect(wrapper.text()).toContain("Price analysis");
+    wrapper.unmount();
+  });
+
+  it("preserves mixed text and reasoning and the original indexes used to edit user messages", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    store.messages = [
+      { role: "user", content: "First question" },
+      { role: "user", content: "Follow-up question" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "Hidden reasoning" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Mixed reasoning" },
+          { type: "text", text: "Visible answer" },
+          { type: "toolCall", id: "mixed", name: "search" },
+        ],
+      },
+    ];
+    const wrapper = shallowMount(ChatMessageList, { global: { plugins: [pinia] } });
+
+    expect(wrapper.findAll(".chat-bubble.assistant")).toHaveLength(1);
+    expect(wrapper.get(".chat-bubble.assistant").text()).toContain("Visible answer");
+    await wrapper.findAll(".chat-bubble.user")[1].trigger("dblclick");
+    expect((wrapper.get(".chat-edit-input").element as HTMLTextAreaElement).value).toBe(
+      "Follow-up question",
+    );
+    wrapper.unmount();
+  });
+
   it("keeps truthful activity visible after tools complete and live text arrives", async () => {
     const pinia = createPinia();
     const store = useChatStore(pinia);

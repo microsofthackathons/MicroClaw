@@ -382,6 +382,37 @@ export class GatewayClient {
       limit: 200,
     });
     const canonicalKey = resolveChatHistorySessionKey(sessionKey, history);
+    const pages = [history.messages ?? []];
+    const visited = new Set<string>();
+    let page = history;
+    let offset = 0;
+    while (page.olderCursor || page.hasMore) {
+      const cursor = page.olderCursor;
+      const nextOffset = page.nextOffset;
+      if (!cursor && (!Number.isSafeInteger(nextOffset) || nextOffset! <= offset)) {
+        throw new Error("Invalid chat history pagination offset");
+      }
+      const selector = cursor ? { cursor } : { offset: nextOffset! };
+      const selectorKey = JSON.stringify(selector);
+      if (visited.has(selectorKey)) {
+        throw new Error("Chat history pagination did not advance");
+      }
+      visited.add(selectorKey);
+      page = await this.request<ChatHistoryResult>("chat.history", {
+        sessionKey: canonicalKey,
+        limit: 200,
+        ...selector,
+      });
+      if (
+        generation !== this.connectionGeneration ||
+        resolveChatHistorySessionKey(canonicalKey, page) !== canonicalKey ||
+        (history.sessionId && page.sessionId !== history.sessionId)
+      ) {
+        throw new Error("Chat history session changed while loading older messages");
+      }
+      if (!cursor) offset = nextOffset!;
+      pages.push(page.messages ?? []);
+    }
     if (
       generation === this.connectionGeneration &&
       sessionKey === "main" &&
@@ -389,7 +420,18 @@ export class GatewayClient {
     ) {
       this._mainSessionKey = canonicalKey;
     }
-    return { ...history, sessionKey: canonicalKey };
+    return {
+      ...history,
+      ...(pages.length > 1
+        ? {
+            messages: pages.reverse().flat(),
+            olderCursor: undefined,
+            hasMore: false,
+            nextOffset: undefined,
+          }
+        : {}),
+      sessionKey: canonicalKey,
+    };
   }
 
   /** Abort the current chat run. */

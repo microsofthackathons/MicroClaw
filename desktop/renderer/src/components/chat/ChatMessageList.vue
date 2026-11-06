@@ -171,14 +171,13 @@
           </div>
 
           <div
-            v-for="(msg, idx) in group.messages"
+            v-for="{ msg, idx, segments } in getVisibleMessages(group)"
             :key="group.key + '-' + idx"
             class="chat-bubble"
             :data-perf-run-id="performanceEnabled ? msg.performanceRunId : undefined"
             :class="[
               group.normalizedRole,
               { editable: group.normalizedRole === 'user' && !isEditingMessage(group, idx) },
-              { 'hidden-msg': group.normalizedRole === 'assistant' && isToolMessage(msg) },
             ]"
             @dblclick.prevent="
               group.normalizedRole === 'user' &&
@@ -194,10 +193,7 @@
                 <!-- Thinking/reasoning content — skip per-message rendering; merged at group level below -->
                 <!-- Normal text content -->
                 <div class="chat-content-wrapper">
-                  <template
-                    v-for="(seg, si) in getMessageSegments(msg, group.key + '-' + idx)"
-                    :key="si"
-                  >
+                  <template v-for="(seg, si) in segments" :key="si">
                     <div
                       v-if="seg.type === 'intermediate'"
                       class="context-panel"
@@ -535,7 +531,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useChatStore } from "@/stores/chat";
+import { useChatStore, type ChatMessage } from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
 import {
   renderMarkdown,
@@ -918,7 +914,18 @@ function isHistoryPanelOpen(key: string): boolean {
   return openHistoryPanels.value.has(key);
 }
 
-function getMessageSegments(msg: unknown, _key: string): MessageSegment[] {
+function getVisibleMessages(
+  group: MessageGroup,
+): { msg: ChatMessage; idx: number; segments: MessageSegment[] }[] {
+  return group.messages.flatMap((msg, idx) => {
+    if (group.normalizedRole === "user") return [{ msg, idx, segments: [] }];
+    if (isToolMessage(msg)) return [];
+    const segments = getMessageSegments(msg).filter((segment) => segment.content.trim());
+    return segments.length > 0 ? [{ msg, idx, segments }] : [];
+  });
+}
+
+function getMessageSegments(msg: unknown): MessageSegment[] {
   const m = msg as Record<string, unknown>;
 
   if (Array.isArray(m.content)) {
@@ -1188,11 +1195,6 @@ function handleEditKeydown(e: KeyboardEvent) {
 .chat-bubble.assistant.streaming {
   border-left: none;
   padding-left: 0;
-}
-
-/* Hide tool-related messages (rendered in group-level exec panel) */
-.chat-bubble.hidden-msg {
-  display: none;
 }
 
 /* ── Copy button ── */
