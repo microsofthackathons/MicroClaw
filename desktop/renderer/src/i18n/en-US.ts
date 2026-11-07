@@ -1159,6 +1159,7 @@ export default {
   // ── Common ──
   "common.cancel": "Cancel",
   "common.close": "Close",
+  "common.back": "Back",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",
   "common.platformLinux": "Linux",

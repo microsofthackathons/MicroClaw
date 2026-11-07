@@ -1081,6 +1081,7 @@ export default {
   // ── Common ──
   "common.cancel": "取消",
   "common.close": "关闭",
+  "common.back": "返回",
   "common.platformWindows": "Windows",
   "common.platformMacOS": "macOS",
   "common.platformLinux": "Linux",

@@ -1,6 +1,7 @@
 # Build outputs and dependency directories
 **/node_modules/
 **/dist/
+**/storybook-static/
 **/release/
 **/coverage/
 **/build/

@@ -127,6 +127,81 @@ describe("ModelSetupDialog", () => {
     vi.clearAllMocks();
   });
 
+  describe("F35 native activation on the current provider flow", () => {
+    it("retains standalone modal semantics", () => {
+      const wrapper = mountDialog();
+      expect(wrapper.get('[role="dialog"]').attributes("aria-modal")).toBe("true");
+      wrapper.unmount();
+    });
+
+    it("returns through click without a preceding mousedown", async () => {
+      const wrapper = mountDialog();
+      await wrapper.get(".text-action").trigger("click");
+      await wrapper.get(".text-action--back").trigger("click");
+      expect(wrapper.find(".model-family-grid").exists()).toBe(true);
+      expect(wrapper.find(".model-key-form").exists()).toBe(false);
+      expect(write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("keeps Start disabled for an empty key under the current catalog contract", async () => {
+      const wrapper = mountDialog();
+      await wrapper.get(".text-action").trigger("click");
+      const start = wrapper.get<HTMLButtonElement>(".primary-action");
+      expect(start.element.disabled).toBe(true);
+      start.element.click();
+      await flushPromises();
+      expect(write).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("saves through click without a preceding mousedown", async () => {
+      const wrapper = mountDialog({ singleProvider: true });
+      await wrapper.get(".text-action").trigger("click");
+      await enterCloudKey(wrapper);
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(write).toHaveBeenCalledOnce();
+      expect(wrapper.emitted("configured")).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it("saves once for a pointer activation and disables Start while saving", async () => {
+      const pending = deferred<void>();
+      write.mockReturnValueOnce(pending.promise);
+      const wrapper = mountDialog({ singleProvider: true });
+      await wrapper.get(".text-action").trigger("click");
+      await enterCloudKey(wrapper);
+      const start = wrapper.get<HTMLButtonElement>(".primary-action");
+      await start.trigger("mousedown");
+      start.element.click();
+      await flushPromises();
+      expect(start.element.disabled).toBe(true);
+      start.element.click();
+      await flushPromises();
+      expect(write).toHaveBeenCalledOnce();
+      pending.resolve(undefined);
+      await flushPromises();
+      await vi.runAllTimersAsync();
+      expect(wrapper.emitted("configured")).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it("shows a rejected save and restores a usable action", async () => {
+      write.mockRejectedValueOnce(new Error("F35 fixture write failure"));
+      const wrapper = mountDialog({ singleProvider: true });
+      await wrapper.get(".text-action").trigger("click");
+      await enterCloudKey(wrapper);
+      await wrapper.get(".primary-action").trigger("click");
+      await flushPromises();
+      expect(wrapper.get(".error-msg").text()).toContain("F35 fixture write failure");
+      expect(wrapper.get<HTMLButtonElement>(".primary-action").element.disabled).toBe(false);
+      expect(wrapper.emitted("configured")).toBeUndefined();
+      wrapper.unmount();
+    });
+  });
+
   it.each([
     ["recovery", undefined],
     ["saved provider", undefined],

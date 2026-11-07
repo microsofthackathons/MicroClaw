@@ -109,7 +109,7 @@
           </button>
         </div>
 
-        <button class="primary-action" type="button" @click.stop="handlePrimaryAction">
+        <UiButton class="primary-action" type="button" @click.stop="handlePrimaryAction">
           {{
             isLocalProvider
               ? t("localModel.configure")
@@ -117,15 +117,15 @@
                 ? t("modelSetup.copilotSignIn")
                 : t("modelSetup.getApiKey")
           }}
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           v-if="!isGitHubCopilot && !isLocalProvider"
           class="text-action"
           type="button"
           @click.stop="goToKeyForm()"
         >
           {{ t("modelSetup.haveApiKey") }}
-        </button>
+        </UiButton>
       </template>
 
       <template v-else>
@@ -396,7 +396,7 @@
         </el-form>
 
         <div class="key-actions">
-          <button
+          <UiButton
             v-if="!inline"
             class="text-action text-action--back"
             type="button"
@@ -404,7 +404,7 @@
             @click.prevent.stop="goToSelectStep"
           >
             {{ t("modelSetup.back") }}
-          </button>
+          </UiButton>
           <button
             v-if="isGitHubCopilot && githubLoginInProgress"
             class="text-action"
@@ -413,7 +413,7 @@
           >
             {{ t("modelSetup.copilotCancel") }}
           </button>
-          <button
+          <UiButton
             class="primary-action"
             type="button"
             :disabled="formPrimaryDisabled"
@@ -422,7 +422,7 @@
             @keydown.space.prevent.stop="handleFormPrimaryAction"
           >
             {{ formPrimaryLabel }}
-          </button>
+          </UiButton>
         </div>
       </template>
     </div>
@@ -430,6 +430,7 @@
 </template>
 
 <script setup lang="ts">
+import { UiButton } from "@/components/ui";
 import { useProviderModelCatalog } from "@/composables/use-provider-model-catalog";
 import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
 import {
@@ -1195,32 +1196,28 @@ function handleLocalConfigured() {
 .copilot-auth-panel,
 .field-hint,
 .error-msg {
-  --ux-overlay: rgba(255, 255, 255, 0.72);
-  --ux-panel-bg: #fff;
-  --ux-panel-text: #1f2228;
-  --ux-text-secondary: var(--smtc-foreground-ctrl-neutral-secondary-rest, #555967);
-  --ux-text-muted: var(--smtc-foreground-ctrl-hint-default, #6b6e78);
-  --ux-border: var(--smtc-stroke-divider-subtle, #ededf0);
-  --ux-surface-hover: var(--smtc-background-ctrl-subtle-hover, #f4f4f5);
-  --ux-card-active: var(--smtc-background-card-on-primary-default-rest, #fafafa);
+  --ux-overlay: var(--surface-overlay, rgba(255, 255, 255, 0.72));
+  --ux-panel-bg: var(--surface-page, var(--bg-primary));
+  --ux-panel-text: var(--text-primary, #1f2228);
+  --ux-text-secondary: var(--text-secondary, #555967);
+  --ux-text-muted: var(--text-secondary, #6b6e78);
+  --ux-border: var(--border-default, var(--border, #ededf0));
+  --ux-surface-hover: var(--surface-hover, var(--bg-tertiary, #f4f4f5));
+  --ux-card-active: var(--surface-hover, var(--bg-tertiary, #fafafa));
   --ux-card-selected-border: var(--ux-brand-bg);
   --ux-card-selected-bg: var(--ux-card-active);
   --ux-card-check-bg: var(--ux-brand-bg);
   --ux-card-check-fg: var(--ux-brand-fg);
-  --ux-brand-bg: #18181b;
-  --ux-brand-bg-hover: #27272a;
-  --ux-brand-bg-active: #09090b;
-  --ux-brand-fg: #fff;
+  --ux-brand-bg: var(--action-primary, #18181b);
+  --ux-brand-bg-hover: var(--settings-action-primary-hover, var(--action-primary, #27272a));
+  --ux-brand-bg-active: var(--settings-action-primary-active, var(--action-primary, #09090b));
+  --ux-brand-fg: var(--action-primary-foreground, #fff);
   --ux-panel-radius: 20px;
   --ux-cta-radius: 999px;
   --ux-danger: var(--smtc-status-danger-foreground);
   --ux-shadow: 0 24px 70px rgba(25, 25, 30, 0.18);
-  --ux-flyout-border: #e7e8ec;
-  --ux-flyout-bg: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.94) 0%,
-    rgba(250, 250, 252, 0.9) 100%
-  );
+  --ux-flyout-border: var(--border-default, var(--border, #e7e8ec));
+  --ux-flyout-bg: var(--surface-panel, var(--bg-secondary, #fff));
   --ux-flyout-shadow: 0 24px 44px rgba(21, 24, 31, 0.16), 0 8px 18px rgba(21, 24, 31, 0.1);
   --ux-font-family: "Segoe UI", "Noto Sans SC", sans-serif;
   --ux-title-size: 28px;
@@ -1427,7 +1424,7 @@ h2 {
   border: 1px solid var(--ux-border);
   border-radius: var(--ux-cta-radius);
   box-sizing: border-box;
-  background: #fff;
+  background: var(--ux-panel-bg);
   color: var(--ux-text-muted);
   font-family: var(--ux-font-family);
   font-size: 14px;

@@ -63,6 +63,7 @@ desktop/node_modules/
 desktop/renderer/node_modules/
 desktop/dist/
 desktop/renderer/dist/
+desktop/renderer/storybook-static/
 desktop/release/
 desktop/resources/
 desktop/.cache/
