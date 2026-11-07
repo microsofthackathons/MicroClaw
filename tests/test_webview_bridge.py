@@ -81,7 +81,34 @@ class WebInstallerBridgeTests(unittest.TestCase):
                 self.assertEqual(webview.create_window.call_args.args[0], expected)
                 self.assertNotEqual(expected, "MicroClaw")
                 self.assertEqual(webview.create_window.call_args.kwargs["focus"], background != "1")
+                self.assertFalse(webview.create_window.call_args.kwargs["easy_drag"])
                 webview.start.assert_called_once()
+
+    def test_explicit_drag_regions_exclude_interactive_controls_in_both_templates(self):
+        from html.parser import HTMLParser
+
+        class DragRegionParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.regions = []
+
+            def handle_starttag(self, tag, attrs):
+                attributes = dict(attrs)
+                if "pywebview-drag-region" in attributes.get("class", "").split():
+                    self.regions.append((tag, self.get_starttag_text()))
+
+        for name in ("installer_template.html", "uninstall_template.html"):
+            with self.subTest(template=name):
+                markup = (Path(__file__).parents[1] / "deployer" / "assets" / name).read_text(
+                    encoding="utf-8"
+                )
+                parser = DragRegionParser()
+                parser.feed(markup)
+                self.assertEqual(len(parser.regions), 1)
+                self.assertEqual(parser.regions[0][0], "div")
+                # The title drag surface is empty, so clicks on native form
+                # controls and buttons cannot bubble through a drag ancestor.
+                self.assertIn(parser.regions[0][1] + "</div>", markup)
 
     def test_native_centering_does_not_activate_the_window(self):
         user32 = unittest.mock.Mock()
