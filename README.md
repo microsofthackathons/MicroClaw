@@ -114,7 +114,7 @@ MicroClaw targets **Windows 10/11**. For most users, the only thing you need to 
 
 Build the installer from source, then run it:
 
-> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.10.5** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
+> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.10.10** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
 
 ```powershell
 .\build.ps1                                        # produces dist/MicroClawInstaller/MicroClawInstaller.exe
@@ -125,7 +125,7 @@ The installer handles the Windows-side setup in a single run:
 
 - Git for Windows (PortableGit → `~/.openclaw-git`)
 - Node.js 26 via the official signed `.msi` (per-machine install to `%ProgramFiles%\nodejs\`, UAC-elevated; an existing supported system Node at that path is reused as-is; supported range: `>=24.16.0 <25 || >=26.1.0`, download fallback: `26.1.0`)
-- OpenClaw Gateway, pinned to **2026.10.5** on the default `stable` channel (`npm install -g openclaw@2026.10.5`)
+- OpenClaw Gateway, pinned to **2026.10.10** on the default `stable` channel (`npm install -g openclaw@2026.10.10`)
 - Configures the npm registry mirror and V8 compile cache
 - Installs the MicroClaw desktop client, managed skills, and Windows sandbox components; the WeChat plugin is not bundled or automatically installed
 - Adds Windows Defender exclusions, creates desktop shortcuts (including one-click Uninstall)
@@ -208,7 +208,7 @@ When the pinned OpenClaw version is unchanged, a desktop update refreshes manage
 - **Existing server**: expand **Advanced options and information** to connect to a llama-server you already run on `localhost`, `127.0.0.1`, or `::1`. Supply a key only if that service requires it. MicroClaw does not own or stop this server.
 - Cloud and local connections are retained when changing models. Selection does not add automatic cloud fallbacks; any previously authored OpenClaw fallback or agent/session override still needs to be reviewed separately. Local inference does not make network-dependent skills offline.
 - Cloud setup remains accessible while a local wizard is unfinished. Only saving or switching a model asks to cancel conflicting local setup first; declining leaves it untouched. For local models, the only unconfigured catalog entries offered are the four pinned presets; existing saved connections are retained. Local connection management stays under advanced local settings.
-- The default installer pins OpenClaw to **2026.10.5**. The integration checks the Gateway's advertised setup methods and supports 2026.10.5 as well as the legacy 2026.10.2, 2026.10.3 and 2026.9.3+ (2026.9.x) hosts. Every provider installation uses an explicit official ClawHub package version: `@openclaw/llama-cpp-provider@2026.10.5` for a 2026.10.5 host, or the verified 2026.9.3 provider for legacy hosts. The built-in official catalog and search fallback follow the same pin; neither may request a floating latest release or silently fall back to one. Downloads, runtime prerequisites and GPU support remain subject to the official provider.
+- The default installer pins OpenClaw to **2026.10.10**. The integration checks the Gateway's advertised setup methods and supports 2026.10.10 and 2026.10.5 as well as the legacy 2026.10.2, 2026.10.3 and 2026.9.3+ (2026.9.x) hosts. Every provider installation uses an explicit official ClawHub package version: the separately audited `@openclaw/llama-cpp-provider@2026.10.5` for both 2026.10.10 and 2026.10.5 hosts, or the verified 2026.9.3 provider for legacy hosts. The built-in official catalog and search fallback follow the same pin; neither may request a floating latest release or silently fall back to one. Downloads, runtime prerequisites and GPU support remain subject to the official provider.
 - Actual configuration writes remain protected in Windows Node + MXC mode, while a response is active, or until conflicting setup has safely ended. Preparing a local model does not itself block existing chats; applying a model change still does. After a disconnection, resume the retained operation rather than starting it again. Cancellation can be refused while OpenClaw finishes a protected step.
 
 **Windows compatibility:** MicroClaw includes the [upstream Windows file-open timestamp fix](https://github.com/openclaw/fs-safe/commit/6ae2e2e5086f2c48b813f78cb65fd787c9879a3f) for the exact `fs-safe@0.8.5` dependency bundled with the supported OpenClaw runtime. MicroClaw additionally handles deferred `ctime` changes after copying: only regular, single-link files with unchanged identity, size and modification time can be reconsidered, and their contents must match the SHA-256 captured during copying. Verification uses bounded buffers, rechecks the open handle and path, and checks the exact fingerprint again after mutation authorization before deletion. Genuine changes remain errors; hardlink aliases do not use this exception. A version- and SHA-256-pinned preload validates both move and cleanup modules and applies the changes in memory; installed OpenClaw files are not modified. Other dependency versions are left unchanged, and modified 0.8.5 source is rejected rather than patched speculatively. These checks run during file moves, not when opening model settings.
@@ -517,7 +517,7 @@ See [docs/architecture/repository-layout.md](docs/architecture/repository-layout
 
 Most users can do everything from **Settings** inside the desktop app — models, Brave API key, skill allowlist, etc. Runtime settings live in `~/.openclaw/openclaw.json`; you can hand-edit it if needed.
 
-Fresh installs include the official Parallel web-search plugin pinned to **2026.10.5**, matching
+Fresh installs include the official Parallel web-search plugin pinned to **2026.10.10**, matching
 the default OpenClaw runtime, and select its keyless
 `parallel-free` provider, so web search works without additional setup. Usable existing web-search
 provider choices are preserved during upgrades; Brave or Tavily without an API key falls back to

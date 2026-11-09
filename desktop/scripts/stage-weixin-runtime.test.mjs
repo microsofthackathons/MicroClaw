@@ -410,7 +410,7 @@ test("staged source and JavaScript use only the retained 10.2 SDK subpaths", () 
   }
   const pkg = JSON.parse(fs.readFileSync(path.join(stageDir, "package.json"), "utf8"));
   assert.equal(pkg.peerDependencies.openclaw, ">=2026.10.2");
-  assert.equal(pkg.microclaw.sdkCompatibility, "2026.10.5");
+  assert.equal(pkg.microclaw.sdkCompatibility, "2026.10.10");
   assert.equal(pkg.engines.node, ">=24.16.0 <25 || >=26.1.0");
 });
 
@@ -546,7 +546,7 @@ test("prepared package resource is provenance-pinned and excludes a nested OpenC
   const manifest = prepareWeixinPluginResource({ source: sourceDir, destination });
   assert.equal(manifest.contract, WEIXIN_RUNTIME_MANIFEST_CONTRACT);
   assert.equal(manifest.packageVersion, "2.4.6");
-  assert.equal(manifest.sdkCompatibility, "2026.10.5");
+  assert.equal(manifest.sdkCompatibility, "2026.10.10");
   assert.ok(manifest.files.length > 0);
   for (const relative of ["src/monitor/monitor.ts", "dist/src/monitor/monitor.js"]) {
     const packaged = fs.readFileSync(path.join(destination, relative));
@@ -609,7 +609,7 @@ test("the packaged plugin registers admin-only login lifecycle RPCs without star
   let plugin;
   let cancel;
   entry.default.register({
-    runtime: { version: "2026.10.5" },
+    runtime: { version: "2026.10.10" },
     registerChannel: (registration) => {
       plugin = registration.plugin;
     },
@@ -671,7 +671,7 @@ test("packaged QR completion reports the committed canonical account and resumes
   let plugin;
   let resume;
   entry.default.register({
-    runtime: { version: "2026.10.5" },
+    runtime: { version: "2026.10.10" },
     registerChannel: (registration) => {
       plugin = registration.plugin;
     },
@@ -767,7 +767,7 @@ test("the packaged channel can disconnect and create a fresh QR without a config
   config.reset({ unchanged: true }, new Error("Account changes must not reload configuration"));
   let plugin;
   entry.default.register({
-    runtime: { version: "2026.10.5" },
+    runtime: { version: "2026.10.10" },
     registerChannel: (registration) => {
       plugin = registration.plugin;
     },

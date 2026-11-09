@@ -13,7 +13,7 @@ from deployer.openclaw_version import (
 
 class OpenClawVersionTests(unittest.TestCase):
     def test_target_version(self) -> None:
-        self.assertEqual(OPENCLAW_TARGET_VERSION, "2026.10.5")
+        self.assertEqual(OPENCLAW_TARGET_VERSION, "2026.10.10")
         self.assertEqual(NODE_ENGINE_RANGE, ">=24.16.0 <25 || >=26.1.0")
 
     def test_unsupported_node_lines(self) -> None:

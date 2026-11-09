@@ -8,7 +8,7 @@ OpenClaw's WeChat channel plugin, supporting login authorization via QR code sca
 
 This repository maintains upstream **2.4.6** with local **OpenClaw 2026.10.2+** SDK compatibility and MicroClaw patches. This is not a new Tencent npm release, and the original checksummed vendor archives are unchanged.
 
-MicroClaw Desktop builds prepare the bundled plugin through `desktop/scripts/prepare-weixin-plugin-resource.mjs`, which overlays this repository's sources, compiles both entry paths, and generates a content-hash manifest. The packaged runtime is pinned to OpenClaw **2026.10.5**. Before starting its managed Gateway, MicroClaw verifies the installed plugin against that manifest and replaces stale content even when the package version is unchanged, without replacing account state.
+MicroClaw Desktop builds prepare the bundled plugin through `desktop/scripts/prepare-weixin-plugin-resource.mjs`, which overlays this repository's sources, compiles both entry paths, and generates a content-hash manifest. The packaged runtime is pinned to OpenClaw **2026.10.10**. Before starting its managed Gateway, MicroClaw verifies the installed plugin against that manifest and replaces stale content even when the package version is unchanged, without replacing account state.
 
 A source fix reaches new installations and reinstalls only after a new MicroClaw package containing it is built and distributed. Reinstalling an older MicroClaw package or independently installing Tencent's published package does not provide unpublished repository patches.
 

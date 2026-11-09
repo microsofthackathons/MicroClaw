@@ -8,7 +8,7 @@ OpenClaw 的微信渠道插件，支持通过扫码完成登录授权。
 
 本仓库维护上游 **2.4.6** 及适用于 **OpenClaw 2026.10.2+** 的本地 SDK 兼容与 MicroClaw 补丁；这不是腾讯发布的新 npm 版本，原始 vendor 压缩包及校验值保持不变。
 
-MicroClaw 桌面构建通过 `desktop/scripts/prepare-weixin-plugin-resource.mjs` 准备内置插件：覆盖本仓库源码、编译两个入口，并生成内容哈希清单；打包运行时固定使用 OpenClaw **2026.10.5**。启动由自身管理的网关前，MicroClaw 会按清单校验已安装插件，即使包版本号相同也会替换过时内容，但不会替换账号状态。
+MicroClaw 桌面构建通过 `desktop/scripts/prepare-weixin-plugin-resource.mjs` 准备内置插件：覆盖本仓库源码、编译两个入口，并生成内容哈希清单；打包运行时固定使用 OpenClaw **2026.10.10**。启动由自身管理的网关前，MicroClaw 会按清单校验已安装插件，即使包版本号相同也会替换过时内容，但不会替换账号状态。
 
 源码修复只有在包含它的新版 MicroClaw 安装包构建并分发后，才会覆盖新安装与重装。重新安装旧版 MicroClaw，或独立安装腾讯已发布的插件，都不会获得尚未发布的本仓库补丁。
 

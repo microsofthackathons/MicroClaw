@@ -33,6 +33,7 @@ from deployer.install_manifest import (
     write_install_manifest,
 )
 from deployer.install_timing import RuntimePreparationTiming
+from deployer.lightweight_backup import BACKUP_SCOPE, create_lightweight_archive
 from deployer.logger import DeployerLogger
 from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
 from deployer.openclaw_upgrade import (
@@ -83,7 +84,7 @@ _RETRYABLE_NPM_REGISTRY_ERROR = re.compile(
 )
 _LOCAL_MODEL_PLUGIN_ID = "llama-cpp"
 _LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider"
-_LOCAL_MODEL_PLUGIN_VERSION = OPENCLAW_TARGET_VERSION
+_LOCAL_MODEL_PLUGIN_VERSION = "2026.10.5"
 _LOCAL_MODEL_PLUGIN_SHA256 = "8c782ef30d528be1a7b57f80d9cfd30b18d52087452f98168894d2da387519e9"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
 _SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
@@ -2194,12 +2195,12 @@ class WindowsSetup:
         return True
 
     def update_openclaw_windows(self, installation: OpenClawInstallation) -> bool:
-        """Replace the pinned package after backup, then run the target Doctor once."""
+        """Replace the pinned package after backup without running Doctor."""
         if not self._allow_openclaw_update(installation):
             return False
         self.install_prefix = installation.prefix
         if installation.version == OPENCLAW_TARGET_VERSION:
-            self.log.info("OpenClaw version unchanged; skipping core update and Doctor.")
+            self.log.info("OpenClaw version unchanged; skipping core update.")
             return True
         return self._upgrade_openclaw_with_package_manager(installation)
 
@@ -2267,6 +2268,70 @@ class WindowsSetup:
                 outcome = {}
             success = True
             return outcome
+        finally:
+            self.log.info(
+                f"Package upgrade timing: {label} [{'success' if success else 'failed'}] "
+                f"{time.monotonic() - started:.2f}s"
+            )
+
+    def _create_lightweight_upgrade_backup(
+        self,
+        upgrade: PackageManagerUpgrade,
+        installation: OpenClawInstallation,
+        node: str,
+        env: dict[str, str],
+    ) -> None:
+        state_dir = Path.home() / ".openclaw"
+        desktop_dir = Path(os.environ["APPDATA"]) / "MicroClaw"
+        label = "Backing up whitelisted configuration, databases, credentials and workspaces"
+        self.log.step(label)
+        self.log.info(
+            "Lightweight backup only: models, browser profiles, old installers and runtime "
+            "caches are not archived or deleted. No full-archive fallback is performed."
+        )
+        started = time.monotonic()
+        success = False
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="lightweight-", dir=upgrade.backup_dir
+            ) as scratch:
+                plan = Path(scratch) / "plan.json"
+                outcome = self._run_package_upgrade_phase(
+                    "Creating verified SQLite snapshots for the lightweight backup",
+                    [
+                        node,
+                        str(Path(__file__).parent / "assets" / "upgrade-backup.mjs"),
+                        "backup",
+                        "--package",
+                        str(installation.package_dir),
+                        "--output",
+                        str(plan),
+                        "--desktop",
+                        str(desktop_dir),
+                    ],
+                    upgrade.prefix,
+                    env,
+                    json_output=True,
+                )
+                if (
+                    outcome.get("scope") != BACKUP_SCOPE
+                    or outcome.get("verifiedSqlite") is not True
+                    or Path(outcome.get("stateDir", "")).resolve() != state_dir.resolve()
+                    or Path(outcome.get("planPath", "")).resolve() != plan.resolve()
+                ):
+                    raise ValueError("Lightweight snapshot did not verify the required state plan")
+                create_lightweight_archive(
+                    plan,
+                    upgrade.archive,
+                    state_dir=state_dir,
+                    desktop_dir=desktop_dir,
+                    source_version=installation.version,
+                    progress=self.log.info,
+                )
+            upgrade.save(
+                "backed-up", archiveSha256=upgrade.archive_digest(), backupScope=BACKUP_SCOPE
+            )
+            success = True
         finally:
             self.log.info(
                 f"Package upgrade timing: {label} [{'success' if success else 'failed'}] "
@@ -2369,42 +2434,7 @@ class WindowsSetup:
                         f"Upgrading OpenClaw {installation.version} -> {OPENCLAW_TARGET_VERSION} "
                         "with npm after a verified data backup; no old runtime snapshot is taken."
                     )
-                    backup = self._run_package_upgrade_phase(
-                        "Backing up OpenClaw state and workspaces",
-                        [
-                            node,
-                            str(installation.entry_path),
-                            "backup",
-                            "create",
-                            "--output",
-                            str(upgrade.archive),
-                            "--verify",
-                            "--json",
-                        ],
-                        prefix,
-                        env,
-                        json_output=True,
-                    )
-                    if (
-                        backup.get("verified") is not True
-                        or backup.get("includeWorkspace") is not True
-                        or backup.get("onlyConfig") is not False
-                        or not isinstance(backup.get("archivePath"), str)
-                        or not isinstance(backup.get("assets"), list)
-                        or Path(backup.get("archivePath", "")).resolve()
-                        != upgrade.archive.resolve()
-                        or not any(
-                            asset.get("kind") == "state"
-                            and isinstance(asset.get("sourcePath"), str)
-                            and Path(asset.get("sourcePath", "")).resolve() == state_dir.resolve()
-                            for asset in backup.get("assets", [])
-                            if isinstance(asset, dict)
-                        )
-                    ):
-                        raise ValueError(
-                            "Official backup did not verify the full state/workspace plan"
-                        )
-                    upgrade.save("backed-up", archiveSha256=upgrade.archive_digest())
+                    self._create_lightweight_upgrade_backup(upgrade, installation, node, env)
                 upgrade.verify_archive()
                 self.log.info(f"SHA-256 verified pre-upgrade data backup: {upgrade.archive}")
                 if not self._package_upgrade_is_idle():
@@ -2442,27 +2472,17 @@ class WindowsSetup:
                     raise ValueError(
                         f"The replacement runtime is not OpenClaw {OPENCLAW_TARGET_VERSION}"
                     )
-                env = self._with_state_owner_compatibility(env, installation)
-                command = [node, str(installation.entry_path)]
                 if not self._package_upgrade_is_idle():
                     return False
-                upgrade.save("migrating")
-                self._run_package_upgrade_phase(
-                    "Repairing OpenClaw configuration and data with Doctor",
-                    command + ["doctor", "--fix", "--non-interactive"],
-                    prefix,
-                    env,
-                )
+                upgrade.save("verifying")
                 if (
                     not self._validate_installed_version()
                     or not self._gateway_is_stopped_for_upgrade()
                 ):
-                    raise RuntimeError("OpenClaw verification failed after package-manager repair")
+                    raise RuntimeError("OpenClaw verification failed after package replacement")
                 upgrade.save("complete")
                 self._successful_npm_registry = registry
-                self.log.success(
-                    f"OpenClaw {OPENCLAW_TARGET_VERSION} npm upgrade and Doctor completed"
-                )
+                self.log.success(f"OpenClaw {OPENCLAW_TARGET_VERSION} npm upgrade completed")
                 return True
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             self.log.error(f"OpenClaw package-manager upgrade failed: {error}")
@@ -2470,7 +2490,7 @@ class WindowsSetup:
                 self.log.error(
                     f"Keep backup/recovery artifacts at {upgrade.backup_dir}. "
                     "Gateway will not start and older data will not be restored automatically. "
-                    "Retry this installer to resume repair."
+                    "Retry this installer to resume the upgrade."
                 )
             return False
 
@@ -4004,7 +4024,7 @@ class WindowsSetup:
                         .strip()
                         or not isinstance(package, dict)
                         or package.get("name") != "openclaw"
-                        or not package.get("version")
+                        or package.get("version") != OPENCLAW_TARGET_VERSION
                     ):
                         raise ValueError("The prepared OpenClaw runtime is incomplete")
                     self._desktop_runtime_root = runtime_root
