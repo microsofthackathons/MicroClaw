@@ -159,10 +159,10 @@ export function prepareWeixinPluginResource({
     }
     const manifest = writeWeixinRuntimeManifest(staging);
     if (
-      manifest.sdkCompatibility !== "2026.10.5" ||
+      manifest.sdkCompatibility !== "2026.10.10" ||
       !fs.existsSync(path.join(staging, "dist", "index.js"))
     ) {
-      throw new Error("The staged Weixin runtime is not compatible with OpenClaw 2026.10.5");
+      throw new Error("The staged Weixin runtime is not compatible with OpenClaw 2026.10.10");
     }
     fs.rmSync(destination, { recursive: true, force: true });
     fs.renameSync(staging, destination);

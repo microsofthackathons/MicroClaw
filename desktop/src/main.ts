@@ -6175,12 +6175,6 @@ async function startGatewayInner(
     );
     console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
 
-    // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
-    const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
-    if (!fs.existsSync(compileCacheDir)) {
-      fs.mkdirSync(compileCacheDir, { recursive: true });
-    }
-
     // Spawn gateway as a hidden background process — logs are forwarded
     // to the renderer via the gateway:log IPC channel (visible in Settings).
 
@@ -6309,14 +6303,14 @@ async function startGatewayInner(
       OPENCLAW_STATE_DIR: stateDir,
       NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
       NODE_ENV: "production",
-      NODE_COMPILE_CACHE: compileCacheDir,
-      // The Desktop owns the Gateway process and its compile cache.
-      OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
+      NODE_DISABLE_COMPILE_CACHE: "1",
       OPENCLAW_NO_RESPAWN: "1",
       OPENCLAW_NO_AUTO_UPDATE: "1",
       OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin",
     };
     for (const reservedName of [
+      "NODE_COMPILE_CACHE",
+      "OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED",
       "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED",
       "MICROCLAW_MXC_CRON_PAUSED",
       "MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS",

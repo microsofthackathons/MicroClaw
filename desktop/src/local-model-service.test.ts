@@ -307,12 +307,9 @@ describe("local model protocol guards", () => {
     );
   });
 
-  it("keeps the installer and provider adapter on the reviewed default release", () => {
-    const installer = readFileSync(
-      path.join(__dirname, "../../deployer/openclaw_version.py"),
-      "utf8",
-    );
-    expect(installer).toContain(`OPENCLAW_TARGET_VERSION = "${LOCAL_MODEL_PLUGIN_VERSION}"`);
+  it("pins the reviewed provider independently of the upgraded core", () => {
+    const installer = readFileSync(path.join(__dirname, "../../deployer/windows_setup.py"), "utf8");
+    expect(installer).toContain(`_LOCAL_MODEL_PLUGIN_VERSION = "${LOCAL_MODEL_PLUGIN_VERSION}"`);
     const adapter = readFileSync(path.join(__dirname, "openclaw-local-model-compat.mjs"), "utf8");
     expect(adapter).toContain(`PINNED_LOCAL_PLUGIN_VERSION = "${LOCAL_MODEL_PLUGIN_VERSION}"`);
   });
@@ -695,6 +692,8 @@ describe("local model protocol guards", () => {
     "2026.10.3+build.1",
     "2026.10.5",
     "2026.10.5+build.1",
+    "2026.10.10",
+    "2026.10.10+build.1",
   ])("accepts the verified Gateway release %s", (version) =>
     expect(supportsLocalModelGatewayVersion(version)).toBe(true),
   );
@@ -1511,6 +1510,8 @@ describe("local model lifecycle", () => {
     ["2026.10.3", "2026.9.3"],
     ["2026.10.5", "2026.10.5"],
     ["2026.10.5+build.1", "2026.10.5"],
+    ["2026.10.10", "2026.10.5"],
+    ["2026.10.10+build.1", "2026.10.5"],
   ])(
     "pins the official install for Gateway %s to provider %s",
     async (gatewayVersion, pluginVersion) => {

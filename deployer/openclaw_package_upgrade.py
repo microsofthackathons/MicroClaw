@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from deployer.lightweight_backup import BACKUP_SCOPE, verify_lightweight_archive
 from deployer.openclaw_upgrade import (
     UpgradeRecoveryRequiredError,
     _acquire_transaction_lock,
@@ -75,6 +76,7 @@ class PackageManagerUpgrade:
                 "package-installed",
                 "repairing",
                 "migrating",
+                "verifying",
                 "complete",
                 "failed",
             }
@@ -86,6 +88,8 @@ class PackageManagerUpgrade:
         if not prefix.is_absolute() or prefix.resolve() not in trusted_openclaw_prefixes():
             raise ValueError("Package-manager recovery prefix is not a trusted installation root")
         digest = data.get("archiveSha256")
+        if data.get("backupScope") not in {None, BACKUP_SCOPE}:
+            raise ValueError("Unrecognized package-manager backup scope; keep it for recovery")
         if digest is not None and re.fullmatch(r"[a-f0-9]{64}", str(digest)) is None:
             raise ValueError("Invalid state backup checksum in package-manager recovery record")
         upgrade = cls(root, data)
@@ -133,3 +137,7 @@ class PackageManagerUpgrade:
             raise ValueError(
                 f"State backup verification failed; keep {self.backup_dir} for recovery"
             )
+        if self.data.get("backupScope") == BACKUP_SCOPE:
+            manifest = verify_lightweight_archive(self.archive)
+            if manifest.get("sourceVersion") != self.data["sourceVersion"]:
+                raise ValueError("Lightweight backup source version does not match the transaction")
