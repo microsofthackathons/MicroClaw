@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -11,6 +13,32 @@ from uuid import uuid4
 
 RUNTIME_PREPARATION_TIMING_PREFIX = "MICROCLAW_RUNTIME_TIMING "
 INSTALL_TIMING_PREFIX = "MICROCLAW_INSTALL_TIMING "
+
+
+def run_timed_process(command, *, timing, timeout=None, capture_output=False, **kwargs):
+    """Observe process creation separately, preserving subprocess.run's cleanup contract."""
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr cannot be used with capture_output")
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    with timing.phase("helper-spawn"):
+        process = subprocess.Popen(command, **kwargs)
+    with process:
+        with timing.phase("helper-wait"):
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except TimeoutExpired as error:
+                process.kill()
+                with timing.phase("helper-timeout-reap"):
+                    if sys.platform == "win32":
+                        error.stdout, error.stderr = process.communicate()
+                    else:
+                        process.wait()
+                raise
+            except BaseException:
+                process.kill()
+                raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 class RuntimePreparationTiming:
