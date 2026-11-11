@@ -26,7 +26,13 @@ interface StartupSummaryTiming extends StartupTimingContext {
   attemptElapsedMs: number;
 }
 
-export type StartupTimingEvent = StartupPhaseTiming | StartupSummaryTiming;
+interface StartupOutcomeTiming extends StartupTimingContext {
+  kind: "outcome";
+  status: "failed" | "cancelled" | "timeout" | "retry";
+  attemptElapsedMs: number;
+}
+
+export type StartupTimingEvent = StartupPhaseTiming | StartupSummaryTiming | StartupOutcomeTiming;
 
 export class GatewayStartupTiming {
   private readonly startedAt: number;
@@ -37,6 +43,7 @@ export class GatewayStartupTiming {
   private httpReadyAt: number | null = null;
   private integrationStartedAt: number | null = null;
   private readonly milestones = new Set<string>();
+  private readonly outcomes = new Set<string>();
 
   constructor(
     private readonly attempt: number,
@@ -89,6 +96,18 @@ export class GatewayStartupTiming {
 
   historyReady(generation: string | null): void {
     this.markIntegration("first-history-response", generation);
+  }
+
+  outcome(status: StartupOutcomeTiming["status"], phase: string): void {
+    if (this.outcomes.has(status) || this.outcomes.has("retry")) return;
+    this.outcomes.add(status);
+    const now = this.now();
+    this.write({
+      ...this.context(phase, now),
+      kind: "outcome",
+      status,
+      attemptElapsedMs: Math.round(now - this.startedAt),
+    });
   }
 
   private markIntegration(phase: string, generation: string | null): void {

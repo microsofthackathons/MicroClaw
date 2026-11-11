@@ -9,5 +9,9 @@ materializeRuntimeArchive(
   runtimeRoot,
   version,
   undefined,
-  timing ? new RuntimePreparationTiming("worker") : undefined,
+  timing
+    ? new RuntimePreparationTiming("worker", (message) => {
+        parentPort?.postMessage({ type: "runtime-preparation-timing", message });
+      })
+    : undefined,
 );

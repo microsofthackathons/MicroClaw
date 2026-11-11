@@ -61,9 +61,15 @@ npm run perf -- --help
 All relative paths resolve against the repository root, even when the command is
 started from another directory. Results go to `build/performance/<run-id>/` by
 default; `--output` changes the parent directory. Existing runs are never reused.
-Each desktop scenario starts in a fresh isolated profile, so an already-built EXE
-may still need to extract its bundled runtime on the first launch. That unmeasured
-setup uses `--setup-timeout-ms` (default `600000`); measured desktop actions keep
+`app.first-launch` creates a fresh isolated profile for **each sample**, without an
+unmeasured setup launch. Its measured launch includes runtime extraction when needed,
+using `--first-launch-timeout-ms` (default `600000`). It does not restore a clean
+installed VM or clear OS file caches. Fixture generation and cleanup are outside its
+`totalMs`; attempt `elapsedMs` also retains setup/error-handling overhead.
+
+Restart/chat scenarios share one new isolated profile per scenario, so an already-built
+EXE may still need to extract its bundled runtime during their unmeasured initial
+setup. That setup uses `--setup-timeout-ms` (default `600000`); measured desktop actions keep
 `--timeout-ms` (default `120000`). Setup elapsed time and its timeout are preserved
 in `<scenario>.setup.json`, including failed launches. Increasing the setup timeout
 does not rebuild the application or include setup time in restart/chat metrics.
@@ -82,7 +88,7 @@ candidate report when a baseline is missing, malformed or incompatible. It shows
 deltas and failure-rate differences, without a gating verdict or invented thresholds.
 
 Default scope, also selected by `--scenario all`, is every built-in case, with three
-samples each. Currently these are `app.restart` and `chat.new-session`; newly
+samples each. Currently these are `app.first-launch`, `app.restart` and `chat.new-session`; newly
 registered built-in cases are included automatically. `install.clean` requires
 explicit selection and an external disposable-VM adapter, so it is not part of
 the default suite. Without suitable prerequisites, affected samples are explicitly
@@ -99,7 +105,15 @@ inspect `baseline.status` rather than interpreting exit code zero as a regressio
 ## Evidence and boundaries
 
 Each run saves `results.json`, `report.md`, per-attempt JSON, observed renderer
-milestones, sanitized Electron lifecycle summaries and model-request counts/timings.
+milestones, sanitized Electron lifecycle records and model-request counts/timings.
+Startup records include v2 main-process milestones, Gateway phases/attempts,
+runtime/worker phases, MXC durations and outcomes. Per-sample `startupTiming` and
+`installTiming` detail coverage is separate from whole-scenario coverage; older or
+partial logs are never treated as measured zero durations. Reports include phase
+tables with nested summaries identified, not added together. Worker and main-process
+absolute clocks must not be subtracted from each other. Ordinary instrumentation adds
+some observer/logging overhead; phase writes avoid per-event durable flushes while
+summary/lifecycle receipts retain them.
 `report.md` defaults to Chinese, retaining technical identifiers and original failure
 diagnostics for traceability. `results.json` keeps its machine-readable schema and values.
 The opening summary lists each built-in case's completion result, chat reply/error
@@ -113,6 +127,10 @@ available. Binary/source association remains unknown; retain your build provenan
 OpenClaw runtime archive identity is hashed when available; unavailable versions or
 hardware information must not be inferred from the source checkout.
 
+- `app.first-launch`: launch once in an unused isolated profile and observe the normal
+  chat-readiness probe plus a live newly spawned Gateway. A v2 startup summary is
+  required. Each sample has its own lifecycle evidence, including partial logs after
+  failures; no warmup desktop launch precedes the measured launch.
 - `app.restart`: an initial unmeasured launch establishes readiness and disk caches.
   The measured interval starts with the normal-exit request and ends when the
   relaunched chat surface is observed ready. Both the owned desktop and Gateway
@@ -222,12 +240,13 @@ for local inference), refuses redirects and enforces the request budget across a
 scenarios. It does not record request bodies, response text or the key. It uses
 the normal provider adapter chain; it does not mock Gateway `chat.send`.
 No arbitrary provider protocols or Vite/browser mocks are supported in this version.
-Disk caches are retained across samples after the initial unmeasured launch; this
+Restart/chat disk caches are retained after the initial unmeasured launch; this
 is not an OS cold-boot or model-cold-start measurement. Profiles must not be mixed.
 
 ## Isolation and ordinary-use overhead
 
-Normal startup has no runner, model server, performance IPC, observer or timer.
+Normal startup has no runner, model server, performance IPC or renderer performance
+observer. Structured startup/runtime timing is also available during ordinary use.
 The renderer probe is dynamically imported only when the main process has validated
 the explicit disposable-fixture marker and token. With performance mode disabled,
 the fixture configuration returns before filesystem access or environment changes.
@@ -263,7 +282,7 @@ The adapter descriptor has this contract:
 
 ```json
 {
-  "kind": "microclaw.performance.install-vm.v1",
+  "kind": "microclaw.performance.install-vm.v2",
   "disposable": true,
   "restorePerSample": true,
   "vmId": "dedicated-performance-vm",
@@ -278,18 +297,24 @@ For each attempt the runner executes the explicit executable without a shell,
 appending `--request <request.json> --result <result.json>`. Requests include
 `schemaVersion`, `runId`, `sampleId`, `installer`, VM/image identity and timeout.
 The adapter must restore before installation, control the installer confirmation
-boundary, collect existing installer step timings and first-launch milestones,
-exclude human wait, handle cancellation/cleanup, and write the matching identity:
+boundary and finish at **installation completion plus final validation**, without
+launching the application or waiting for service readiness. V1 adapters are rejected
+instead of silently mixing endpoint definitions. Pass the request's `timingEnvironment`
+into the installer so JSON timing logs have matching run/sample identities. Collect
+sanitized logs containing `MICROCLAW_INSTALL_TIMING` and `MICROCLAW_RUNTIME_TIMING`
+in the returned evidence paths. The runner parses these into per-sample detail tables.
+Exclude observed human wait from `totalMs`, preserve wall duration as `elapsedMs`,
+handle cancellation/cleanup, and write the matching identity:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "runId": "<from request>",
   "sampleId": "<from request>",
   "outcome": "success",
   "restored": true,
   "clean": true,
-  "serviceReady": true,
+  "installationComplete": true,
   "finalValidation": true,
   "elapsedMs": 1234,
   "metrics": { "totalMs": 1234, "stage.installation": 1000 },

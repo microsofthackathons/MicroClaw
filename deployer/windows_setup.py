@@ -3972,7 +3972,10 @@ class WindowsSetup:
             self.log.error("The packaged desktop executable or Node runtime is missing")
             return False
         self.log.step("Preparing the bundled OpenClaw runtime before service startup…")
-        timing = RuntimePreparationTiming(self.log)
+        install_timing = getattr(self, "install_timing", None)
+        timing = RuntimePreparationTiming(
+            self.log, context=install_timing.context() if install_timing else None
+        )
         try:
             with timing.phase("preparation-total", summary=True):
                 with timing.phase("environment-preparation"):

@@ -1,8 +1,9 @@
 # Desktop startup timing
 
 The desktop reports startup timing without changing OpenClaw, starting extra
-processes, or making additional readiness requests. All values are wall-clock
-milliseconds measured with the Electron main process's monotonic clock.
+processes, or making additional readiness requests. Durations use monotonic clocks.
+Main-process, worker and external driver clocks are separate; do not subtract their
+absolute positions across processes.
 
 ## Log records
 
@@ -15,8 +16,22 @@ milliseconds measured with the Electron main process's monotonic clock.
   `durationMs`, `appElapsedMs`, `attempt`, and `gatewayGeneration`.
 - `[startup-summary]` contains JSON cumulative summaries at HTTP readiness,
   WebSocket connection, application service readiness, and the first successful
-  history response. Summaries are also saved as `startup-summary` events in
-  `diagnostics/electron-lifecycle.jsonl` under Electron's user-data directory.
+  history response.
+- All three record types are persisted as `startup-milestone`, `startup-breakdown`
+  and `startup-summary` in `diagnostics/electron-lifecycle.jsonl` under Electron's
+  user-data directory, with `timingVersion: 2` and the Electron `processId`.
+- `startup-runtime-phase` includes normal-startup runtime metadata/cache checks,
+  worker startup, extraction, cleanup, publication and summary events. Worker
+  events are relayed through the parent, retaining their own scope and clock.
+- `startup-mxc-phase` records MXC transitions with monotonic durations.
+- `startup-outcome` preserves failed, cancelled, timed-out and retried Gateway
+  attempts. It does not manufacture readiness on failure. A timeout may still be
+  followed by a later observed connection through the existing reconnect path.
+
+Timing details are appended immediately; cumulative summaries and existing lifecycle
+receipts retain durable flushes. Fine-grained events avoid an fsync per phase.
+Logging still has overhead; abrupt process or power loss can leave partial evidence.
+Raw child stdout/stderr and credentials are not copied into timing evidence.
 
 Every Gateway startup attempt has its own attempt number. Once spawned, records
 also identify the Gateway generation. Retries and later restarts are not folded
@@ -33,8 +48,9 @@ into the first attempt.
 | `attemptElapsedMs` | Total elapsed time for this attempt at the summary milestone. |
 | `appElapsedMs` | Elapsed time since the Electron main-process time origin. |
 
-MicroClaw phases split preparation into configuration/personas, the existing
-Gateway check, Weixin runtime verification, agent skills/workspaces, old-process
+MicroClaw phases split preparation into configuration read, the existing Gateway
+health/port check, configuration/personas, Weixin runtime verification,
+agent skills/workspaces, old-process
 shutdown/port release, and spawn preparation. The Weixin phase includes any
 required installation or repair; it is near zero when convergence is deferred
 because a Gateway is already running.
@@ -43,9 +59,16 @@ For a normally observed cold start, `microclawPreflightMs + openclawHttpMs +
 integrationMs` equals `attemptElapsedMs`, subject to millisecond rounding.
 `appBeforeAttemptMs + attemptElapsedMs` equals `appElapsedMs`. Integration phase
 durations cover consecutive observed milestones, whereas summary values are
-cumulative: do not sum multiple summaries. Renderer loading runs in parallel
-with service startup, so do not add `renderer-loaded` elapsed time to Gateway
-startup time.
+cumulative: do not sum multiple summaries. Initial renderer navigation completes
+before Gateway startup is requested, but `renderer-loaded` is an absolute milestone,
+not an additive phase duration.
+
+The performance runner retains per-attempt `startupTiming` arrays and prints phase
+tables. Missing v2 events give `partial` or `unavailable` detail coverage; they are
+never replaced with zeros. Whole-scenario success and detail coverage are separate.
+`app.first-launch` measures each fresh isolated profile's first launch, including
+runtime preparation; `app.restart` measures exit and cached-profile relaunch
+separately. Neither claims an OS cold boot or OpenClaw-internal CPU attribution.
 
 `mode: "reused"` means no child was spawned. `openclawHttpMs` is `null`, not an
 invented zero-duration cold start. It is also `null` if HTTP readiness was never

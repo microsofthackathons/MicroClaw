@@ -47,5 +47,25 @@
 - 非零退出也转存记录；超时时尽量转存 `TimeoutExpired` 中已有的 stdout/stderr，包括字节形式的部分输出。
   进程被强制终止且没有机会输出的记录无法补回。
 - 不要把不同作用域的同一工作、`summary` 汇总项和内部子阶段重复相加。
-- 普通桌面启动不启用这些详细日志；只在安装器的专用准备模式传递计时器并记录。
+- 普通桌面启动同样传递计时器，通过 `startup-runtime-phase` 写入 Electron 生命周期日志；
+  安装器专用准备模式继续输出带前缀的 JSON。worker 明细由父进程转发，保留原始作用域。
 - 修改后的源码需要重新构建桌面包与安装器才会生效。不能用新增日志还原此前未采样安装的耗时分布。
+
+## 安装全过程
+
+Web 安装器另外输出 `MICROCLAW_INSTALL_TIMING ` JSON（`schemaVersion: 2`）：
+
+- `runId`、`sampleId`：适配器通过 `MICROCLAW_PERF_RUN_ID`、`MICROCLAW_PERF_SAMPLE_ID`
+  环境变量传入；手动安装自动生成 runId，sampleId 为 null。
+- `stageId`：不依赖界面语言的阶段编号，例如 `desktop-60`、`prepareUpgrade-18` 和
+  `prepareUpgrade-52`。重复文案仍可区分，运行时子进程记录继承相同安装身份。
+- `kind: step` 记录整个步骤；`phase: attempt`、`retry-wait`、`human-wait`
+  分别记录单次尝试、退避等待和关闭现有应用前的人工确认等待。
+- `installation-total` 汇总包含 `durationMs`（总经过时间）、`humanWaitMs` 和
+  `activeMs`（扣除已观测人工确认等待）。系统 UAC 和外部安装器内部等待未单独拆分。
+- 失败、取消和意外异常保留已完成阶段；日志写入失败不会改变安装结果。
+
+安装结束边界是安装完成与最终校验，不包含启动桌面应用或服务就绪。原有安装成功后不自动
+启动应用的行为保持不变。下载和桌面 ZIP 展开仍包含在各自安装步骤内，未提供逐下载子阶段。
+步骤、内部尝试、运行时汇总与子阶段不能重复相加。VM 适配器计时覆盖确认安装到最终完成；
+本地结构化日志从安装线程进入开始，两者之间的调度开销不应被误当成某个安装步骤。

@@ -11,6 +11,7 @@ const TEXT = {
   skipped: "已跳过（skipped）",
   cancelled: "已取消（cancelled）",
   "incomplete-restart": "重启不完整（incomplete-restart）",
+  "incomplete-startup": "启动凭据不完整（incomplete-startup）",
   "unexpected-response": "响应不符合预期（unexpected-response）",
   "model-error": "模型错误（model-error）",
   "empty-response": "空回复（empty-response）",
@@ -30,6 +31,9 @@ const TEXT = {
   "restore-vm-before-each-sample": "每次采样前还原虚拟机",
   "retained-disk-caches-after-unmeasured-initial-launch": "首次启动不计入采样，后续保留磁盘缓存",
   "install.clean": "全新安装（install.clean）",
+  "app.first-launch": "新配置首次启动（app.first-launch）",
+  "fresh-isolated-profile-per-sample; OS-cache-uncontrolled":
+    "每次采样使用全新隔离配置；不清理操作系统缓存",
   "app.restart": "应用完整重启（app.restart）",
   "chat.new-session": "新建会话并对话（chat.new-session）",
   totalMs: "总耗时（totalMs）",
@@ -42,8 +46,8 @@ const TEXT = {
   "stage.microclawPreflightMs": "MicroClaw 启动预检（stage.microclawPreflightMs）",
   "stage.openclawHttpMs": "OpenClaw HTTP 就绪（stage.openclawHttpMs）",
   "stage.integrationMs": "集成初始化（stage.integrationMs）",
-  "installation-confirmed -> service-ready-and-final-validation":
-    "确认安装 → 服务就绪且最终校验完成",
+  "installation-confirmed -> installation-complete-and-final-validation":
+    "确认安装 → 安装完成且最终校验完成（不启动应用）",
   "normal-exit-request -> observed-chat-ready": "请求正常退出 → 重启后观测到聊天就绪",
   "normal-exit-request -> desktop-and-owned-gateway-exited":
     "请求正常退出 → 桌面进程及其管理的 Gateway 均退出",
@@ -69,6 +73,8 @@ const TEXT = {
     "未采集 GPU 标识、模型服务输出 token 数和模型运行时内部阶段；真实模型的网络与推理耗时是未受控的波动来源。",
   "Synthetic fixture has no personal sessions, plugins or bundled skills enabled; it is not a measurement of a user's populated profile.":
     "隔离测试环境未启用个人会话、插件或内置技能；结果不代表用户已有数据和配置下的性能。",
+  "app.first-launch measures the first launch of each fresh isolated profile, including runtime preparation; it is not an OS cold boot or a post-installer VM launch. Other desktop scenarios exclude initial fixture startup. All proxy requests count toward the shared model request budget.":
+    "首次启动场景测量每个全新隔离配置的首次启动，包含运行时准备；不等同于系统冷启动或安装后虚拟机首次启动。其他桌面场景排除初始启动；全部模型请求计入共享预算。",
   comparable: "可对比（comparable）",
   inconclusive: "无法得出结论（inconclusive）",
   "not-evaluated: no agreed thresholds": "未评估性能是否达标：尚未约定阈值",

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock
 
 from deployer.install_timing import (
+    INSTALL_TIMING_PREFIX,
     RUNTIME_PREPARATION_TIMING_PREFIX,
     InstallTiming,
     RuntimePreparationTiming,
@@ -36,7 +37,7 @@ class InstallTimingTests(unittest.TestCase):
         timing.finish("success")
 
         self.assertEqual(
-            log.messages,
+            [line for line in log.messages if not line.startswith(INSTALL_TIMING_PREFIX)],
             [
                 "Install timing: Installing Git [success] 2.50s",
                 "Install timing summary: status=success total=6.00s steps=1",
@@ -52,12 +53,73 @@ class InstallTimingTests(unittest.TestCase):
         timing.finish("success")
 
         self.assertEqual(
-            log.messages,
+            [line for line in log.messages if not line.startswith(INSTALL_TIMING_PREFIX)],
             ["Install timing summary: status=failed total=1.00s steps=0"],
         )
 
+    def test_structured_steps_keep_identity_and_separate_human_wait(self):
+        log = _Log()
+        clock = Mock(return_value=10.0)
+        timing = InstallTiming(log, clock)
+        started = timing.start_step("prepareUpgrade-18")
+        with timing.span("attempt", attempt=1):
+            clock.return_value = 11.0
+            with timing.span("human-wait"):
+                clock.return_value = 16.0
+            clock.return_value = 17.0
+        timing.record_step("准备升级...", started, "success")
+        timing.finish("success")
+        events = [
+            json.loads(line[len(INSTALL_TIMING_PREFIX) :])
+            for line in log.messages
+            if line.startswith(INSTALL_TIMING_PREFIX)
+        ]
+        self.assertTrue(all(event["runId"] == timing.run_id for event in events))
+        self.assertTrue(all(event["stageId"] == "prepareUpgrade-18" for event in events[:-1]))
+        self.assertEqual(events[-1]["stageId"], "installation")
+        self.assertEqual(events[-1]["stepCount"], 1)
+        self.assertEqual(events[-1]["durationMs"], 7000)
+        self.assertEqual(events[-1]["humanWaitMs"], 5000)
+        self.assertEqual(events[-1]["activeMs"], 2000)
+        self.assertEqual(events[-2]["durationMs"], 7000)
+
+    def test_broken_sink_does_not_change_installation_or_original_failure(self):
+        log = Mock()
+        log.info.side_effect = OSError("unavailable")
+        timing = InstallTiming(log)
+        started = timing.start_step("desktop-60")
+        with self.assertRaisesRegex(ValueError, "original"), timing.span("attempt", attempt=1):
+            raise ValueError("original")
+        timing.record_step("Desktop", started, "failed")
+        timing.finish("failed")
+
 
 class RuntimePreparationTimingTests(unittest.TestCase):
+    def test_helper_records_inherit_install_attempt_identity(self):
+        log = _Log()
+        context = {
+            "schemaVersion": 2,
+            "runId": "run",
+            "sampleId": "sample",
+            "stageId": "desktop-60",
+        }
+        timing = RuntimePreparationTiming(log, context=context)
+        timing.forward_output(
+            RUNTIME_PREPARATION_TIMING_PREFIX
+            + json.dumps(
+                {
+                    "scope": "worker",
+                    "phase": "archive-extract",
+                    "status": "success",
+                    "durationMs": 5,
+                }
+            )
+        )
+        event = json.loads(log.messages[-1][len(RUNTIME_PREPARATION_TIMING_PREFIX) :])
+        self.assertEqual(event["scope"], "worker")
+        self.assertEqual(event["sampleId"], "sample")
+        self.assertEqual(event["stageId"], "desktop-60")
+
     def test_records_phase_start_finish_and_summary_boundaries(self):
         log = _Log()
         clock = Mock(return_value=10.0)
