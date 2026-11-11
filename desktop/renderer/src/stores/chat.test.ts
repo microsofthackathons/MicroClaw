@@ -1956,6 +1956,52 @@ describe("useChatStore — draft sessions", () => {
     expect(persisted.some((s: { key: string }) => s.key === store.sessionKey)).toBe(false);
   });
 
+  it("keeps an unsent draft when the main session learns its canonical identity", async () => {
+    const store = useChatStore();
+    const draft = store.getDraft();
+    draft.text = "Unsent main draft";
+    store.setMainSessionKey("agent:main:main");
+    expect(store.getDraft()).toBe(draft);
+    expect(draft.sessionKey).toBe("agent:main:main");
+    await store.switchAgentSession("office-artisan");
+    expect(store.getDraft().text).toBe("");
+    await store.switchAgentSession("main");
+    expect(store.getDraft()).toBe(draft);
+    expect(store.getDraft().text).toBe("Unsent main draft");
+  });
+
+  it("clears only a reset session's draft and invalidates its pending imports", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey("agent:main:main");
+    const draft = store.getDraft();
+    draft.text = "Reset this draft";
+    const revision = draft.revision;
+    await store.switchAgentSession("office-artisan");
+    store.getDraft().text = "Keep this draft";
+    await store.resetSession("agent:main:main");
+    expect(draft.text).toBe("");
+    expect(draft.revision).toBeGreaterThan(revision);
+    expect(store.getDraft().text).toBe("Keep this draft");
+  });
+
+  it("keeps an unsent session reachable in the sidebar without persisting its draft contents", async () => {
+    const store = useChatStore();
+    const sessions = useSessionStore();
+    store.newSession("office-artisan");
+    const key = store.sessionKey;
+    store.getDraft().text = "Memory-only draft";
+    await store.switchAgentSession("main");
+    expect(sessions.sessions).toContainEqual(
+      expect.objectContaining({ key, agentId: "office-artisan" }),
+    );
+    expect(storage["openclaw-sessions"]).not.toContain("Memory-only draft");
+    await store.switchAgentSession("office-artisan");
+    expect(store.getDraft().text).toBe("Memory-only draft");
+    expect(sessions.sessions.find((session) => session.key === key)?.agentId).toBe(
+      "office-artisan",
+    );
+  });
+
   it("persists a draft session when the first message is sent", async () => {
     const store = useChatStore();
     store.newSession("coder");
@@ -2056,6 +2102,29 @@ describe("useChatStore — attachments", () => {
     expect(mockSendMessage).toHaveBeenCalledWith("main", "", [attachment]);
     expect(store.messages.at(-1)?.content).toEqual([]);
   });
+
+  it.each(["switch", "clear"])(
+    "cancels a send after %s while privacy settings are pending",
+    async (action) => {
+      const store = useChatStore();
+      let finishSettings!: (settings: object) => void;
+      mockGetSettings.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishSettings = resolve;
+          }),
+      );
+      const sending = store.sendMessage("First session", [attachment]);
+      if (action === "switch") store.newSession("office-artisan");
+      else store.clearDraft();
+      finishSettings({});
+
+      expect(await sending).toBe(false);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(store.messages).toEqual([]);
+      expect(store.streaming).toBe(false);
+    },
+  );
 
   it("removes the optimistic message and reports failure when IPC rejects", async () => {
     const store = useChatStore();

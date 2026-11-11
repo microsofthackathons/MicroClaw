@@ -130,6 +130,7 @@ import {
   modelAuthRecoveryInitialFamily,
   requiresModelAuthRecovery,
   useChatStore,
+  type ChatDraft,
 } from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
 import { t } from "@/i18n";
@@ -150,22 +151,32 @@ const route = useRoute();
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
 
-const inputText = ref("");
+const currentDraft = computed(() => chatStore.getDraft());
+const inputText = computed({
+  get: () => currentDraft.value.text,
+  set: (text: string) => {
+    currentDraft.value.text = text;
+  },
+});
 const inputRef = ref<HTMLTextAreaElement>();
 const threadRef = ref<HTMLDivElement>();
 const showNewMessages = ref(false);
 const isCompact = ref(window.innerHeight < 700);
 const modelSetupVisible = ref(false);
 const modelSetupInitialFamily = ref<"github-copilot" | undefined>();
-const pendingModelSetupMessage = ref("");
-const pendingModelSetupAttachments = ref<ChatAttachment[]>([]);
-const pendingAttachments = ref<ChatAttachment[]>([]);
-const pickingFiles = ref(false);
-const importingImages = ref(0);
+const pendingModelSetup = ref<{
+  draft: ChatDraft;
+  revision: number;
+  text: string;
+  attachments: ChatAttachment[];
+}>();
+const pendingAttachments = computed(() => currentDraft.value.attachments);
+const pickingFiles = computed(() => currentDraft.value.pickingFiles);
+const importingImages = computed(() => currentDraft.value.importingImages);
 const dragDepth = ref(0);
-const submittingMessage = ref(false);
+const submittingMessage = computed(() => currentDraft.value.submittingMessage);
 let isUserScrolledUp = false;
-let attachmentImportQueue: Promise<void> = Promise.resolve();
+let disposed = false;
 
 function onWindowResize() {
   isCompact.value = window.innerHeight < 700;
@@ -181,10 +192,10 @@ function handleCardSelect(prompt: string) {
 }
 
 function clearComposeInput() {
-  if (!inputText.value && !chatStore.pendingPrompt && pendingAttachments.value.length === 0) return;
-  inputText.value = "";
-  pendingAttachments.value = [];
+  chatStore.clearDraft();
   chatStore.pendingPrompt = null;
+  modelSetupVisible.value = false;
+  pendingModelSetup.value = undefined;
   nextTick(() => autoResize());
 }
 
@@ -203,6 +214,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  disposed = true;
   window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("microclaw:clear-compose", clearComposeInput);
 });
@@ -221,10 +233,14 @@ watch(
 );
 
 watch(
-  () => [chatStore.sessionKey, route.params.agentId],
+  currentDraft,
   () => {
-    clearComposeInput();
+    modelSetupVisible.value = false;
+    pendingModelSetup.value = undefined;
+    dragDepth.value = 0;
+    autoResize();
   },
+  { flush: "sync" },
 );
 
 const composePlaceholder = computed(() =>
@@ -299,7 +315,7 @@ watch(
   () => chatStore.lastError,
   (error) => {
     if (!requiresModelAuthRecovery(error)) return;
-    pendingModelSetupMessage.value = "";
+    pendingModelSetup.value = undefined;
     modelSetupInitialFamily.value = modelAuthRecoveryInitialFamily(error);
     modelSetupVisible.value = true;
   },
@@ -353,6 +369,8 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 async function handleSend() {
+  const draft = currentDraft.value;
+  const revision = draft.revision;
   const text = inputText.value.trim();
   if (
     (!text && pendingAttachments.value.length === 0) ||
@@ -365,33 +383,38 @@ async function handleSend() {
     return;
   }
   const attachments = pendingAttachments.value.map((attachment) => ({ ...attachment }));
-  submittingMessage.value = true;
+  draft.submittingMessage = true;
   try {
-    if (await needsModelSetupBeforeSend()) {
-      pendingModelSetupMessage.value = text;
-      pendingModelSetupAttachments.value = attachments;
+    const needsSetup = await needsModelSetupBeforeSend(draft.sessionKey);
+    if (disposed || currentDraft.value !== draft || revision !== draft.revision) return;
+    if (needsSetup) {
+      pendingModelSetup.value = { draft, revision, text, attachments };
       modelSetupInitialFamily.value = undefined;
       modelSetupVisible.value = true;
       return;
     }
-    await sendText(text, attachments);
+    await sendText(text, attachments, draft, revision);
   } finally {
-    submittingMessage.value = false;
+    draft.submittingMessage = false;
   }
 }
 
-async function sendText(text: string, attachments: ChatAttachment[]): Promise<boolean> {
+async function sendText(
+  text: string,
+  attachments: ChatAttachment[],
+  draft: ChatDraft,
+  revision: number,
+): Promise<boolean> {
   const sent = await chatStore.sendMessage(text, attachments);
   if (!sent) return false;
-  inputText.value = "";
-  pendingAttachments.value = [];
+  if (draft.revision === revision) chatStore.clearDraft(draft.sessionKey);
   autoResize();
   return true;
 }
 
-async function needsModelSetupBeforeSend(): Promise<boolean> {
+async function needsModelSetupBeforeSend(sessionKey: string): Promise<boolean> {
   try {
-    const current = await window.openclaw.model.session.get(chatStore.sessionKey);
+    const current = await window.openclaw.model.session.get(sessionKey);
     if (current.overridden && current.modelRef) return false;
     return await window.openclaw.config.needsSetup();
   } catch {
@@ -400,33 +423,40 @@ async function needsModelSetupBeforeSend(): Promise<boolean> {
 }
 
 async function handleModelConfigured() {
-  const text = pendingModelSetupMessage.value;
-  const attachments = pendingModelSetupAttachments.value;
+  const pending = pendingModelSetup.value;
+  if (!pending || pending.draft !== currentDraft.value) return;
+  const { text, attachments, draft, revision } = pending;
+  if (revision !== draft.revision) return;
   if ((!text && attachments.length === 0) || !chatStore.wsConnected || submittingMessage.value) {
     return;
   }
-  submittingMessage.value = true;
+  draft.submittingMessage = true;
   try {
-    if (!(await sendText(text, attachments))) return;
-    pendingModelSetupMessage.value = "";
-    pendingModelSetupAttachments.value = [];
+    if (!(await sendText(text, attachments, draft, revision))) return;
+    if (pendingModelSetup.value === pending) pendingModelSetup.value = undefined;
   } finally {
-    submittingMessage.value = false;
+    draft.submittingMessage = false;
   }
 }
 
 async function handleAddAttachments() {
   if (!chatStore.wsConnected || pickingFiles.value || submittingMessage.value) return;
-  pickingFiles.value = true;
+  const draft = currentDraft.value;
+  const revision = draft.revision;
+  draft.pickingFiles = true;
   try {
-    await enqueueAttachmentImport(async () => {
-      const result = await window.openclaw.dialog.openFiles(currentAttachmentBytes());
-      applyAttachmentResult(result);
+    await enqueueAttachmentImport(draft, async () => {
+      if (revision !== draft.revision) return;
+      const result = await window.openclaw.dialog.openFiles(currentAttachmentBytes(draft));
+      if (revision !== draft.revision) return;
+      applyAttachmentResult(draft, result);
     });
   } catch (error) {
-    ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+    if (revision === draft.revision) {
+      ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+    }
   } finally {
-    pickingFiles.value = false;
+    draft.pickingFiles = false;
   }
 }
 
@@ -436,6 +466,8 @@ function handlePaste(event: ClipboardEvent) {
   const files = collectClipboardImageFiles(clipboardData);
   if (files.length === 0) return;
 
+  const draft = currentDraft.value;
+  const revision = draft.revision;
   event.preventDefault();
   const pastedText = clipboardTextToInsert(clipboardData);
   if (pastedText) {
@@ -448,24 +480,30 @@ function handlePaste(event: ClipboardEvent) {
     );
     inputText.value = insertion.text;
     nextTick(() => {
+      if (currentDraft.value !== draft || revision !== draft.revision) return;
       inputRef.value?.setSelectionRange(insertion.caret, insertion.caret);
       autoResize();
     });
   }
 
-  importingImages.value += 1;
-  void enqueueAttachmentImport(async () => {
+  draft.importingImages += 1;
+  void enqueueAttachmentImport(draft, async () => {
     try {
+      if (revision !== draft.revision) return;
       const images = await serializeClipboardImages(files);
+      if (revision !== draft.revision) return;
       const result = await window.openclaw.attachment.importClipboardImages(
         images,
-        currentAttachmentBytes(),
+        currentAttachmentBytes(draft),
       );
-      applyAttachmentResult(result);
+      if (revision !== draft.revision) return;
+      applyAttachmentResult(draft, result);
     } catch (error) {
-      ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+      if (revision === draft.revision) {
+        ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+      }
     } finally {
-      importingImages.value -= 1;
+      draft.importingImages -= 1;
     }
   });
 }
@@ -506,44 +544,48 @@ function handleDrop(event: DragEvent) {
   if (!chatStore.wsConnected || submittingMessage.value) return;
   const files = Array.from(event.dataTransfer?.files ?? []);
   if (files.length === 0) return;
-  const sessionKey = chatStore.sessionKey;
-  const agentId = route.params.agentId;
-  importingImages.value += 1;
-  void enqueueAttachmentImport(async () => {
+  const draft = currentDraft.value;
+  const revision = draft.revision;
+  const isValidDraft = () => revision === draft.revision;
+  draft.importingImages += 1;
+  void enqueueAttachmentImport(draft, async () => {
     try {
-      const prepared = await prepareDroppedImages(files, currentAttachmentBytes());
-      if (sessionKey !== chatStore.sessionKey || agentId !== route.params.agentId) return;
+      if (!isValidDraft()) return;
+      const prepared = await prepareDroppedImages(files, currentAttachmentBytes(draft));
+      if (!isValidDraft()) return;
       showAttachmentRejections(prepared.rejections);
       if (prepared.images.length === 0) return;
       const result = await window.openclaw.attachment.importClipboardImages(
         prepared.images,
-        currentAttachmentBytes(),
+        currentAttachmentBytes(draft),
       );
-      if (sessionKey !== chatStore.sessionKey || agentId !== route.params.agentId) return;
-      applyAttachmentResult(result);
+      if (!isValidDraft()) return;
+      applyAttachmentResult(draft, result);
     } catch (error) {
-      ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+      if (isValidDraft()) {
+        ElMessage.error(t("chat.attachment.pickerFailed", { error: String(error) }));
+      }
     } finally {
-      importingImages.value -= 1;
+      draft.importingImages -= 1;
     }
   });
 }
 
-function enqueueAttachmentImport<T>(task: () => Promise<T>): Promise<T> {
-  const result = attachmentImportQueue.then(task, task);
-  attachmentImportQueue = result.then(
+function enqueueAttachmentImport<T>(draft: ChatDraft, task: () => Promise<T>): Promise<T> {
+  const result = draft.attachmentImportQueue.then(task, task);
+  draft.attachmentImportQueue = result.then(
     () => undefined,
     () => undefined,
   );
   return result;
 }
 
-function currentAttachmentBytes(): number {
-  return pendingAttachments.value.reduce((total, attachment) => total + attachment.size, 0);
+function currentAttachmentBytes(draft: ChatDraft): number {
+  return draft.attachments.reduce((total, attachment) => total + attachment.size, 0);
 }
 
-function applyAttachmentResult(result: OpenFilesResult) {
-  pendingAttachments.value.push(...result.attachments);
+function applyAttachmentResult(draft: ChatDraft, result: OpenFilesResult) {
+  draft.attachments.push(...result.attachments);
   showAttachmentRejections(result.rejections);
 }
 

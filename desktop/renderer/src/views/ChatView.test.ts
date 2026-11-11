@@ -1,14 +1,17 @@
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { reactive } from "vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { ElMessage } from "element-plus";
 import { setLocale, t } from "@/i18n";
 import { useChatStore } from "@/stores/chat";
 import ChatView from "./ChatView.vue";
 
+const route = vi.hoisted(() => ({ params: { agentId: "main" } }));
+
 vi.mock("vue-router", () => ({
-  useRoute: () => ({ params: {} }),
+  useRoute: () => reactive(route),
   useRouter: () => ({ push: vi.fn() }),
 }));
 
@@ -79,6 +82,28 @@ describe("ChatView image drops", () => {
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const image = (name = "photo.png") => new File([png], name, { type: "image/png" });
   const data = (files: File[]) => ({ files, types: ["Files"], dropEffect: "none" });
+  const imageResult = (fileName: string): OpenFilesResult => ({
+    attachments: [
+      {
+        type: "image",
+        mimeType: "image/png",
+        fileName,
+        size: png.byteLength,
+        content: "iVBORw0KGgo=",
+      },
+    ],
+    rejections: [],
+  });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((finish, fail) => {
+      resolve = finish;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
 
   function setup() {
     const pinia = createPinia();
@@ -101,12 +126,13 @@ describe("ChatView image drops", () => {
     const wrapper = shallowMount(ChatView, {
       global: { plugins: [pinia], stubs: { ChatAttachments: false } },
     });
-    return { store, send, imported, wrapper, box: wrapper.get(".home-input-box") };
+    return { pinia, store, send, imported, wrapper, box: wrapper.get(".home-input-box") };
   }
 
   beforeEach(() => {
     setLocale("en-US");
     window.openclaw = createBrowserOpenClawMock();
+    reactive(route).params.agentId = "main";
   });
 
   it("previews multiple dropped images, removes and re-adds one, then sends through the existing flow", async () => {
@@ -222,6 +248,7 @@ describe("ChatView image drops", () => {
 
   it("does not add an in-flight drop to a different session", async () => {
     const { wrapper, box, store, imported } = setup();
+    const originalKey = store.sessionKey;
     let finishImport!: (result: OpenFilesResult) => void;
     imported.mockImplementationOnce(
       () =>
@@ -246,8 +273,369 @@ describe("ChatView image drops", () => {
     });
     await flushPromises();
     expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+    store.sessionKey = originalKey;
+    await flushPromises();
+    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it.each(["file-read", "ipc"] as const)(
+    "invalidates an empty draft during %s and sends only images dropped after clearing",
+    async (stage) => {
+      const { wrapper, box, store, send, imported } = setup();
+      const gate = deferred<void>();
+      const oldImage = image("old.png");
+      const queuedImage = image("queued-old.png");
+      const queuedRead = vi.spyOn(queuedImage, "slice");
+      if (stage === "file-read") {
+        vi.spyOn(oldImage, "arrayBuffer").mockImplementationOnce(async () => {
+          await gate.promise;
+          return png.slice().buffer;
+        });
+      } else {
+        imported.mockImplementationOnce(async () => {
+          await gate.promise;
+          return imageResult("old.png");
+        });
+      }
+
+      try {
+        await box.trigger("drop", { dataTransfer: data([oldImage]) });
+        await flushPromises();
+        await box.trigger("drop", { dataTransfer: data([queuedImage]) });
+        const sessionKey = store.sessionKey;
+        window.dispatchEvent(new Event("microclaw:clear-compose"));
+        expect(store.sessionKey).toBe(sessionKey);
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("");
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        await box.trigger("drop", { dataTransfer: data([image("new.png")]) });
+        gate.resolve();
+        await flushPromises();
+
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+        expect(queuedRead).not.toHaveBeenCalled();
+        expect(imported).toHaveBeenCalledTimes(stage === "file-read" ? 1 : 2);
+        expect(imported).toHaveBeenLastCalledWith(
+          [expect.objectContaining({ fileName: "new.png" })],
+          0,
+        );
+        await wrapper.get("textarea").setValue("New draft");
+        await wrapper.get(".home-input-send").trigger("click");
+        await flushPromises();
+        expect(send).toHaveBeenCalledWith("New draft", [
+          expect.objectContaining({ fileName: "new.png" }),
+        ]);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it.each(["session", "agent"] as const)(
+    "keeps an in-flight drop for its draft after a %s round trip",
+    async (target) => {
+      const { wrapper, box, store, imported } = setup();
+      const importing = deferred<OpenFilesResult>();
+      imported.mockReturnValueOnce(importing.promise);
+      try {
+        await box.trigger("drop", { dataTransfer: data([image("old.png")]) });
+        await flushPromises();
+        if (target === "session") {
+          const previous = store.sessionKey;
+          store.sessionKey = "another-session";
+          store.sessionKey = previous;
+        } else {
+          await store.switchAgentSession("writer");
+          await store.switchAgentSession("main");
+        }
+        importing.resolve(imageResult("old.png"));
+        await flushPromises();
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it.each(["session", "agent"] as const)(
+    "restores independent text and attachments when switching %s",
+    async (target) => {
+      const { wrapper, box, store, pinia } = setup();
+      const firstKey = store.sessionKey;
+      try {
+        await wrapper.get("textarea").setValue("First draft");
+        await box.trigger("drop", { dataTransfer: data([image("first.png")]) });
+        await flushPromises();
+        if (target === "session") store.sessionKey = "another-session";
+        else await store.switchAgentSession("writer");
+        const secondKey = store.sessionKey;
+        await flushPromises();
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("");
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        await wrapper.get("textarea").setValue("Second draft");
+        await box.trigger("drop", { dataTransfer: data([image("second.png")]) });
+        await flushPromises();
+        if (target === "session") store.sessionKey = firstKey;
+        else await store.switchAgentSession("main");
+        await flushPromises();
+        expect(store.sessionKey).toBe(firstKey);
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("First draft");
+        expect(wrapper.get(".chat-attachment__name").text()).toBe("first.png");
+        await wrapper.get(".chat-attachment__remove").trigger("click");
+        if (target === "session") store.sessionKey = secondKey;
+        else await store.switchAgentSession("writer");
+        await flushPromises();
+        expect(store.sessionKey).toBe(secondKey);
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Second draft");
+        expect(wrapper.get(".chat-attachment__name").text()).toBe("second.png");
+      } finally {
+        wrapper.unmount();
+      }
+      const remounted = shallowMount(ChatView, {
+        global: { plugins: [pinia], stubs: { ChatAttachments: false } },
+      });
+      try {
+        expect((remounted.get("textarea").element as HTMLTextAreaElement).value).toBe(
+          "Second draft",
+        );
+        expect(remounted.get(".chat-attachment__name").text()).toBe("second.png");
+      } finally {
+        remounted.unmount();
+      }
+    },
+  );
+
+  it.each(["file-read", "ipc"] as const)(
+    "finishes a %s import only in its original draft without blocking another session",
+    async (stage) => {
+      const { wrapper, box, store, imported, send } = setup();
+      const firstKey = store.sessionKey;
+      const gate = deferred<void>();
+      const oldImage = image("first.png");
+      if (stage === "file-read") {
+        vi.spyOn(oldImage, "arrayBuffer").mockImplementationOnce(async () => {
+          await gate.promise;
+          return png.slice().buffer;
+        });
+      } else {
+        imported.mockImplementationOnce(async () => {
+          await gate.promise;
+          return imageResult("first.png");
+        });
+      }
+      try {
+        await wrapper.get("textarea").setValue("First draft");
+        await box.trigger("drop", { dataTransfer: data([oldImage]) });
+        await flushPromises();
+        store.sessionKey = "second-session";
+        await wrapper.get("textarea").setValue("Second draft");
+        await box.trigger("drop", { dataTransfer: data([image("second.png")]) });
+        await flushPromises();
+        await wrapper.get(".home-input-send").trigger("click");
+        await flushPromises();
+        expect(send).toHaveBeenCalledWith("Second draft", [
+          expect.objectContaining({ fileName: "second.png" }),
+        ]);
+        gate.resolve();
+        await flushPromises();
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        store.sessionKey = firstKey;
+        await flushPromises();
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("First draft");
+        expect(wrapper.get(".chat-attachment__name").text()).toBe("first.png");
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("does not resurrect a cleared import after leaving and returning to its session", async () => {
+    const { wrapper, box, store, imported } = setup();
+    const firstKey = store.sessionKey;
+    const importing = deferred<OpenFilesResult>();
+    imported.mockReturnValueOnce(importing.promise);
+    try {
+      await box.trigger("drop", { dataTransfer: data([image("old.png")]) });
+      await flushPromises();
+      store.sessionKey = "second-session";
+      store.clearDraft(firstKey);
+      store.sessionKey = firstKey;
+      importing.resolve(imageResult("old.png"));
+      await flushPromises();
+      expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+      await box.trigger("drop", { dataTransfer: data([image("new.png")]) });
+      await flushPromises();
+      expect(wrapper.get(".chat-attachment__name").text()).toBe("new.png");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("restores an import completed after leaving the chat view", async () => {
+    const { wrapper, box, store, pinia, imported } = setup();
+    const firstKey = store.sessionKey;
+    const importing = deferred<OpenFilesResult>();
+    imported.mockReturnValueOnce(importing.promise);
+    await box.trigger("drop", { dataTransfer: data([image("first.png")]) });
+    await flushPromises();
+    wrapper.unmount();
+    store.sessionKey = "second-session";
+    const remounted = shallowMount(ChatView, {
+      global: { plugins: [pinia], stubs: { ChatAttachments: false } },
+    });
+    try {
+      importing.resolve(imageResult("first.png"));
+      await flushPromises();
+      expect(remounted.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+      store.sessionKey = firstKey;
+      await flushPromises();
+      expect(remounted.get(".chat-attachment__name").text()).toBe("first.png");
+    } finally {
+      remounted.unmount();
+    }
+  });
+
+  it.each(["picker", "paste"] as const)(
+    "keeps delayed %s attachments in the originating draft",
+    async (source) => {
+      const { wrapper, store, imported } = setup();
+      const firstKey = store.sessionKey;
+      const importing = deferred<OpenFilesResult>();
+      if (source === "picker") {
+        vi.spyOn(window.openclaw.dialog, "openFiles").mockReturnValueOnce(importing.promise);
+      } else {
+        imported.mockReturnValueOnce(importing.promise);
+      }
+      try {
+        if (source === "picker") {
+          await wrapper.get(".home-input-plus").trigger("click");
+        } else {
+          await wrapper.get("textarea").trigger("paste", {
+            clipboardData: {
+              files: [image()],
+              getData: () => "",
+            },
+          });
+        }
+        await flushPromises();
+        store.sessionKey = "second-session";
+        importing.resolve(imageResult("first.png"));
+        await flushPromises();
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        store.sessionKey = firstKey;
+        await flushPromises();
+        expect(wrapper.get(".chat-attachment__name").text()).toBe("first.png");
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "updates only the originating draft when a send completes after switching (sent: %s)",
+    async (sent) => {
+      const { wrapper, box, store, send } = setup();
+      const firstKey = store.sessionKey;
+      const sending = deferred<boolean>();
+      send.mockReturnValueOnce(sending.promise);
+      try {
+        await wrapper.get("textarea").setValue("First draft");
+        await box.trigger("drop", { dataTransfer: data([image("first.png")]) });
+        await flushPromises();
+        await wrapper.get(".home-input-send").trigger("click");
+        await flushPromises();
+        store.sessionKey = "second-session";
+        await flushPromises();
+        await wrapper.get("textarea").setValue("Second draft");
+        await box.trigger("drop", { dataTransfer: data([image("second.png")]) });
+        await flushPromises();
+        sending.resolve(sent);
+        await flushPromises();
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Second draft");
+        expect(wrapper.get(".chat-attachment__name").text()).toBe("second.png");
+        store.sessionKey = firstKey;
+        await flushPromises();
+        expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe(
+          sent ? "" : "First draft",
+        );
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(sent ? 0 : 1);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("preserves the mounted draft when the main session is canonicalized", async () => {
+    const { wrapper, box, store } = setup();
+    try {
+      await wrapper.get("textarea").setValue("Keep this draft");
+      await box.trigger("drop", { dataTransfer: data([image()]) });
+      await flushPromises();
+      store.setMainSessionKey("agent:main:main");
+      await flushPromises();
+      expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe(
+        "Keep this draft",
+      );
+      expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("does not send an old draft after switching during model setup preflight", async () => {
+    const { wrapper, store, send } = setup();
+    const originalKey = store.sessionKey;
+    const response = await window.openclaw.model.session.get(originalKey);
+    const checking = deferred<typeof response>();
+    vi.spyOn(window.openclaw.model.session, "get").mockReturnValueOnce(checking.promise);
+    try {
+      await wrapper.get("textarea").setValue("First draft");
+      await wrapper.get(".home-input-send").trigger("click");
+      await flushPromises();
+      store.sessionKey = "second-session";
+      await flushPromises();
+      await wrapper.get("textarea").setValue("Second draft");
+      checking.resolve(response);
+      await flushPromises();
+      expect(send).not.toHaveBeenCalled();
+      expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Second draft");
+      store.sessionKey = originalKey;
+      await flushPromises();
+      expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("First draft");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it.each([false, true])(
+    "reports import failures only for the current draft (cleared: %s)",
+    async (cleared) => {
+      const error = vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: vi.fn() }));
+      const { wrapper, box, imported } = setup();
+      const importing = deferred<OpenFilesResult>();
+      imported.mockReturnValueOnce(importing.promise);
+      try {
+        await box.trigger("drop", { dataTransfer: data([image("old.png")]) });
+        await flushPromises();
+        if (cleared) window.dispatchEvent(new Event("microclaw:clear-compose"));
+        await box.trigger("drop", { dataTransfer: data([image("new.png")]) });
+        importing.reject(new Error("import failed"));
+        await flushPromises();
+        if (cleared) {
+          expect(error).not.toHaveBeenCalled();
+        } else {
+          expect(error).toHaveBeenCalledWith(
+            t("chat.attachment.pickerFailed", { error: "Error: import failed" }),
+          );
+        }
+        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+        expect(wrapper.get(".home-input-send").attributes("disabled")).toBeUndefined();
+      } finally {
+        wrapper.unmount();
+        error.mockRestore();
+      }
+    },
+  );
 
   it("serializes successive drops using the updated attachment total", async () => {
     const { wrapper, box, imported } = setup();

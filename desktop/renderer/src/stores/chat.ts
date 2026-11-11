@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed, watch } from "vue";
+import { ref, computed, reactive, watch } from "vue";
 import { useSessionStore } from "./sessions";
 import { redactPii } from "@/utils/pii-scanner";
 import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
@@ -28,6 +28,17 @@ export interface ChatMessage {
   originalText?: string;
   stopReason?: string;
   performanceRunId?: string;
+}
+
+export interface ChatDraft {
+  sessionKey: string;
+  text: string;
+  attachments: ChatAttachment[];
+  revision: number;
+  importingImages: number;
+  pickingFiles: boolean;
+  submittingMessage: boolean;
+  attachmentImportQueue: Promise<void>;
 }
 
 /**
@@ -237,6 +248,47 @@ export const useChatStore = defineStore("chat", () => {
   const agentPreparationError = computed(
     () => agentPreparationErrors.value[currentSessionAgentId.value] ?? null,
   );
+
+  const drafts = new Map<string, ChatDraft>();
+  const agentSessionKeys = new Map<string, string>();
+
+  watch(
+    () => [sessionKey.value, currentSessionAgentId.value] as const,
+    ([key, agentId]) => agentSessionKeys.set(agentId, key),
+    { immediate: true, flush: "sync" },
+  );
+
+  function getDraft(key = sessionKey.value): ChatDraft {
+    let draft = drafts.get(key);
+    if (!draft) {
+      draft = reactive({
+        sessionKey: key,
+        text: "",
+        attachments: [],
+        revision: 0,
+        importingImages: 0,
+        pickingFiles: false,
+        submittingMessage: false,
+        attachmentImportQueue: Promise.resolve(),
+      });
+      drafts.set(key, draft);
+    }
+    return draft;
+  }
+
+  function clearDraft(key = sessionKey.value) {
+    const draft = getDraft(key);
+    draft.revision += 1;
+    draft.text = "";
+    draft.attachments = [];
+  }
+
+  function switchAgentSession(agentId: string) {
+    if (currentSessionAgentId.value === agentId) return;
+    const key = agentSessionKeys.get(agentId);
+    if (key) return switchSession(key);
+    newSession(agentId);
+  }
 
   function reportChatError(raw: string, agentId = currentSessionAgentId.value) {
     if (window.openclaw.features?.performance && agentId === currentSessionAgentId.value)
@@ -506,6 +558,16 @@ export const useChatStore = defineStore("chat", () => {
       });
     }
     sessionStateCache.delete(aliasKey);
+
+    const aliasDraft = drafts.get(aliasKey);
+    if (aliasDraft && !drafts.has(canonicalKey)) {
+      aliasDraft.sessionKey = canonicalKey;
+      drafts.set(canonicalKey, aliasDraft);
+    }
+    drafts.delete(aliasKey);
+    for (const [agentId, key] of agentSessionKeys) {
+      if (key === aliasKey) agentSessionKeys.set(agentId, canonicalKey);
+    }
 
     if (lastMessageMap.value[aliasKey] && !lastMessageMap.value[canonicalKey]) {
       lastMessageMap.value[canonicalKey] = lastMessageMap.value[aliasKey];
@@ -1038,9 +1100,14 @@ export const useChatStore = defineStore("chat", () => {
     _syncToSessionStore();
     _saveCurrentState();
 
-    sessionKey.value = targetKey;
     const sessionStore = useSessionStore();
-    sessionStore.ensureSession(targetKey);
+    const targetAgentId =
+      /^agent:([^:]+):/.exec(targetKey)?.[1] ||
+      sessionStore.sessions.find((session) => session.key === targetKey)?.agentId ||
+      "main";
+    pendingSessionAgentId.value = canonicalAgentId(targetAgentId);
+    sessionKey.value = targetKey;
+    sessionStore.ensureSession(targetKey, canonicalAgentId(targetAgentId));
 
     // Try to restore cached state (streaming session we switched away from)
     if (_restoreState(targetKey)) {
@@ -1251,6 +1318,8 @@ export const useChatStore = defineStore("chat", () => {
 
     sending.value = true;
     lastError.value = null;
+    const sendingDraft = getDraft();
+    const draftRevision = sendingDraft.revision;
     const sendingAgentId = currentSessionAgentId.value;
     const requestedSessionKey = resolvedSessionKey.value || sessionKey.value;
     let optimisticTimestamp: number | undefined;
@@ -1258,6 +1327,9 @@ export const useChatStore = defineStore("chat", () => {
       // Strict privacy mode redacts PII before sending.
       let finalMsg = msg;
       const privacySettings = await window.openclaw.settings.get();
+      if (sessionKey.value !== sendingDraft.sessionKey || sendingDraft.revision !== draftRevision) {
+        return false;
+      }
       const privacyLevel = privacySettings?.privacyLevel ?? "basic";
       if (privacyLevel === "strict") {
         const controls = hydratePrivacyControls("strict", privacySettings.privacyControls);
@@ -1854,9 +1926,18 @@ export const useChatStore = defineStore("chat", () => {
     const last = [...messages.value]
       .reverse()
       .find((m) => m.role === "assistant" || m.role === "user");
-    if (!firstUser && !last) return;
-
     const sessionStore = useSessionStore();
+    if (!firstUser && !last) {
+      const draft = drafts.get(key);
+      if (
+        draft &&
+        (draft.text || draft.attachments.length || draft.importingImages || draft.pickingFiles)
+      ) {
+        sessionStore.ensureSession(key, currentSessionAgentId.value);
+      }
+      return;
+    }
+
     sessionStore.ensureSession(key, pendingSessionAgentId.value);
     pendingSessionAgentId.value = undefined;
     // Auto-title from first user message
@@ -1996,6 +2077,7 @@ export const useChatStore = defineStore("chat", () => {
     const active = affectedKeys.has(sessionKey.value) || resolvedSessionKey.value === gatewayKey;
     const sessionStore = useSessionStore();
     for (const affectedKey of affectedKeys) {
+      clearDraft(affectedKey);
       const cached = sessionStateCache.get(affectedKey);
       serverRuns.reset(affectedKey, cached?.chatRunId);
       sessionStateCache.delete(affectedKey);
@@ -2033,6 +2115,15 @@ export const useChatStore = defineStore("chat", () => {
     const gatewayKey = gatewaySessionKey(key);
 
     await window.openclaw.chat.deleteSession(gatewayKey);
+
+    const deletedKeys = new Set([key, gatewayKey]);
+    for (const deletedKey of deletedKeys) {
+      clearDraft(deletedKey);
+      drafts.delete(deletedKey);
+    }
+    for (const [agentId, rememberedKey] of agentSessionKeys) {
+      if (deletedKeys.has(rememberedKey)) agentSessionKeys.delete(agentId);
+    }
 
     // Clean up cached streaming state
     sessionStateCache.delete(key);
@@ -2092,6 +2183,9 @@ export const useChatStore = defineStore("chat", () => {
     // 1. Wipe persisted transcripts on the gateway (source of truth).
     await window.openclaw.chat.clearHistory();
 
+    for (const key of drafts.keys()) clearDraft(key);
+    agentSessionKeys.clear();
+
     // 2. Drop cached per-session streaming state.
     sessionStateCache.clear();
     lastMessageMap.value = {};
@@ -2117,6 +2211,7 @@ export const useChatStore = defineStore("chat", () => {
     lastStreamEventAt.value = null;
     lastError.value = null;
     if (mainSessionKey.value) sessionStore.ensureSession(newKey, "main");
+    agentSessionKeys.set(currentSessionAgentId.value, newKey);
   }
 
   return {
@@ -2148,6 +2243,9 @@ export const useChatStore = defineStore("chat", () => {
     lastMessageMap,
     lastStreamEventAt,
     pendingPrompt,
+    getDraft,
+    clearDraft,
+    switchAgentSession,
     extractText,
     extractTextOnly,
     getMessageAttachments,
