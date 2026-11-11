@@ -24,8 +24,8 @@ from deployer.windows_setup import (
 )
 
 _ACTIVE_WINDOW = None
-INSTALLER_WINDOW_WIDTH = 710
-INSTALLER_WINDOW_HEIGHT = 680
+INSTALLER_WINDOW_WIDTH = 680
+INSTALLER_WINDOW_HEIGHT = 500
 UNINSTALL_WINDOW_WIDTH = 500
 UNINSTALL_WINDOW_HEIGHT = 300
 PRIVACY_STATEMENT_URL = "https://www.microsoft.com/privacy/privacystatement"
@@ -320,6 +320,7 @@ def _assets_dir():
 _STRINGS = {
     "zh": {
         "language": "语言",
+        "windowLabel": "安装",
         "welcomeTitle": "欢迎来到 MicroClaw",
         "legalLine": "点击“快速安装”即同意",
         "serviceAgreement": "MicroClaw 最终用户许可协议",
@@ -379,6 +380,7 @@ _STRINGS = {
     },
     "en": {
         "language": "Language",
+        "windowLabel": "Setup",
         "welcomeTitle": "Welcome to MicroClaw",
         "legalLine": 'By clicking "Quick Install", you agree to the',
         "serviceAgreement": "MicroClaw End User License Agreement",
@@ -1160,7 +1162,10 @@ def run_web_installer(mode="install"):
             # WebView2 easy_drag handles every mousedown, including native select
             # popups. Restrict dragging to the templates' explicit title region.
             easy_drag=False,
-            transparent=True,
+            # The opaque installer surface lets Windows draw its native shadow.
+            # pywebview skips that frame for transparent windows.
+            transparent=is_uninstall,
+            shadow=True,
             focus=os.environ.get("MICROCLAW_BACKGROUND") != "1",
         )
         bridge.attach_window(window)
@@ -1168,9 +1173,7 @@ def run_web_installer(mode="install"):
             window.events.closing += bridge.can_close
 
         def _on_shown():
-            """Applies a native rounded-corner clipping region to the window.
-            This removes the default gray square background from the frameless window.
-            """
+            """Keep the installer system frame; clip the transparent uninstaller."""
             try:
                 import ctypes
                 import threading
@@ -1181,8 +1184,8 @@ def run_web_installer(mode="install"):
                     # Wait briefly to ensure the window has been fully created and rendered
                     time.sleep(0.1)
 
-                    # Retrieve the native window handle (HWND)
-                    hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
+                    # Use this window's handle even if another installer is open.
+                    hwnd = window.native.Handle.ToInt64()
                     if not hwnd:
                         return
 
@@ -1193,6 +1196,26 @@ def run_web_installer(mode="install"):
                     h = rect.bottom - rect.top
 
                     _center_native_window(hwnd, logger)
+
+                    if not is_uninstall:
+                        # Let DWM own the corners as well as the shadow. A custom
+                        # window region would disable system rounding on Windows 11.
+                        # Older Windows versions keep their normal square frame.
+                        corner_preference = ctypes.c_int(2)  # DWMWCP_ROUND
+                        set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+                        set_attribute.argtypes = [
+                            wintypes.HWND,
+                            wintypes.DWORD,
+                            ctypes.c_void_p,
+                            wintypes.DWORD,
+                        ]
+                        set_attribute(
+                            hwnd,
+                            33,
+                            ctypes.byref(corner_preference),
+                            ctypes.sizeof(corner_preference),
+                        )
+                        return
 
                     # Calculate the DPI scale factor to adjust the corner radius
                     scale = 1.0

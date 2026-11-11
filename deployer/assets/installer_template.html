@@ -50,25 +50,42 @@
         position: relative;
         width: 100%;
         height: 100%;
-        border-radius: 12px;
+        border: 1px solid #d5d5da;
+        border-radius: 8px;
         overflow: hidden;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: radial-gradient(circle at top, #fff 0%, #fafafa 62%, #f2f2f2 100%);
+        padding: 58px 24px 24px;
+        background: linear-gradient(180deg, #fff, #fafafa);
       }
       .drag-region {
         position: absolute;
         top: 0;
         left: 0;
         right: 0;
-        height: 64px;
+        height: 58px;
         -webkit-app-region: drag;
+      }
+      .window-brand {
+        position: absolute;
+        top: 21px;
+        left: 23px;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 16px;
+        pointer-events: none;
+      }
+      .window-brand span {
+        margin-left: 7px;
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--text-secondary);
       }
       .window-actions {
         position: absolute;
-        top: 16px;
-        right: 16px;
+        top: 13px;
+        right: 18px;
         display: flex;
         align-items: center;
         gap: 10px;
@@ -107,7 +124,7 @@
         height: 32px;
         padding: 0 28px 0 12px;
         border: 1px solid var(--border);
-        border-radius: 16px;
+        border-radius: 8px;
         background: rgba(255, 255, 255, 0.86);
         color: var(--text-secondary);
         font-size: 12px;
@@ -134,25 +151,30 @@
       /* ---------- welcome ---------- */
       .welcome-wrap {
         width: 360px;
+        max-width: 100%;
+        max-height: 100%;
         display: flex;
         flex-direction: column;
         align-items: center;
-        margin-bottom: 20px;
       }
       .mascot-wrap {
-        width: 293px;
-        height: 293px;
+        width: 260px;
+        height: 176px;
+        flex-shrink: 0;
         position: relative;
+        overflow: hidden;
       }
       .mascot-wrap img {
         position: absolute;
-        inset: 0;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
         width: 100%;
-        height: 100%;
+        height: 260px;
         object-fit: contain;
       }
       .welcome-title {
-        margin: -32px 0 6px;
+        margin: 0 0 10px;
         min-height: 32px;
         font-size: 24px;
         font-weight: 700;
@@ -161,7 +183,7 @@
         transition: opacity 0.2s ease;
       }
       .welcome-bottom {
-        min-height: 160px;
+        min-height: 136px;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -250,7 +272,10 @@
       }
       .install-progress-status {
         margin: 0 0 12px;
-        max-width: 260px;
+        max-width: 340px;
+        max-height: 68px;
+        overflow-y: auto;
+        overflow-wrap: anywhere;
         font-size: 12px;
         line-height: 1.4;
         color: var(--text-secondary, #888);
@@ -261,15 +286,18 @@
       /* ---------- setup ---------- */
       .setup-wrap {
         width: 100%;
+        max-height: 100%;
         display: none;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
-        padding: 24px;
+        overflow-y: auto;
+        padding: 8px;
       }
       .setup-card {
         width: 420px;
-        padding: 32px 28px 28px;
-        border-radius: 20px;
+        max-width: 100%;
+        padding: 28px 28px 24px;
+        border-radius: 16px;
         border: 1px solid var(--border);
         background: var(--bg-secondary);
         position: relative;
@@ -292,7 +320,7 @@
         font-weight: 700;
       }
       .setup-desc {
-        margin: 0 0 24px;
+        margin: 0 0 16px;
         text-align: center;
         font-size: 13px;
         color: var(--text-secondary);
@@ -319,6 +347,7 @@
       }
       .path-row input {
         flex: 1;
+        min-width: 0;
         border: none;
         background: transparent;
         color: var(--text-primary);
@@ -335,12 +364,13 @@
         display: flex;
         align-items: flex-start;
         gap: 12px;
-        margin-bottom: 24px;
+        margin-bottom: 18px;
         cursor: pointer;
       }
       .checkbox {
         width: 20px;
         height: 20px;
+        flex-shrink: 0;
         margin-top: 2px;
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -371,19 +401,34 @@
       /* ---------- completion ---------- */
       .success-wrap {
         width: 420px;
+        max-width: 100%;
+        max-height: 100%;
         display: none;
         flex-direction: column;
         align-items: center;
         text-align: center;
+        overflow-y: auto;
+      }
+      .success-mascot-wrap {
+        width: 188px;
+        height: 136px;
+        flex-shrink: 0;
+        position: relative;
+        overflow: hidden;
+        margin-bottom: 25px;
       }
       .success-mascot {
-        width: 240px;
-        height: 240px;
+        position: absolute;
+        width: 286px;
+        height: 286px;
+        left: -69px;
+        top: -74px;
         object-fit: contain;
       }
       .success-title {
         margin: 0 0 12px;
-        font-size: 26px;
+        font-size: 27px;
+        line-height: 1.3;
         letter-spacing: -0.03em;
       }
       .success-title:focus {
@@ -397,11 +442,12 @@
       }
       .success-actions {
         display: flex;
+        flex-wrap: wrap;
         justify-content: center;
         gap: 12px;
       }
       .success-actions .btn-ghost {
-        min-width: 120px;
+        min-width: 112px;
         padding: 0 24px;
         border: 1px solid var(--border);
         border-radius: 20px;
@@ -412,15 +458,18 @@
         color: var(--danger);
         font-size: 13px;
         line-height: 1.6;
+        flex-shrink: 0;
       }
 
       /* ---------- failure ---------- */
       .failure-wrap {
         width: 420px;
+        max-width: 100%;
+        max-height: 100%;
         display: none;
         flex-direction: column;
         align-items: center;
-        padding: 24px;
+        padding: 12px 24px;
         text-align: center;
       }
       .failure-title {
@@ -431,6 +480,9 @@
       .failure-msg {
         max-width: 360px;
         white-space: pre-wrap;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-wrap: anywhere;
         color: var(--text-secondary);
         line-height: 1.6;
         margin-bottom: 16px;
@@ -441,6 +493,9 @@
         color: #0067b8;
         cursor: pointer;
         font-size: 13px;
+      }
+      .failure-wrap > :not(.failure-msg) {
+        flex-shrink: 0;
       }
 
       /* ---------- utils ---------- */
@@ -458,7 +513,7 @@
       .error-banner {
         display: none;
         position: absolute;
-        top: 40px;
+        top: 58px;
         left: 10px;
         right: 10px;
         padding: 8px 12px;
@@ -468,6 +523,8 @@
         font-size: 12px;
         z-index: 999;
         word-break: break-all;
+        max-height: calc(100% - 72px);
+        overflow-y: auto;
       }
     </style>
   </head>
@@ -480,6 +537,7 @@
     <div class="app">
       <canvas id="confetti" class="confetti"></canvas>
       <div class="drag-region pywebview-drag-region"></div>
+      <div class="window-brand">MicroClaw<span id="windowLabel"></span></div>
       <div class="window-actions">
         <select id="language" class="language-select">
           <option value="zh">简体中文</option>
@@ -554,7 +612,9 @@
 
       <!-- ====== completion ====== -->
       <div id="success" class="success-wrap">
-        <img id="successMascot" class="success-mascot" alt="" />
+        <div class="success-mascot-wrap">
+          <img id="successMascot" class="success-mascot" alt="" />
+        </div>
         <h1 id="successTitle" class="success-title" tabindex="-1"></h1>
         <p id="successMessage" class="success-message"></p>
         <div class="success-actions">
@@ -617,6 +677,7 @@
         quick: $("quick"),
         custom: $("custom"),
         language: $("language"),
+        windowLabel: $("windowLabel"),
         close: $("close"),
         back: $("back"),
         setupTitle: $("setupTitle"),
@@ -676,6 +737,7 @@
         const s = state.bootstrap.strings;
         document.documentElement.lang = state.bootstrap.lang === "zh" ? "zh-CN" : "en-US";
         els.language.value = state.bootstrap.lang;
+        els.windowLabel.textContent = s.windowLabel;
         els.language.setAttribute("aria-label", s.language);
         els.close.title = s.close;
         els.close.setAttribute("aria-label", s.close);
