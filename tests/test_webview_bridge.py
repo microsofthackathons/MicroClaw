@@ -84,6 +84,11 @@ class WebInstallerBridgeTests(unittest.TestCase):
                 self.assertNotEqual(expected, "MicroClaw")
                 self.assertEqual(webview.create_window.call_args.kwargs["focus"], background != "1")
                 self.assertFalse(webview.create_window.call_args.kwargs["easy_drag"])
+                # Transparent surfaces skip pywebview's native Windows shadow.
+                self.assertEqual(
+                    webview.create_window.call_args.kwargs["transparent"], mode == "uninstall"
+                )
+                self.assertTrue(webview.create_window.call_args.kwargs["shadow"])
                 webview.start.assert_called_once()
 
     def test_explicit_drag_regions_exclude_interactive_controls_in_both_templates(self):
