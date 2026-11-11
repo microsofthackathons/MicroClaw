@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -343,6 +344,12 @@ _STRINGS = {
         "installCancelled": "安装已取消，正在运行的应用未被关闭",
         "installFailTitle": "安装失败",
         "installFailMsg": "请检查日志后重试。",
+        "installSuccessTitle": "安装完成",
+        "installSuccessMsg": "MicroClaw 已安装完成，随时可以开始使用。",
+        "openDesktop": "打开 MicroClaw",
+        "openingDesktop": "正在打开…",
+        "desktopLaunchFailed": "无法打开 MicroClaw，请重试，或从桌面快捷方式打开。",
+        "desktopLaunchUnavailable": "请等待安装成功后再打开 MicroClaw。",
         "retrying": "{step} 正在重试（{attempt}/{attempts}）…",
         "steps": {
             "executionPolicy": "正在配置 PowerShell 执行策略…",
@@ -396,6 +403,12 @@ _STRINGS = {
         "installCancelled": "Installation cancelled; the running app was not closed",
         "installFailTitle": "Installation Failed",
         "installFailMsg": "Please check the logs and retry.",
+        "installSuccessTitle": "Installation complete",
+        "installSuccessMsg": "MicroClaw is installed and ready to open.",
+        "openDesktop": "Open MicroClaw",
+        "openingDesktop": "Opening…",
+        "desktopLaunchFailed": "Could not open MicroClaw. Try again or use the desktop shortcut.",
+        "desktopLaunchUnavailable": "Wait for installation to complete before opening MicroClaw.",
         "retrying": "{step} retrying ({attempt}/{attempts})…",
         "steps": {
             "executionPolicy": "Configuring PowerShell execution policy...",
@@ -433,6 +446,8 @@ class WebInstallerBridge:
         self._settings_path = Path(settings_path or _app_settings_path())
         self._lang = _normalize_lang(lang) or _detect_lang(self._settings_path)
         self._state_lock = threading.Lock()
+        self._desktop_launch_lock = threading.Lock()
+        self._desktop_launched = False
         self._default_install_dir = str(DEFAULT_DESKTOP_DIR)
         self._default_allow_read = True
         self._state = {
@@ -589,12 +604,45 @@ class WebInstallerBridge:
             _ACTIVE_WINDOW.destroy()
         return True
 
+    def open_desktop(self):
+        """Hand off to normal desktop startup only after an explicit completion-page click."""
+        with self._desktop_launch_lock:
+            with self._state_lock:
+                if self._state["status"] != "success" or self._state["running"]:
+                    return {"ok": False, "error": _STRINGS[self._lang]["desktopLaunchUnavailable"]}
+                if self._desktop_launched:
+                    return {"ok": True}
+            executable = DEFAULT_DESKTOP_DIR / "MicroClawDesktop.exe"
+            try:
+                if not executable.is_file():
+                    raise FileNotFoundError(f"Desktop executable not found: {executable}")
+                environment = os.environ.copy()
+                environment.pop("ELECTRON_RUN_AS_NODE", None)
+                subprocess.Popen(
+                    [str(executable)],
+                    cwd=str(executable.parent),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                )
+            except OSError as error:
+                self._logger.error(f"Could not open MicroClaw desktop after installation: {error}")
+                return {"ok": False, "error": _STRINGS[self._lang]["desktopLaunchFailed"]}
+            with self._state_lock:
+                self._desktop_launched = True
+            self._logger.info("MicroClaw desktop launch requested from the completion page")
+            return {"ok": True}
+
     # -- internal helpers --------------------------------------------------
 
     def _start_install(self):
         with self._state_lock:
             if self._state["running"]:
                 return
+            self._desktop_launched = False
             self._state.update(
                 {
                     "progress": 0,

@@ -6,6 +6,7 @@ configures npm to use the taobao registry, and installs openclaw.
 
 import hashlib
 import json
+import ntpath
 import os
 import platform
 import re
@@ -32,7 +33,7 @@ from deployer.install_manifest import (
     resolve_bundled_install_manifest,
     write_install_manifest,
 )
-from deployer.install_timing import RuntimePreparationTiming
+from deployer.install_timing import RuntimePreparationTiming, run_timed_process
 from deployer.lightweight_backup import BACKUP_SCOPE, create_lightweight_archive
 from deployer.logger import DeployerLogger
 from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
@@ -469,9 +470,11 @@ class WindowsSetup:
     # ────────────────────── Subprocess helper ──────────────────────
 
     @staticmethod
-    def _run(cmd, **kwargs):
+    def _run(cmd, *, timing=None, **kwargs):
         """Wrapper around subprocess.run that hides console windows on Windows."""
         kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+        if timing is not None:
+            return run_timed_process(cmd, timing=timing, **kwargs)
         return subprocess.run(cmd, **kwargs)
 
     # ────────────────────── Mirror selection ──────────────────────
@@ -675,10 +678,17 @@ class WindowsSetup:
 
     def ensure_git(self) -> bool:
         """Install Git if not already available."""
+        git_dir = Path.home() / ".openclaw-git"
         git_path = shutil.which("git")
-        if git_path:
+        if git_path and not Path(git_path).is_relative_to(git_dir):
             self._git_bin = str(Path(git_path).parent)
             self.log.info("git already in PATH")
+            return True
+
+        git_exe = self._find_managed_git(git_dir)
+        if git_exe is not None:
+            self._activate_managed_git(git_exe)
+            self.log.info(f"Reusing managed Git: {git_exe}")
             return True
 
         self._select_download_mirror()
@@ -701,13 +711,13 @@ class WindowsSetup:
             filename = f"MinGit-{git_version}-32-bit.zip"
         else:
             filename = f"PortableGit-{git_version}-64-bit.7z.exe"
-        git_dir = Path.home() / ".openclaw-git"
+        git_dir_existed = git_dir.exists()
+        tmp_dir = None
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_git_"))
             dl_path = tmp_dir / filename
 
             if not self._download_git_installer(git_version, filename, dl_path):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
                 return False
 
             self.log.step("Extracting Git…")
@@ -719,27 +729,19 @@ class WindowsSetup:
                     zf.extractall(git_dir)
             else:
                 # PortableGit self-extracts with -o flag
-                self._run(
+                result = self._run(
                     [str(dl_path), "-o" + str(git_dir), "-y"],
                     capture_output=True,
                     text=True,
                     timeout=120,
                 )
+                if result.returncode != 0:
+                    raise RuntimeError(f"Git extraction exited with code {result.returncode}")
 
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-            git_exe = git_dir / "bin" / "git.exe"
-            if not git_exe.exists():
-                # Some versions use cmd/git.exe
-                git_exe = git_dir / "cmd" / "git.exe"
-
-            if git_exe.exists():
-                # Add to current process PATH
+            git_exe = self._find_managed_git(git_dir)
+            if git_exe is not None:
+                self._activate_managed_git(git_exe)
                 git_bin = str(git_exe.parent)
-                self._git_bin = git_bin
-                os.environ["PATH"] = git_bin + os.pathsep + os.environ.get("PATH", "")
-                # Add to system PATH permanently
-                self._add_to_system_path(git_bin)
                 self.log.success(f"Git installed to {git_dir}")
 
                 # Register rollback
@@ -747,14 +749,55 @@ class WindowsSetup:
                     shutil.rmtree(d, ignore_errors=True)
                     self._remove_from_system_path(b)
 
-                self._register_rollback("删除 Git", _rollback_git)
+                if not git_dir_existed:
+                    self._register_rollback("删除 Git", _rollback_git)
                 return True
 
-            self.log.error("Git extraction failed — git.exe not found")
+            self.log.error("Git extraction failed — no working git.exe found")
             return False
         except Exception as e:
             self.log.error(f"Git install failed: {e}")
             return False
+        finally:
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _find_managed_git(self, git_dir: Path) -> Path | None:
+        for directory in ("bin", "cmd"):
+            executable = git_dir / directory / "git.exe"
+            if not executable.is_file():
+                continue
+            try:
+                result = self._run(
+                    [str(executable), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip().startswith("git version "):
+                    return executable
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self.log.warn(f"Managed Git is unusable: {executable}")
+        return None
+
+    @staticmethod
+    def _path_contains(value: str, directory: str) -> bool:
+        def normalized(entry):
+            return ntpath.normcase(ntpath.normpath(ntpath.expandvars(entry.strip().strip('"'))))
+
+        return any(
+            normalized(entry) == normalized(directory) for entry in value.split(";") if entry
+        )
+
+    def _activate_managed_git(self, executable: Path) -> None:
+        git_bin = str(executable.parent)
+        self._git_bin = git_bin
+        current = os.environ.get("PATH", "")
+        if not self._path_contains(current, git_bin):
+            os.environ["PATH"] = git_bin + os.pathsep + current
+        # PortableGit belongs to this user; do not require machine registry access.
+        self._add_to_user_path(git_bin)
 
     def _git_download_bases(self) -> list[tuple[str, str]]:
         """Ordered, de-duplicated list of ``(mirror_name, git_mirror_base)``.
@@ -817,25 +860,50 @@ class WindowsSetup:
         # Fallback: hardcoded recent version
         return "2.53.0"
 
-    def _add_to_system_path(self, directory: str):
-        """Add a directory to system PATH via registry (persistent)."""
+    def _add_to_user_path(self, directory: str):
+        """Persist a managed tool without requiring administrator permissions."""
         try:
             import winreg
 
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            key = winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER,
+                "Environment",
                 0,
-                winreg.KEY_ALL_ACCESS,
+                winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
             )
-            current, _ = winreg.QueryValueEx(key, "Path")
-            if directory.lower() not in current.lower():
-                new_path = current.rstrip(";") + ";" + directory
-                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                self.log.info(f"  Added to system PATH: {directory}")
-            winreg.CloseKey(key)
+            try:
+                try:
+                    current, value_type = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    current, value_type = "", winreg.REG_EXPAND_SZ
+                if self._path_contains(current, directory):
+                    return
+                new_path = ";".join(filter(None, (current.rstrip(";"), directory)))
+                winreg.SetValueEx(key, "Path", 0, value_type, new_path)
+            finally:
+                winreg.CloseKey(key)
+            self.log.info(f"  Added to user PATH: {directory}")
+            self._notify_environment_change()
         except Exception as e:
-            self.log.warn(f"  Could not update system PATH: {e}")
+            self.log.warn(f"  Could not update user PATH: {e}")
+
+    @staticmethod
+    def _notify_environment_change():
+        try:
+            import ctypes
+
+            result = ctypes.c_size_t()
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF,
+                0x001A,
+                0,
+                ctypes.c_wchar_p("Environment"),
+                0x0002,
+                1000,
+                ctypes.byref(result),
+            )
+        except Exception:
+            pass
 
     def _remove_from_system_path(self, directory: str):
         """Remove a directory from both system and user PATH via registry.
@@ -3991,13 +4059,15 @@ class WindowsSetup:
                             encoding="utf-8",
                             errors="replace",
                             timeout=_DESKTOP_RUNTIME_PREPARATION_TIMEOUT,
+                            timing=timing,
                         )
                     except subprocess.TimeoutExpired as error:
                         timing.forward_output(error.stdout)
                         timing.forward_output(error.stderr)
                         raise
-                    timing.forward_output(result.stdout)
-                    timing.forward_output(result.stderr)
+                    with timing.phase("helper-output-forward"):
+                        timing.forward_output(result.stdout)
+                        timing.forward_output(result.stderr)
                     if result.returncode != 0:
                         detail = (result.stderr or result.stdout or "").strip()[-1500:]
                         raise RuntimeError(

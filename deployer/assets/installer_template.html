@@ -368,6 +368,52 @@
         gap: 12px;
       }
 
+      /* ---------- completion ---------- */
+      .success-wrap {
+        width: 420px;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+      .success-mascot {
+        width: 240px;
+        height: 240px;
+        object-fit: contain;
+      }
+      .success-title {
+        margin: 0 0 12px;
+        font-size: 26px;
+        letter-spacing: -0.03em;
+      }
+      .success-title:focus {
+        outline: none;
+      }
+      .success-message {
+        margin: 0 0 28px;
+        color: var(--text-secondary);
+        font-size: 14px;
+        line-height: 1.7;
+      }
+      .success-actions {
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+      }
+      .success-actions .btn-ghost {
+        min-width: 120px;
+        padding: 0 24px;
+        border: 1px solid var(--border);
+        border-radius: 20px;
+      }
+      .success-error {
+        max-width: 360px;
+        margin: 18px 0 0;
+        color: var(--danger);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
       /* ---------- failure ---------- */
       .failure-wrap {
         width: 420px;
@@ -506,6 +552,18 @@
         </div>
       </div>
 
+      <!-- ====== completion ====== -->
+      <div id="success" class="success-wrap">
+        <img id="successMascot" class="success-mascot" alt="" />
+        <h1 id="successTitle" class="success-title" tabindex="-1"></h1>
+        <p id="successMessage" class="success-message"></p>
+        <div class="success-actions">
+          <button id="successClose" class="btn-ghost" type="button"></button>
+          <button id="openDesktop" class="btn-primary" type="button"></button>
+        </div>
+        <p id="launchError" class="success-error hidden" role="alert"></p>
+      </div>
+
       <!-- ====== failure ====== -->
       <div id="failure" class="failure-wrap">
         <div style="font-size: 40px; color: #c42b1c">&#10006;</div>
@@ -530,7 +588,7 @@
         textTimer: null,
         textIdx: 0,
         pollTimer: null,
-        closeTimer: null,
+        openingDesktop: false,
         retryTimer: null,
       };
 
@@ -539,6 +597,13 @@
         errorBanner: $("errorBanner"),
         welcome: $("welcome"),
         setup: $("setup"),
+        success: $("success"),
+        successMascot: $("successMascot"),
+        successTitle: $("successTitle"),
+        successMessage: $("successMessage"),
+        successClose: $("successClose"),
+        openDesktop: $("openDesktop"),
+        launchError: $("launchError"),
         failure: $("failure"),
         mascot: $("mascot"),
         title: $("title"),
@@ -577,6 +642,7 @@
         state.route = route;
         els.welcome.style.display = route === "welcome" ? "flex" : "none";
         els.setup.style.display = route === "setup" ? "flex" : "none";
+        els.success.style.display = route === "success" ? "flex" : "none";
         els.failure.style.display = route === "failure" ? "flex" : "none";
       }
 
@@ -640,6 +706,13 @@
         els.start.textContent = s.startInstall;
         els.viewLog.textContent = s.viewLog;
         els.failClose.textContent = s.close;
+        els.successTitle.textContent = s.installSuccessTitle;
+        els.successMessage.textContent = s.installSuccessMsg;
+        els.successClose.textContent = s.close;
+        els.openDesktop.textContent = state.openingDesktop ? s.openingDesktop : s.openDesktop;
+        if (!els.launchError.classList.contains("hidden")) {
+          els.launchError.textContent = s.desktopLaunchFailed;
+        }
         if (state.route === "failure") {
           els.failTitle.textContent = s.installFailTitle;
         }
@@ -785,16 +858,17 @@
             els.progressStatus.textContent = statusText;
             els.progressStatus.classList.toggle("hidden", !statusText);
           }
-          if (snap.status === "success") {
+          if (snap.status === "success" && state.route !== "success") {
             stopImageCycle();
             stopTextCycle();
+            setInstalling(false);
             els.progressBar.style.width = "100%";
             els.progressTrack.setAttribute("aria-valuenow", "100");
             els.progressPercent.textContent = "100%";
             els.progressStatus.classList.add("hidden");
-            if (!state.closeTimer) {
-              state.closeTimer = setTimeout(() => window.pywebview.api.close_window(), 2000);
-            }
+            els.successMascot.src = state.bootstrap.assets.expand;
+            show("success");
+            els.successTitle.focus();
           }
           if (snap.status === "failed") {
             stopImageCycle();
@@ -911,6 +985,25 @@
           };
           els.viewLog.onclick = () => api.open_log();
           els.failClose.onclick = () => api.close_window();
+          els.successClose.onclick = () => api.close_window();
+          els.openDesktop.onclick = async () => {
+            if (state.openingDesktop) return;
+            state.openingDesktop = true;
+            els.openDesktop.disabled = true;
+            els.openDesktop.textContent = state.bootstrap.strings.openingDesktop;
+            els.launchError.classList.add("hidden");
+            try {
+              const result = await api.open_desktop();
+              if (!result?.ok) throw new Error("Desktop launch failed");
+              await api.close_window();
+            } catch (_) {
+              els.launchError.textContent = state.bootstrap.strings.desktopLaunchFailed;
+              els.launchError.classList.remove("hidden");
+              state.openingDesktop = false;
+              els.openDesktop.disabled = false;
+              els.openDesktop.textContent = state.bootstrap.strings.openDesktop;
+            }
+          };
         } catch (e) {
           showError("bindEvents: " + e.message);
           return;

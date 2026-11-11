@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -301,6 +302,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
             unittest.mock.patch.object(self.bridge, "_build_install_steps", return_value=[]),
             unittest.mock.patch("subprocess.Popen") as popen,
             unittest.mock.patch("os.startfile") as startfile,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
         ):
             self.bridge._install_thread()
 
@@ -315,6 +317,85 @@ class WebInstallerBridgeTests(unittest.TestCase):
         )
         popen.assert_not_called()
         startfile.assert_not_called()
+        window.destroy.assert_not_called()
+
+    def test_completion_page_launches_normal_desktop_once_and_leaves_close_to_the_ui(self):
+        desktop = Path(self.temp.name) / "Desktop with spaces"
+        desktop.mkdir()
+        executable = desktop / "MicroClawDesktop.exe"
+        executable.write_bytes(b"fixture")
+        self.bridge._state["status"] = "success"
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", desktop),
+            unittest.mock.patch("deployer.webview_bridge.subprocess.Popen") as launch,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
+            unittest.mock.patch.dict("os.environ", {"ELECTRON_RUN_AS_NODE": "1"}),
+        ):
+            self.assertEqual(self.bridge.open_desktop(), {"ok": True})
+            self.assertEqual(self.bridge.open_desktop(), {"ok": True})
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args[0], [str(executable)])
+        options = launch.call_args.kwargs
+        self.assertEqual(options["cwd"], str(desktop))
+        self.assertNotIn("ELECTRON_RUN_AS_NODE", options["env"])
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
+        self.assertEqual(options["stdout"], subprocess.DEVNULL)
+        self.assertEqual(options["stderr"], subprocess.DEVNULL)
+        self.assertEqual(
+            options["creationflags"],
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        window.destroy.assert_not_called()
+
+    def test_desktop_cannot_launch_before_successful_installation(self):
+        for status, running in (
+            ("idle", False),
+            ("running", True),
+            ("failed", False),
+            ("cancelled", False),
+            ("success", True),
+        ):
+            with self.subTest(status=status), unittest.mock.patch("subprocess.Popen") as launch:
+                self.bridge._state.update(status=status, running=running)
+                result = self.bridge.open_desktop()
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], _STRINGS["en"]["desktopLaunchUnavailable"])
+                launch.assert_not_called()
+
+    def test_missing_desktop_preserves_success_page_and_does_not_launch_another_exe(self):
+        desktop = Path(self.temp.name)
+        (desktop / "unrelated.exe").write_bytes(b"fixture")
+        self.bridge._state["status"] = "success"
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", desktop),
+            unittest.mock.patch("subprocess.Popen") as launch,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
+        ):
+            result = self.bridge.open_desktop()
+        self.assertEqual(result, {"ok": False, "error": _STRINGS["en"]["desktopLaunchFailed"]})
+        self.assertEqual(self.bridge.get_state()["status"], "success")
+        launch.assert_not_called()
+        window.destroy.assert_not_called()
+
+    def test_launch_failure_allows_retry_without_rerunning_installation(self):
+        desktop = Path(self.temp.name)
+        (desktop / "MicroClawDesktop.exe").write_bytes(b"fixture")
+        self.bridge._state["status"] = "success"
+        self.bridge.set_language("zh")
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", desktop),
+            unittest.mock.patch(
+                "subprocess.Popen", side_effect=[OSError("failed"), object()]
+            ) as launch,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
+        ):
+            result = self.bridge.open_desktop()
+            self.assertEqual(result, {"ok": False, "error": _STRINGS["zh"]["desktopLaunchFailed"]})
+            self.assertEqual(self.bridge.open_desktop(), {"ok": True})
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(self.bridge.get_state()["status"], "success")
+        window.destroy.assert_not_called()
 
     def test_installation_logs_distinct_steps_retries_and_final_completion(self):
         log = unittest.mock.Mock()
