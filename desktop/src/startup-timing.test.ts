@@ -18,6 +18,23 @@ function createTiming(attempt = 1, startedAt = 100) {
 }
 
 describe("Gateway startup timing", () => {
+  it("retains failed/retried attempts without inventing readiness or double-finishing", () => {
+    const { timing, events, setTime } = createTiming();
+    setTime(110);
+    timing.completeMicroclawPhase("configuration-read");
+    setTime(500);
+    timing.outcome("failed", "gateway-startup");
+    timing.outcome("failed", "gateway-startup");
+    expect(events.filter((event) => event.kind === "outcome")).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        attempt: 1,
+        attemptElapsedMs: 400,
+        mode: "pending",
+      }),
+    ]);
+    expect(events.some((event) => event.kind === "summary")).toBe(false);
+  });
   it("measures MicroClaw preparation phases without counting application age as phase duration", () => {
     const { timing, events, setTime } = createTiming();
     setTime(125);

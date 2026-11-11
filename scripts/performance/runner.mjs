@@ -32,7 +32,7 @@ export async function runPerformance(options) {
     packaging: id === "install.clean" ? "installed" : "packaged",
     fixture:
       id === "install.clean"
-        ? { version: 1, imageId: null, vmId: null }
+        ? { version: 2, imageId: null, vmId: null }
         : {
             version: 2,
             promptVersion: 1,
@@ -48,13 +48,17 @@ export async function runPerformance(options) {
             toolPolicy: "deny-all",
             streamingCadenceMs: options.profile === "fixed-response" ? 20 : null,
             warmup:
-              "normal-startup-and-optional-ui-chat-preparation; outside scenario timing; included in model request budget",
+              id === "app.first-launch"
+                ? "none; first desktop launch is measured"
+                : "normal-startup-and-optional-ui-chat-preparation; outside scenario timing; included in model request budget",
             modelRequestBudget: options.maxRequests,
           },
     cachePolicy:
       id === "install.clean"
         ? "restore-vm-before-each-sample"
-        : "retained-disk-caches-after-unmeasured-initial-launch",
+        : id === "app.first-launch"
+          ? "fresh-isolated-profile-per-sample; OS-cache-uncontrolled"
+          : "retained-disk-caches-after-unmeasured-initial-launch",
     requestedSamples: options.samples,
   }));
   const result = {
@@ -70,7 +74,7 @@ export async function runPerformance(options) {
     limitations: [
       "Binary/source association is unknown unless separately established by a trusted build pipeline. Current source fingerprints are not attributed to an existing binary.",
       "UI timings observe DOM visibility after paint opportunities, not a physical screen presentation timestamp. Automation/observer scheduling adds measurement overhead.",
-      "Initial fixture startup, optional UI chat preparation and report generation are outside scenario timing. Startup/preparation may call the model for warmup/title work; all proxy requests count toward the request budget.",
+      "app.first-launch measures the first launch of each fresh isolated profile, including runtime preparation; it is not an OS cold boot or a post-installer VM launch. Other desktop scenarios exclude initial fixture startup. All proxy requests count toward the shared model request budget.",
       "GPU identity, provider output token counts and internal model-runtime stages are unavailable. Real-model networking and inference are uncontrolled sources of variation.",
       "Synthetic fixture has no personal sessions, plugins or bundled skills enabled; it is not a measurement of a user's populated profile.",
     ],
@@ -104,7 +108,7 @@ export async function runPerformance(options) {
               JSON.parse(await readFile(options.installFixture, "utf8")),
             );
             scenario.fixture = {
-              version: 1,
+              version: 2,
               imageId: installFixture.imageId,
               vmId: installFixture.vmId,
               prerequisites: installFixture.prerequisites ?? "unknown",
@@ -121,30 +125,32 @@ export async function runPerformance(options) {
               maxRequests: options.maxRequests,
               budget,
             });
-            fixture = await createFixture(path.join(output, `fixture-${scenario.id}`), {
-              baseUrl: modelService.baseUrl,
-              model: options.model,
-              secretEnvironmentKeys: [options.apiKeyEnv],
-            });
-            secrets.push(fixture.token);
-            driver = await DesktopDriver.create(options, fixture);
-            activeDriver = driver;
-            const setupStarted = performance.now();
-            try {
-              await driver.launch({ timeoutMs: options.setupTimeoutMs });
-            } finally {
-              await writeFile(
-                path.join(output, `${scenario.id}.setup.json`),
-                JSON.stringify(
-                  {
-                    elapsedMs: performance.now() - setupStarted,
-                    boundary: "unmeasured-initial-launch",
-                    timeoutMs: options.setupTimeoutMs,
-                  },
-                  null,
-                  2,
-                ),
-              );
+            if (scenario.id !== "app.first-launch") {
+              fixture = await createFixture(path.join(output, `fixture-${scenario.id}`), {
+                baseUrl: modelService.baseUrl,
+                model: options.model,
+                secretEnvironmentKeys: [options.apiKeyEnv],
+              });
+              secrets.push(fixture.token);
+              driver = await DesktopDriver.create(options, fixture);
+              activeDriver = driver;
+              const setupStarted = performance.now();
+              try {
+                await driver.launch({ timeoutMs: options.setupTimeoutMs });
+              } finally {
+                await writeFile(
+                  path.join(output, `${scenario.id}.setup.json`),
+                  JSON.stringify(
+                    {
+                      elapsedMs: performance.now() - setupStarted,
+                      boundary: "unmeasured-initial-launch",
+                      timeoutMs: options.setupTimeoutMs,
+                    },
+                    null,
+                    2,
+                  ),
+                );
+              }
             }
           }
         }
@@ -179,6 +185,16 @@ export async function runPerformance(options) {
           } else {
             const started = performance.now();
             try {
+              if (scenario.id === "app.first-launch") {
+                fixture = await createFixture(path.join(output, `fixture-${sampleId}`), {
+                  baseUrl: modelService.baseUrl,
+                  model: options.model,
+                  secretEnvironmentKeys: [options.apiKeyEnv],
+                });
+                secrets.push(fixture.token);
+                driver = await DesktopDriver.create(options, fixture);
+                activeDriver = driver;
+              }
               const observed =
                 scenario.id === "install.clean"
                   ? await runInstall(installFixture, {
@@ -191,7 +207,9 @@ export async function runPerformance(options) {
                     })
                   : scenario.id === "app.restart"
                     ? await driver.restart()
-                    : await driver.chat();
+                    : scenario.id === "app.first-launch"
+                      ? await driver.firstLaunch()
+                      : await driver.chat();
               Object.assign(sample, observed);
               if (!sample.failure && sample.outcome !== "success")
                 sample.failure = {
@@ -220,9 +238,30 @@ export async function runPerformance(options) {
                 classification: sample.outcome,
                 message: sanitizeError(error, secrets),
               };
+              if (driver && scenario.id !== "chat.new-session")
+                sample.startupTiming = await driver.startupTiming();
+            } finally {
+              // Capture measured time before cleanup, which is not first-launch latency.
+              sample.elapsedMs ??= performance.now() - started;
+              if (scenario.id === "app.first-launch" && fixture) {
+                try {
+                  await driver?.close();
+                } catch (error) {
+                  sample.cleanupFailure = sanitizeError(error, secrets);
+                  result.limitations.push(`Owned fixture cleanup: ${sample.cleanupFailure}`);
+                }
+                const lifecyclePath = `${sampleId}.lifecycle.json`;
+                await writeFile(
+                  path.join(output, lifecyclePath),
+                  sanitizeErrorFreeJson(await readLifecycle(fixture), secrets),
+                );
+                sample.evidence.push(lifecyclePath);
+                driver = null;
+                activeDriver = null;
+                fixture = null;
+              }
             }
-            sample.elapsedMs ??= performance.now() - started;
-            priorFailure = sample.outcome !== "success";
+            priorFailure = sample.outcome !== "success" || Boolean(sample.cleanupFailure);
           }
           const evidencePath = `${sampleId}.json`;
           sample.evidence.push(evidencePath);

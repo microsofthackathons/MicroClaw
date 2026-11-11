@@ -22,6 +22,7 @@ export function parseOptions(args, environment = process.env) {
       "install-fixture": { type: "string" },
       "timeout-ms": { type: "string" },
       "setup-timeout-ms": { type: "string" },
+      "first-launch-timeout-ms": { type: "string" },
       "install-timeout-ms": { type: "string" },
       model: { type: "string" },
       endpoint: { type: "string" },
@@ -109,6 +110,11 @@ export function parseOptions(args, environment = process.env) {
     ),
     timeoutMs: positive(values["timeout-ms"], 120000, "timeout-ms"),
     setupTimeoutMs: positive(values["setup-timeout-ms"], 600000, "setup-timeout-ms"),
+    firstLaunchTimeoutMs: positive(
+      values["first-launch-timeout-ms"],
+      600000,
+      "first-launch-timeout-ms",
+    ),
     installTimeoutMs: positive(values["install-timeout-ms"], 1800000, "install-timeout-ms"),
   };
 }
@@ -126,6 +132,7 @@ Profiles: fixed-response (default); real-model requires --model, --endpoint (Ope
 Clean install requires --installer and --install-fixture pointing at an explicitly disposable VM adapter.
 Options: --output <directory>, --timeout-ms <milliseconds> (default 120000),
   --setup-timeout-ms <milliseconds> (unmeasured initial launch; default 600000), --install-timeout-ms <milliseconds>.
+  --first-launch-timeout-ms <milliseconds> (measured fresh-profile startup; default 600000).
 Paths resolve relative to the repository, not the current shell directory. Nothing is built, fetched or installed automatically.
 Missing prerequisites produce an unavailable report. Exit codes: 0 fully measured, 1 incomplete/failure, 2 invalid command, 130 interrupted.
 `;

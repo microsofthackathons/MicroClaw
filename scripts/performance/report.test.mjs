@@ -181,3 +181,40 @@ test("unknown diagnostics and future metric identifiers are preserved", () => {
   assert.equal(reportText("untranslated diagnostic: EIO"), "untranslated diagnostic: EIO");
   assert.equal(reportText("Owned fixture cleanup: EIO"), "隔离测试环境清理：EIO");
 });
+
+test("startup reports retain nested phase evidence without summing it into scenario totals", () => {
+  const result = recordedResult("app.first-launch");
+  result.samples[0].startupTiming = {
+    coverage: "partial",
+    missing: ["service-ready"],
+    phases: [{ phase: "existing-gateway-check", owner: "microclaw", attempt: 1, durationMs: 20 }],
+    runtime: [
+      {
+        scope: "desktop",
+        phase: "worker-total",
+        kind: "summary",
+        status: "failed",
+        durationMs: 80,
+      },
+      {
+        scope: "worker",
+        phase: "archive-extract",
+        kind: "phase",
+        status: "failed",
+        durationMs: 50,
+        elapsedMs: 9999,
+      },
+    ],
+    mxc: [],
+    milestones: [{ phase: "renderer-loaded", appElapsedMs: 110 }],
+    outcomes: [{ attempt: 1, status: "failed", phase: "gateway-startup", attemptElapsedMs: 90 }],
+  };
+  const report = renderReport(result);
+  assert.match(report, /启动细分覆盖：partial；缺少：service-ready/);
+  assert.match(report, /Gateway\/microclaw \| 1 \| existing-gateway-check/);
+  assert.match(report, /运行时\/desktop（汇总）/);
+  assert.match(report, /archive-extract \| failed \| 50.00/);
+  assert.match(report, /renderer-loaded \| 110.00/);
+  assert.doesNotMatch(report, /9999.00/);
+  assert.equal(result.samples[0].metrics.totalMs, 100.125);
+});

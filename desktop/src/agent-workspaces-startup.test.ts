@@ -104,7 +104,7 @@ describe("workspace startup wiring", () => {
   });
 
   it("materializes migrated directories before snapshots, config publication and seeding", () => {
-    const startup = mainFunction("startGatewayInner");
+    const startup = mainFunction("runGatewayStartup");
     const plan = startup.indexOf("planAgentWorkspaces(");
     const copy = startup.indexOf("materializeAgentWorkspaces(workspacePlan)");
     const snapshot = startup.indexOf("captureAgentWorkspaces(");

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from deploy import main
+from deployer.install_timing import INSTALL_TIMING_PREFIX
 from deployer.webview_bridge import (
     _STRINGS,
     InstallationCancelled,
@@ -314,6 +315,60 @@ class WebInstallerBridgeTests(unittest.TestCase):
         )
         popen.assert_not_called()
         startfile.assert_not_called()
+
+    def test_installation_logs_distinct_steps_retries_and_final_completion(self):
+        log = unittest.mock.Mock()
+        self.bridge._logger = log
+        self.bridge._state["running"] = True
+        retry = unittest.mock.Mock(side_effect=[False, True])
+        label = _STRINGS["en"]["steps"]["prepareUpgrade"]
+        with (
+            unittest.mock.patch("deployer.webview_bridge.WindowsSetup"),
+            unittest.mock.patch.object(
+                self.bridge,
+                "_build_install_steps",
+                return_value=[
+                    (18, label, retry, 1),
+                    (52, label, lambda: True, 0),
+                ],
+            ),
+            unittest.mock.patch("deployer.webview_bridge.time.sleep"),
+        ):
+            self.bridge._install_thread()
+        events = [
+            json.loads(call.args[0][len(INSTALL_TIMING_PREFIX) :])
+            for call in log.info.call_args_list
+            if call.args[0].startswith(INSTALL_TIMING_PREFIX)
+        ]
+        self.assertIn("prepareUpgrade-18", [event["stageId"] for event in events])
+        self.assertIn("prepareUpgrade-52", [event["stageId"] for event in events])
+        self.assertEqual(
+            [
+                event["status"]
+                for event in events
+                if event["phase"] == "attempt"
+                and event["stageId"] == "prepareUpgrade-18"
+                and event["status"] != "started"
+            ],
+            ["failed", "success"],
+        )
+        self.assertTrue(any(event["phase"] == "retry-wait" for event in events))
+        self.assertEqual(events[-1]["phase"], "installation-total")
+        self.assertEqual(events[-1]["status"], "success")
+
+    def test_unexpected_setup_error_preserves_failed_summary(self):
+        log = unittest.mock.Mock()
+        self.bridge._logger = log
+        with (
+            unittest.mock.patch(
+                "deployer.webview_bridge.WindowsSetup", side_effect=ValueError("setup failed")
+            ),
+            self.assertRaisesRegex(ValueError, "setup failed"),
+        ):
+            self.bridge._install_thread()
+        summary = json.loads(log.info.call_args.args[0][len(INSTALL_TIMING_PREFIX) :])
+        self.assertEqual(summary["phase"], "installation-total")
+        self.assertEqual(summary["status"], "failed")
 
     def test_final_step_failure_rolls_back_without_launching_desktop(self):
         for failed_step in ("begin_openclaw_upgrade_validation", "commit_openclaw_upgrade"):

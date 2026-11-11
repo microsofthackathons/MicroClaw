@@ -8,6 +8,7 @@ import time
 import tkinter as tk
 import traceback
 import webbrowser
+from contextlib import nullcontext
 from pathlib import Path
 from tkinter import filedialog
 
@@ -678,7 +679,17 @@ class WebInstallerBridge:
 
     def _install_thread(self):
         timing = InstallTiming(self._logger)
+        self._install_timing = timing
+        try:
+            self._execute_installation(timing)
+        finally:
+            # Preserve partial evidence even if setup/rollback unexpectedly raises.
+            timing.finish("failed")
+            self._install_timing = None
+
+    def _execute_installation(self, timing):
         ws = WindowsSetup(self._config, self._logger)
+        ws.install_timing = timing
         ws.progress_callback = self._set_progress_detail
         steps = self._build_install_steps(ws)
 
@@ -701,7 +712,7 @@ class WebInstallerBridge:
             if progress_key:
                 label = _STRINGS[self._lang]["steps"][progress_key]
             self._set_progress(pct, label, progress_key)
-            started_at = timing.start_step()
+            started_at = timing.start_step(f"{progress_key or 'step'}-{pct}")
             step_ok = self._run_step_with_retry(pct, label, fn, retries, progress_key)
             step_status = "success" if step_ok else self.get_state()["status"]
             timing.record_step(label, started_at, step_status)
@@ -719,7 +730,7 @@ class WebInstallerBridge:
         for pct, progress_key, fn, retries in final_steps:
             label = _STRINGS[self._lang]["steps"][progress_key]
             self._set_progress(pct, label, progress_key)
-            started_at = timing.start_step()
+            started_at = timing.start_step(f"{progress_key}-{pct}")
             step_ok = self._run_step_with_retry(pct, label, fn, retries, progress_key)
             timing.record_step(label, started_at, "success" if step_ok else "failed")
             if not step_ok:
@@ -729,8 +740,8 @@ class WebInstallerBridge:
                 timing.finish("failed")
                 return
 
-        timing.finish("success")
         self._finish_ok()
+        timing.finish("success")
 
     def _build_final_steps(self, ws):
         return [
@@ -757,12 +768,19 @@ class WebInstallerBridge:
         attempts = retries + 1
         detail = ""
         clean_label = label.rstrip(".")
+        timing = getattr(self, "_install_timing", None)
         for attempt in range(1, attempts + 1):
             if not self.get_state()["running"]:
                 self._finish_fail("Installation cancelled.")
                 return False
             try:
-                result = fn()
+                with (
+                    timing.span("attempt", attempt=attempt)
+                    if timing
+                    else nullcontext({}) as observed
+                ):
+                    result = fn()
+                    observed["status"] = "success" if result is None or result else "failed"
                 if result is None or result:
                     if attempt > 1:
                         log.success(f"{clean_label} succeeded on attempt {attempt}/{attempts}.")
@@ -794,11 +812,12 @@ class WebInstallerBridge:
                 )
                 self._set_progress(pct, retrying, progress_key)
                 # Cancellation-aware wait so a user can abort during backoff.
-                for _ in range(delay):
-                    if not self.get_state()["running"]:
-                        self._finish_fail("Installation cancelled.")
-                        return False
-                    time.sleep(1)
+                with timing.span("retry-wait", attempt=attempt) if timing else nullcontext():
+                    for _ in range(delay):
+                        if not self.get_state()["running"]:
+                            self._finish_fail("Installation cancelled.")
+                            return False
+                        time.sleep(1)
 
         self._finish_fail(f"{clean_label} failed after {attempts} attempt(s): {detail}")
         return False
@@ -806,7 +825,10 @@ class WebInstallerBridge:
     def _prepare_upgrade(self, ws):
         active = ws.get_active_installation()
         if active is not None:
-            if not self._confirm_close_running_apps(active):
+            timing = getattr(self, "_install_timing", None)
+            with timing.span("human-wait") if timing else nullcontext():
+                confirmed = self._confirm_close_running_apps(active)
+            if not confirmed:
                 raise InstallationCancelled
             if not ws.stop_active_installation_for_upgrade(active):
                 raise RuntimeError(_STRINGS[self._lang]["runningAppsCloseFailed"])
