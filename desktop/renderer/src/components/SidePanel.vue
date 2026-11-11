@@ -355,17 +355,11 @@ async function clearSession(key: string) {
   }
 }
 
-function clearComposeDraft() {
-  chatStore.pendingPrompt = null;
-  window.dispatchEvent(new Event("microclaw:clear-compose"));
-}
-
 // ── Agent list ──
 function handleAgentSelect(agentId: string) {
-  clearComposeDraft();
   agentStore.selectAgent(agentId);
   if (route.path.startsWith("/chat")) {
-    ensureEmptySession();
+    void chatStore.switchAgentSession(agentId);
     router.push(`/chat/${agentId}`);
   }
   closeAgentFlyout();

@@ -117,6 +117,9 @@ export default {
   "chat.stopGeneration": "停止生成",
   "chat.stopTask": "停止任务",
   "chat.addAttachment": "添加附件",
+  "chat.dropImages": "松开以添加图片",
+  "chat.attachment.unsupportedImage":
+    "不支持图片 {file}，请使用 PNG、JPEG、GIF、WebP、BMP、TIFF、AVIF 或 HEIF 格式。",
   "chat.attachment": "附件",
   "chat.image": "图片",
   "chat.previewImage": "放大查看图片",
