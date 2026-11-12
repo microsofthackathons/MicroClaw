@@ -27,7 +27,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 - **唯一需要用户自备的是 LLM**：用户提供模型地址、API Key 和模型名，其余栈内组件由 MicroClaw 安装并连接起来
 - **首启路径很短**：如果还没有模型配置，应用只会引导填写模型凭据；如果 `.env` 里已有 `MODEL_*`，MicroClaw 还可以自动配置
 - **首屏自带推荐任务**：首页不是空白输入框，而是预置了任务卡片和提示词建议，安装后就能直接开始做事
-- **能力预装到位**：52 个内置技能加 6 个托管技能默认可用；专家智能体按需安装自己的专属技能
+- **能力预装到位**：默认包含 OpenClaw 内置技能及 6 个托管技能；实际可用性取决于各技能的平台、依赖和配置，专家智能体按需安装自己的专属技能
 
 ### 内建信任
 
@@ -42,7 +42,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 
 | 组件 | 路径 | 技术栈 | 说明 |
 |---|---|---|---|
-| **桌面应用** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
+| **桌面应用** | `desktop/` | Electron 44 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
 | **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及可选的 Full 原生隔离 |
 | **安装器** | `deploy.py` + `deployer/` | Python 3 + pywebview | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
@@ -56,15 +56,15 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 ### 1. 安装
 
-> **发布说明：**MicroClaw 的 GitHub Release 页面**不提供预编译的安装包**。请从本仓库拉取源代码后，自行运行下面的 `build.ps1` 构建。详见 [发布策略](#发布策略)。
+> **发布说明：**版本标签触发的发布构建会将 `MicroClawSetup.exe` 上传到 [GitHub Releases](https://github.com/microsofthackathons/MicroClaw/releases)。也可从本仓库拉取源码后运行下面的 `build.ps1` 自行构建。详见 [发布策略](#发布策略)。
 
 从源码构建安装器后运行：
 
-> **构建前置依赖**（仅运行 `build.ps1` 时需要）：**Node.js 26.1+（推荐）** 或 **24.x 系列的 24.16+**，以及 **Python 3.10+**。OpenClaw **2026.10.10** 要求 `>=24.16.0 <25 || >=26.1.0`，不再支持 Node 22 和 25。使用 `pip install -r requirements.txt` 安装 Python 构建依赖（其中包含用于打包安装器 exe 的 PyInstaller）。终端用户运行已打包的 `MicroClawInstaller.exe` **无需** 安装 Python。
+> **构建前置依赖**（仅运行 `build.ps1` 时需要）：**Node.js 26.1+（推荐）** 或 **24.x 系列的 24.16+**、**Python 3.10+**，以及 **.NET 10 SDK**。OpenClaw **2026.10.10** 要求 `>=24.16.0 <25 || >=26.1.0`，不再支持 Node 22 和 25。使用 `pip install -r requirements.txt` 安装 Python 构建依赖（其中包含用于打包安装器 exe 的 PyInstaller）。终端用户运行已打包的安装器 **无需** 安装 Python。
 
 ```powershell
-.\build.ps1                                        # 生成 dist/MicroClawInstaller/MicroClawInstaller.exe
-.\dist\MicroClawInstaller\MicroClawInstaller.exe   # 运行安装向导
+.\build.ps1                   # 生成 dist\MicroClawSetup.exe
+.\dist\MicroClawSetup.exe      # 运行安装向导
 ```
 
 安装器会在一次运行中完成 Windows 侧的主要准备工作：
@@ -82,7 +82,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 应用快捷方式及“已安装的应用”条目直接使用桌面客户端 EXE 内嵌图标，不依赖单独的 `~/.openclaw/microclaw.ico`。重新运行更新后的安装器会更新旧版图标引用。已有快捷方式也可手动修复：打开**属性 → 更改图标 → 浏览**，选择快捷方式“目标”栏中的 EXE（默认位于 `%USERPROFILE%\.microclaw\MicroClawDesktop.exe`）。
 
-升级已有安装时，请重新运行 MicroClaw 安装器，继续使用事务备份、验证和失败回滚流程；旧版依赖脚本会拒绝直接覆盖升级 OpenClaw。旧配置中的 Node 22/23/25 会迁移到受支持的版本线。升级回滚会保留更新后的既有 Node 目录，避免连同已恢复的 OpenClaw 包一起删除。`stable` 是精确版本锁定，不会随 npm 的 `latest` 自动变化。
+升级已有安装时，请重新运行 MicroClaw 安装器。安装器停止 Gateway，创建并校验轻量状态/工作区备份及其 SHA-256，再通过 npm 在原安装前缀安装精确目标版本；这不是全量备份，不包含模型权重、浏览器配置目录和旧运行时文件。升级不运行 `openclaw update` 或 `update repair`，也不快照旧版 `node_modules`。安装器不启动桌面或 Gateway，启动健康检查留到用户手动打开 MicroClaw 时进行。包升级失败时保留备份和可恢复记录，不自动恢复旧用户数据；可重新运行安装器继续。旧版依赖脚本会拒绝直接覆盖升级 OpenClaw。旧配置中的 Node 22/23/25 会迁移到受支持的版本线。`stable` 是精确版本锁定，不会随 npm 的 `latest` 自动变化。
 
 桌面客户端更新会先完整解压到暂存目录，再整体替换随包目录，不再覆盖解压；这样可以清除导致完整性校验失败的旧版原生运行时文件，同时保留安装器的升级记录、备份和安装状态。解压或发布失败时保留或恢复原有桌面文件；若恢复失败，则保留恢复文件供后续处理。
 
@@ -98,18 +98,20 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 #### 内部提供商测试
 
-GitHub Copilot 默认关闭，不显示在首次配置、模型设置和模型选择器中，桌面端也会拒绝其登录和模型选择请求。已有凭据和配置会保留，但关闭时不能用于桌面聊天。内部测试可在启动 MicroClaw **之前**，在进程环境中设置 `MICROCLAW_INTERNAL_GITHUB_COPILOT=1`，开发版和打包版均适用。请先完全退出已有应用实例；此开关不是持久化的用户设置，重启后才会生效。纯浏览器开发模式仍保持关闭。
+GitHub Copilot 的配置入口默认隐藏，不显示在首次配置和提供商管理卡片中，桌面端也会拒绝其配置和登录请求。此开关不禁用 OpenClaw 中已有的模型：已配置的 Copilot 默认模型和会话覆盖仍可使用，会被视为已配置模型，并显示在模型选择器中；认证及模型可用性检查仍然生效，读取目录不会触发登录或修改凭据。内部测试可在启动 MicroClaw **之前**，在进程环境中设置 `MICROCLAW_INTERNAL_GITHUB_COPILOT=1`，开发版和打包版均适用。请先完全退出已有应用实例；此开关不是持久化的用户设置，重启后才会生效。纯浏览器开发模式仍隐藏配置入口，不提供真实认证或目录。
 
 ```powershell
 $env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
 & "$HOME\.microclaw\MicroClawDesktop.exe"
 ```
 
-删除该环境变量并完全重启应用，即可再次关闭此内部功能。其他云端和本地模型提供商不受影响。
+删除该环境变量并完全重启应用，即可再次隐藏配置入口。已有 OpenClaw 模型配置和凭据会保留，无需开关也可继续使用。其他云端和本地模型提供商不受影响。
 
 #### 本地模型（实验性）
 
-**设置 → 模型** 以统一卡片展示云端提供商和“本地模型”（llama.cpp）；已有自定义 API 连接仍可管理，但总览不再提供“添加兼容 API”按钮或未配置的占位卡片。点击“管理”在原卡片中展开连接编辑。这里保存连接不切换默认模型，也不发送 AI 测试消息；初次配置仍保留原有引导流程。默认模型单独选择。
+托管目录包含 **Qwen3.5 4B Q4_K_M**、**Qwen3.5 9B Q4_K_M**、**Qwen3.5 35B-A3B Q4_K_M** 和 **Qwen3.8 27B UD-Q4_K_M** 四个预设。聊天及嵌入模型权重仅从 **ModelScope** 下载，固定仓库版本、文件大小和 SHA-256，不使用 Hugging Face 或其他下载回退；已有通过校验的 4B/9B 和嵌入缓存可复用。运行组件仍使用其上游分发来源。较大模型必须通过内存、加速器及磁盘准入检查；35B-A3B 使用 28 GiB 模型内存预算、要求至少 48 GiB 系统内存，27B 使用 22 GiB 模型内存预算并要求 GPU。这些是准入预算，不是推理性能保证。
+
+**设置 → 模型** 以统一卡片展示云端提供商和“本地模型”（llama.cpp）；已有自定义 API 连接仍可管理，但总览不再提供“添加兼容 API”按钮或未配置的占位卡片。点击箭头在原卡片中展开连接编辑。这里保存连接不切换默认模型，也不发送 AI 测试消息；初次配置仍保留原有引导流程。默认模型单独选择。
 
 提供商卡片通过向下/向上箭头展开和收起。内嵌编辑器直接展示字段，不再重复提供商标题、配置说明和关闭按钮。千问/MiniMax 仅使用模型下拉框，不再在表单上方另列已保存模型及逐条 Edit/Remove 按钮；已有配置仍然保留。“获取 API 密钥”放在千问/MiniMax 表单的 API Key 输入框右侧，分别打开[百炼北京地域 API Key 控制台](https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key)和[MiniMax 接口密钥控制台](https://platform.minimax.cn/user-center/basic-information/interface-key)。模型下拉框排在 API Key 之后，右侧提供刷新图标。
 
@@ -123,7 +125,7 @@ $env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
 
 每个托管提供商表单最后保存的型号会单独记在桌面偏好中，重开表单不会跳回第一个已注册型号；此偏好不改变默认模型或任何会话。分组选择器通过真实 Element Plus 弹层提供带名称的对话框和展开状态，不增加重复的可见标题。
 
-聊天输入框旁的模型按钮支持搜索完整云端实时目录、已保存的自定义连接，以及 **Qwen3.5 4B Q4_K_M**、**Qwen3.5 9B Q4_K_M** 两个托管本地预设，通过 OpenClaw 会话覆盖设置**只切换当前会话**。新建对话的会话标识会明确携带所选智能体的归属（包括主智能体），多智能体配置下也可在第一条消息发送前选模。“使用智能体默认模型”仅清除此会话覆盖，不修改智能体或全局默认值、回退模型及其他会话。首次选择会展示精确模型大小、缺少的嵌入模型、运行时预留磁盘及 CPU/GPU 模式，明确确认后才下载，准备成功后才切换；失败或取消保留原模型。已准备的模型直接切换，在原选模控件显示“切换中…”，不再闪现准备弹窗，也不运行设置或 AI 测试。需要准备、发生错误或恢复中断操作时，仍保留可阅读和操作的弹窗。
+聊天输入框旁的模型按钮支持搜索完整云端实时目录、已保存的自定义连接，以及上述四个托管本地预设，通过 OpenClaw 会话覆盖设置**只切换当前会话**。新建对话的会话标识会明确携带所选智能体的归属（包括主智能体），多智能体配置下也可在第一条消息发送前选模。“使用智能体默认模型”仅清除此会话覆盖，不修改智能体或全局默认值、回退模型及其他会话。首次选择会展示精确模型大小、缺少的嵌入模型、运行时预留磁盘及 CPU/GPU 模式，明确确认后才下载，准备成功后才切换；失败或取消保留原模型。已准备的模型直接切换，在原选模控件显示“切换中…”，不再闪现准备弹窗，也不运行设置或 AI 测试。需要准备、发生错误或恢复中断操作时，仍保留可阅读和操作的弹窗。
 
 聊天选模菜单和 **设置 → 模型 → 默认模型** 共用可折叠的提供商分组，默认只展开各自当前所选模型所属的提供商。点击分组标题或使用 Enter、空格键即可展开/收起；搜索自动展开匹配分组，清空后恢复之前的折叠状态。折叠仅改变列表显示，不切换模型、不改配置、不触发下载。设置中的选择仍修改全局默认模型，聊天中的选择仍只影响当前会话。
 
@@ -141,16 +143,16 @@ $env:MICROCLAW_INTERNAL_GITHUB_COPILOT = '1'
 
 本地组件安装、启用、模型下载完成及选模均不会重启 Gateway。安装后先核对运行时应用回执和插件状态；应用不完整或“安装已保存、加载失败”时，定向调用 `plugins.reload` 热加载已有组件，不重复下载。显式加载按需提供商时，还会验证其设置接口可用。热加载仍失败则保留已下载文件，并提供“重试加载组件”，不以重启兜底。不支持插件热加载的 Gateway 会拒绝组件安装/启用，而不是重启；未确认运行时应用生效不会报告加载成功。`gateway.reload.mode` 为 `off` 时，模型准备/选模也会拒绝写入配置，避免配置变更隐式触发重启。
 
-OpenClaw 固定版本未变化时，桌面更新只刷新托管文件，不在轻量回滚快照之外重复迁移数据库。运行时升级仍执行完整迁移；两种路径都必须等待安装后的桌面与 Gateway 就绪，才会提交安装。
+OpenClaw 固定版本未变化时，桌面更新只刷新托管文件，不在轻量回滚快照之外重复迁移数据库。安装流程校验已安装运行时后提交，不启动桌面或 Gateway，也不等待启动健康检查。
 
-- 打开模型设置只读取已有配置、小型路由配置和两个固定缓存文件的元数据。插件状态刷新不查询 ClawHub，不扫描硬件、不推理、不下载；只有用户明确审阅或安装组件时才查找在线安装来源。
+- 打开模型设置只读取已有配置、小型路由配置和四个固定缓存文件的元数据。插件状态刷新不查询 ClawHub，不扫描硬件、不推理、不下载；只有用户明确审阅或安装组件时才查找在线安装来源。
 - 模型列表显示“已下载 / 未下载”或未知状态。文件缺失时进入首次准备流程，不会立即切换当前模型；取消准备后保留的完整缓存可复用。浏览不会读取 GGUF 内容或扫描缓存目录，已有外部服务连接仍单独保留。
 - 点击 **下载并选用** 后立即显示进度及 Gateway 当前的下载/运行组件安装消息，不再停留在确认页，也不能重复提交确认。准备失败会明确显示原因；重试时复用完整且通过哈希验证的缓存，不重复下载模型。
 - **选用模型不再运行“Test AI connection”或工具调用测试。** 点击“开始使用”后，通过带版本保护的 `config.patch` 保存选择，再只读核对配置是否生效，不生成测试回复或读取临时文件。连接、模型和工具兼容性问题在实际聊天时提示。配置校验、并发写入保护和沙箱权限不变；“已选用”不表示模型能力已经验证。
-- **托管模型**：4B 排在前面作为轻量选择，9B 资源要求更高，CPU 推理可能较慢。选 4B 就只准备 4B，不会自动换成 9B。OpenClaw 继续负责硬件准入、下载哈希、运行时安装和取消。MicroClaw 对指定 2026.9.3 provider 应用版本/源文件哈希固定的内存适配，为官方向导增加精确选择并保留已有模型路由；源码或确认回执不匹配时明确拒绝，不修改已安装的 OpenClaw 文件。
+- **托管模型**：选择器突出显示一个估计适配的模型，并列出其他型号的下载大小、最低系统内存和资源提示；硬件信息未知时，4B 仍为轻量起点。只准备用户选定的型号，不自动替换。OpenClaw 继续负责硬件准入、下载哈希、运行时安装和取消。MicroClaw 对已核验的 2026.10.5 及旧版 2026.9.3 provider 应用版本/源文件哈希固定的内存适配，增加精确选择及仅限 ModelScope 的下载来源，并保留已有模型路由；源码或确认回执不匹配时明确拒绝，不修改已安装的 OpenClaw 文件。
 - **连接已有服务**：展开“高级选项与说明”，接入自行运行在 `localhost`、`127.0.0.1` 或 `::1` 的 llama-server，仅在服务要求时填写密钥。MicroClaw 不接管或停止该服务。
 - 切换模型会保留云端及本地连接，不新增自动云端兜底。已有 OpenClaw fallback、agent 或会话模型覆盖仍需单独检查。本地推理不代表联网技能可以离线运行。
-- 本地向导未结束时仍可打开云端设置。只有实际保存或切换模型时，才会询问是否先取消冲突的本地配置；拒绝后保持原状。本地模型未配置的目录项仅限这两个固定预设，其他已有连接仍保留；本地连接管理放在高级选项中。
+- 本地向导未结束时仍可打开云端设置。只有实际保存或切换模型时，才会询问是否先取消冲突的本地配置；拒绝后保持原状。本地模型未配置的目录项仅限这四个固定预设，其他已有连接仍保留；本地连接管理放在高级选项中。
 - 默认安装器固定 OpenClaw 2026.10.10。集成检查 Gateway 的公开设置接口，支持 2026.10.10、2026.10.5 及原有的 2026.10.2、2026.10.3 和 2026.9.3+ 宿主。10.10 和 10.5 宿主均使用独立审核的 `@openclaw/llama-cpp-provider@2026.10.5`，旧宿主保留 2026.9.3 provider；内置目录和 ClawHub 回退始终请求固定版本，不追随浮动最新版。下载、运行时依赖与 GPU 支持仍以官方插件为准。
 - 实际配置写入仍受 Windows Node + MXC、当前回复和未结束配置操作的保护。准备本地模型本身不再阻止已有聊天，真正应用模型变更时仍会保护当前请求。断线后恢复原操作，不重复启动；OpenClaw 正在完成受保护步骤时可能暂不接受取消。
 
@@ -216,19 +218,18 @@ npm run dev
 
 ## 技能系统
 
-### 内置技能（52 个）
+### 内置技能
 
-随 OpenClaw 一同安装，通过 `skills.allowBundled` 白名单控制启用。涵盖：
+随 OpenClaw 一同安装，通过 `skills.allowBundled` 白名单控制启用。仓库兼容性目录目前记录了 17 个技能，但这不代表运行时的内置技能总数或上限。桌面端会扫描实际安装目录，过滤明确排除的条目，再按平台、依赖和配置判断可用性。目录中的示例包括：
 
 | 类别 | 技能示例 |
 |---|---|
-| 生产力 | obsidian, notion, trello, slack, discord, things-mac |
-| AI / 编码 | coding-agent, gh-issues, oracle, skill-creator |
-| 通信 | bluebubbles, wacli, voice-call |
-| 智能家居 | openhue, blucli, sonoscli, eightctl |
-| 媒体 | spotify-player, songsee, video-frames |
-| 工具 | weather, healthcheck, session-logs |
-| 语音 | openai-whisper, sherpa-onnx-tts, sag |
+| 生产力 | obsidian, nano-pdf |
+| AI / 编码 | coding-agent, oracle, skill-creator |
+| 智能家居 | openhue, blucli, sonoscli |
+| 媒体 | songsee, video-frames |
+| 工具 | 1password, canvas, healthcheck, mcporter, session-logs |
+| 语音 | openai-whisper, sherpa-onnx-tts |
 
 ### 托管技能（6 个）
 
@@ -328,8 +329,7 @@ PyInstaller、NSIS 压缩、安装包解包校验和签名区分。构建失败�
 
 - Node.js 26.1+（推荐），或 24.x 系列的 24.16+
 - Python 3.10+ —— 通过 `pip install -r requirements.txt` 安装构建依赖（已包含 PyInstaller）
-- .NET SDK（原生 Windows Node + MXC 主机，版本以固定项目为准）
-- .NET 10 SDK（用于构建内置 Windows Node 主机）
+- .NET 10 SDK（用于构建原生 Windows Node + MXC 主机）
 - npm 依赖已安装（`cd desktop && npm install`）
 
 ---
@@ -343,7 +343,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ├── deployer/
 │   ├── config.py                # 配置管理（.env + YAML）
 │   ├── logger.py                # 线程安全日志 + 内存环形缓冲
-│   ├── skill_catalog.py         # 52 内置 + 6 托管技能目录
+│   ├── skill_catalog.py         # 内置及托管技能的兼容性元数据
 │   ├── skill_manager_ui.py      # 技能选择器对话框
 │   └── windows_setup.py         # Windows 安装逻辑（Node/npm/OpenClaw）
 ├── desktop/                     # Electron 桌面应用
@@ -385,15 +385,15 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 ## 系统要求
 
 - Windows 10/11
-- Python 3.10+（仅运行安装器需要）
+- Python 3.10+（仅从源码运行安装器时需要，打包安装器无需 Python）
 - 网络连接（支持中国大陆镜像源）
 - 可选：Microsoft Edge（浏览器技能）
 
 ## 发布策略
 
-MicroClaw 的 GitHub Release 页面有意**只提供源码**，不会发布任何预构建的安装包（`MicroClawInstaller.exe`、portable zip 或其他打包产物）。用户需克隆仓库并自行运行 `build.ps1` 生成安装器。这样可以保证分发渠道透明、可审计——你运行的任何二进制都是你从可检阅的源码亲手构建出来的。
+版本标签触发的发布构建会将 **`MicroClawSetup.exe`** 上传到 [GitHub Releases](https://github.com/microsofthackathons/MicroClaw/releases)。主分支和手动构建也会将安装 EXE 和 MSIX 上传为 GitHub Actions 构建产物；仅在四项生产包身份密钥全部配置后，才会将 MSIX 附加到 Release。
 
-如果你 fork 本项目，除非你愿意承担代码签名、恶意软件扫描、供应链证明等责任，建议保持同样的发布策略。
+安装器签名取决于 Azure Trusted Signing 凭据配置；未配置时产物不带签名，可能触发 Windows SmartScreen。仍可运行 `build.ps1` 从源码自行构建。MSIX 包身份及签名要求见英文版 [MSIX package](README.md#msix-package)。
 
 ## License
 
