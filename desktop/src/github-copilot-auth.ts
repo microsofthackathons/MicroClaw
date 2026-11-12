@@ -10,6 +10,7 @@ const GITHUB_DEVICE_URL = "https://github.com/login/device";
 const AUTH_TIMEOUT_MS = 20 * 60_000;
 const CLI_TIMEOUT_MS = 30_000;
 export const GITHUB_COPILOT_CATALOG_TIMEOUT_MS = 210_000;
+export const GITHUB_COPILOT_CATALOG_CACHE_MS = 60_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const AUTH_STATUS_CACHE_MS = 30_000;
 const MAX_GATEWAY_MODELS = 5_000;
@@ -18,7 +19,7 @@ export const GITHUB_COPILOT_AUTH_AGENT_ID = "main";
 
 let authStatusCache: { value: { authenticated: boolean }; expiresAt: number } | null = null;
 let authStatusInFlight: Promise<{ authenticated: boolean }> | null = null;
-let modelCatalogCache: GitHubCopilotModel[] | null = null;
+let modelCatalogCache: { models: GitHubCopilotModel[]; expiresAt: number } | null = null;
 let modelCatalogInFlight: Promise<GitHubCopilotModel[]> | null = null;
 let modelCatalogGeneration = 0;
 
@@ -450,24 +451,26 @@ export async function listGitHubCopilotModels(
   runtime: GitHubCopilotAuthRuntime,
   queryGateway?: (params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>,
 ): Promise<GitHubCopilotModel[]> {
-  if (modelCatalogCache) return modelCatalogCache;
+  if (modelCatalogCache && modelCatalogCache.expiresAt > Date.now())
+    return modelCatalogCache.models;
   if (modelCatalogInFlight) return modelCatalogInFlight;
 
   const generation = modelCatalogGeneration;
   const request = (async () => {
     if (queryGateway) {
       try {
-        const params = {
-          agentId: GITHUB_COPILOT_AUTH_AGENT_ID,
-          provider: "github-copilot",
-          view: "all",
-        };
-        const prepared = parseGitHubCopilotGatewayModels(
-          await queryGateway({ ...params, preparedOnly: true }, CLI_TIMEOUT_MS),
-        );
-        if (prepared.length > 0) return prepared;
+        // A nonempty prepared catalog can contain only the bundled manifest.
+        // Refresh account discovery so newly available models reach the pickers.
         const refreshed = parseGitHubCopilotGatewayModels(
-          await queryGateway({ ...params, refresh: true }, GITHUB_COPILOT_CATALOG_TIMEOUT_MS),
+          await queryGateway(
+            {
+              agentId: GITHUB_COPILOT_AUTH_AGENT_ID,
+              provider: "github-copilot",
+              view: "all",
+              refresh: true,
+            },
+            GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
+          ),
         );
         if (refreshed.length > 0) return refreshed;
       } catch (error) {
@@ -483,7 +486,11 @@ export async function listGitHubCopilotModels(
   })();
   const inFlight = request
     .then((models) => {
-      if (models.length > 0 && generation === modelCatalogGeneration) modelCatalogCache = models;
+      if (models.length > 0 && generation === modelCatalogGeneration)
+        modelCatalogCache = {
+          models,
+          expiresAt: Date.now() + GITHUB_COPILOT_CATALOG_CACHE_MS,
+        };
       return models;
     })
     .finally(() => {
