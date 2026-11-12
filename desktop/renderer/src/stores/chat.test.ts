@@ -2077,6 +2077,52 @@ describe("useChatStore — draft sessions", () => {
     expect(persisted.some((s: { key: string }) => s.key === store.sessionKey)).toBe(false);
   });
 
+  it("keeps an unsent draft when the main session learns its canonical identity", async () => {
+    const store = useChatStore();
+    const draft = store.getDraft();
+    draft.text = "Unsent main draft";
+    store.setMainSessionKey("agent:main:main");
+    expect(store.getDraft()).toBe(draft);
+    expect(draft.sessionKey).toBe("agent:main:main");
+    await store.switchAgentSession("office-artisan");
+    expect(store.getDraft().text).toBe("");
+    await store.switchAgentSession("main");
+    expect(store.getDraft()).toBe(draft);
+    expect(store.getDraft().text).toBe("Unsent main draft");
+  });
+
+  it("clears only a reset session's draft and invalidates its pending imports", async () => {
+    const store = useChatStore();
+    store.setMainSessionKey("agent:main:main");
+    const draft = store.getDraft();
+    draft.text = "Reset this draft";
+    const revision = draft.revision;
+    await store.switchAgentSession("office-artisan");
+    store.getDraft().text = "Keep this draft";
+    await store.resetSession("agent:main:main");
+    expect(draft.text).toBe("");
+    expect(draft.revision).toBeGreaterThan(revision);
+    expect(store.getDraft().text).toBe("Keep this draft");
+  });
+
+  it("keeps an unsent session reachable in the sidebar without persisting its draft contents", async () => {
+    const store = useChatStore();
+    const sessions = useSessionStore();
+    store.newSession("office-artisan");
+    const key = store.sessionKey;
+    store.getDraft().text = "Memory-only draft";
+    await store.switchAgentSession("main");
+    expect(sessions.sessions).toContainEqual(
+      expect.objectContaining({ key, agentId: "office-artisan" }),
+    );
+    expect(storage["openclaw-sessions"]).not.toContain("Memory-only draft");
+    await store.switchAgentSession("office-artisan");
+    expect(store.getDraft().text).toBe("Memory-only draft");
+    expect(sessions.sessions.find((session) => session.key === key)?.agentId).toBe(
+      "office-artisan",
+    );
+  });
+
   it("persists a draft session when the first message is sent", async () => {
     const store = useChatStore();
     store.newSession("coder");
@@ -2178,6 +2224,29 @@ describe("useChatStore — attachments", () => {
     expect(store.messages.at(-1)?.content).toEqual([]);
   });
 
+  it.each(["switch", "clear"])(
+    "cancels a send after %s while privacy settings are pending",
+    async (action) => {
+      const store = useChatStore();
+      let finishSettings!: (settings: object) => void;
+      mockGetSettings.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishSettings = resolve;
+          }),
+      );
+      const sending = store.sendMessage("First session", [attachment]);
+      if (action === "switch") store.newSession("office-artisan");
+      else store.clearDraft();
+      finishSettings({});
+
+      expect(await sending).toBe(false);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(store.messages).toEqual([]);
+      expect(store.streaming).toBe(false);
+    },
+  );
+
   it("removes the optimistic message and reports failure when IPC rejects", async () => {
     const store = useChatStore();
     mockSendMessage.mockRejectedValueOnce(new Error("Gateway not connected"));
@@ -2251,6 +2320,132 @@ describe("useChatStore — attachments", () => {
         mediaPath: "C:\\openclaw\\media\\report.pdf",
       },
     ]);
+  });
+
+  it("normalizes canonical Weixin image metadata without text or inline image blocks", () => {
+    const store = useChatStore();
+    const message = {
+      role: "user",
+      content: [],
+      __openclaw: {
+        media: [
+          {
+            path: "media://inbound/1be4ae56-6c48-4787-8fef-04c0cb29e130.png",
+            contentType: "image/png",
+            kind: "image",
+            sizeBytes: 1234,
+          },
+        ],
+      },
+    };
+
+    expect(store.getMessageAttachments(message)).toEqual([
+      {
+        type: "image",
+        mimeType: "image/png",
+        fileName: "",
+        size: 1234,
+        content: "",
+        mediaPath: message.__openclaw.media[0].path,
+      },
+    ]);
+  });
+
+  it("prefers canonical media facts over legacy metadata and inline blocks", () => {
+    const store = useChatStore();
+    const attachments = store.getMessageAttachments({
+      role: "user",
+      content: [{ type: "image", mimeType: "image/png", omitted: true }],
+      MediaPath: "media://inbound/old.png",
+      MediaType: "image/png",
+      __openclaw: {
+        media: [
+          {
+            path: "media://inbound/report---499c16ac-1817-41d4-8e5c-c3cb98942c1a.pdf",
+            contentType: "application/pdf",
+            fileName: "Original report.pdf",
+            sizeBytes: 2048,
+          },
+          { url: "media://inbound/photo", kind: "image" },
+        ],
+      },
+    });
+
+    expect(attachments).toHaveLength(2);
+    expect(attachments[0]).toMatchObject({
+      type: "file",
+      fileName: "Original report.pdf",
+      mimeType: "application/pdf",
+      size: 2048,
+    });
+    expect(attachments[1]).toMatchObject({
+      type: "image",
+      mimeType: "image/*",
+      mediaPath: "media://inbound/photo",
+    });
+  });
+
+  it.each([undefined, null, [], {}, { media: "invalid" }, { media: [null, [], {}, 1] }])(
+    "falls back to legacy media when canonical metadata is malformed: %j",
+    (metadata) => {
+      const store = useChatStore();
+
+      expect(
+        store.getMessageAttachments({
+          role: "user",
+          content: [],
+          MediaPath: "media://inbound/photo.png",
+          MediaType: "image/png",
+          __openclaw: metadata,
+        }),
+      ).toMatchObject([{ type: "image", mediaPath: "media://inbound/photo.png" }]);
+      expect(
+        store.extractText({ role: "user", content: "<file>literal</file>", __openclaw: metadata }),
+      ).toBe("<file>literal</file>");
+    },
+  );
+
+  it("sanitizes attachment-only text using canonical media evidence", () => {
+    const store = useChatStore();
+
+    expect(
+      store.extractText({
+        role: "user",
+        content: '<file name="notes.txt">contents</file>',
+        __openclaw: { media: [{ path: "media://inbound/notes.txt", contentType: "text/plain" }] },
+      }),
+    ).toBe("");
+  });
+
+  it("refreshes the media reference when canonical history metadata changes", async () => {
+    const store = useChatStore();
+    const message = {
+      role: "user",
+      content: [],
+      __openclaw: {
+        media: [
+          { path: "media://inbound/first.png", contentType: "image/png", fileName: "photo.png" },
+        ],
+      },
+    };
+    mockLoadHistory.mockResolvedValueOnce({ messages: [message] });
+    await store.loadHistory();
+    mockLoadHistory.mockResolvedValueOnce({
+      messages: [
+        {
+          ...message,
+          __openclaw: {
+            media: [{ ...message.__openclaw.media[0], path: "media://inbound/second.png" }],
+          },
+        },
+      ],
+    });
+
+    await store.loadHistory();
+
+    expect(store.getMessageAttachments(store.messages[0])[0]?.mediaPath).toBe(
+      "media://inbound/second.png",
+    );
   });
 
   it("keeps distinct extensionless media paths as separate attachments", () => {

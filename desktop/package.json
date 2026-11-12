@@ -1,6 +1,6 @@
 {
   "name": "microclaw",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MicroClaw - Custom chat UI with built-in gateway",
   "private": true,
   "main": "dist/main.js",
@@ -13,12 +13,12 @@
     "pack:prepared": "npm run build && electron-builder --win --x64 --dir",
     "dist": "npm run prepare-packaged-resources && npm run build && electron-builder --win",
     "dist:msix": "npm run prepare-resources && npm run build && node scripts/build-msix.mjs",
-    "prepare-packaged-resources": "npm run prepare-windows-node-resources && npm run prepare-weixin-plugin-resource",
+    "prepare-packaged-resources": "npm run prepare-resources",
     "prepare-weixin-plugin-resource": "node scripts/prepare-weixin-plugin-resource.mjs",
     "prepare-windows-node-resources": "node scripts/prepare-windows-node-resources.mjs --arch=x64",
     "prepare-windows-node-resources:arm64": "node scripts/prepare-windows-node-resources.mjs --arch=arm64",
     "test": "npm run test:weixin-runtime && npm run test:prepared-resources && vitest run",
-    "test:prepared-resources": "node --test scripts/publish-prepared-resource.test.mjs scripts/local-model-packaging.test.mjs scripts/update-signed-windows-node-manifest.test.mjs",
+    "test:prepared-resources": "node --test scripts/publish-prepared-resource.test.mjs scripts/local-model-packaging.test.mjs scripts/openclaw-resource.test.mjs scripts/update-signed-windows-node-manifest.test.mjs",
     "test:weixin-runtime": "node --test scripts/stage-weixin-runtime.test.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -40,7 +40,7 @@
     "eslint-config-prettier": "^10.1.8",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.58.0",
-    "vitest": "^4.1.1"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@electron/asar": "^3.4.1",

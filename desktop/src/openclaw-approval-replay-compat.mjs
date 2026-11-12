@@ -7,7 +7,11 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
-const EXPECTED_VERSION = "2026.10.5";
+// Keep real-path checks on every load. Windows' native implementation avoids
+// repeatedly walking each path component in JavaScript without caching identity.
+const canonicalPath = process.platform === "win32" ? realpathSync.native : realpathSync;
+
+const EXPECTED_VERSION = "2026.10.10";
 const EXPECTED_NODE_GATEWAY_MODULE = "nodes-Cl-Air2F.mjs";
 const EXPECTED_NODE_GATEWAY_SHA256 =
   "b9a4037588bbf8405a6f9149cb85f7750ae58fa777bd1dc675fc8eb857d5a978";
@@ -33,6 +37,40 @@ const EXPECTED_CRON_SERVICE_MODULE = "service-B3JlUlHg.mjs";
 const EXPECTED_CRON_SERVICE_SHA256 =
   "80b7e584751b1b260377c9e856d5b97c3d4540e525a5f29d7b7309ac8e1d9320";
 const PINNED_RELEASE_MODULES = {
+  "2026.10.10": {
+    nodeGateway: [
+      "nodes-CXMBO_AM.mjs",
+      "a971b49d721744aa67ddf75ea1987dae3bd3b3a6ce0252db1c60a4dacd3148b6",
+    ],
+    nodeInvokePluginPolicy: [
+      "node-invoke-plugin-policy-D_JIgmYG.mjs",
+      "962c4b863074d9af2e8209fa26f9e461a38195af43ebbd0db63d538008c8e568",
+    ],
+    nodeRegistryPrivate: [
+      "node-registry-private-Cf6NE86i.mjs",
+      "a7939fb5b4d2af4b98062b0066c3cacb0f8f65be5dde5132d2671648e4fe52f7",
+    ],
+    systemRun: [
+      "system-run-approval-plan-BzxkNWfX.mjs",
+      "415423cd70f85dd1fcae87483f2f55736d5b0e6deab0678e22264bb6e75bbb32",
+    ],
+    execApproval: [
+      "exec-approval-DuJx32oo.mjs",
+      "0164e3cc9ba4d5a7b87c7f5acd179875b378aaeace30c717954164d442fd0be5",
+    ],
+    bashTools: [
+      "bash-tools-B7jTXO_k.mjs",
+      "5f7519f943413182a9e49c480514829d37e8789d8060c12105ac87d86b99ed45",
+    ],
+    webTools: [
+      "openclaw-tools-Wz412ubE.mjs",
+      "0ee2c670fb12aec4f4fc25629c9139813f5d71c15e98748db63ecb6dc46c064d",
+    ],
+    cronService: [
+      "service-pOwE_Xvo.mjs",
+      "fb2429daf982d836ad1d7c147bf6ba73f121d65a3cb48205cef8822e12474a57",
+    ],
+  },
   "2026.10.3": {
     nodeGateway: [EXPECTED_NODE_GATEWAY_MODULE, EXPECTED_NODE_GATEWAY_SHA256],
     nodeInvokePluginPolicy: [
@@ -542,6 +580,18 @@ export const PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE =
     "\t\tparams: invokeParams\n",
     "\t\tparams: invokeParams,\n\t\tturnSource\n",
   );
+const NODE_REGISTRY_WORKER_LIMIT_SOURCE = `\tif (params.command === "worker.launch.v1" && Buffer.byteLength(serializeNodeEvent("node.invoke.request", payload), "utf8") > 26214400) return {
+\t\tok: false,
+\t\terror: {
+\t\t\tcode: "INVALID_REQUEST",
+\t\t\tmessage: "worker launch exceeds the node payload limit"
+\t\t}
+\t};`;
+export const PINNED_NODE_REGISTRY_SERIALIZATION_10_10_SOURCE =
+  PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE.replace(
+    NODE_REGISTRY_WORKER_LIMIT_SOURCE,
+    '\tif (params.command === "worker.launch.v1" && Buffer.byteLength(serializeNodeEvent("node.invoke.request", payload), "utf8") > 26214400) return nodeInvokeError("INVALID_REQUEST", "worker launch exceeds the node payload limit");',
+  );
 const PATCHED_NODE_REGISTRY_SERIALIZATION_SOURCE = `\tconst requestId = randomUUID();
 \tlet payloadTimeoutMs = timeoutMs;
 \tlet invokeParams;
@@ -806,6 +856,27 @@ export function patchPinnedOpenClawNodeInvokePluginPolicy(source) {
 }
 
 export function patchPinnedOpenClawNodeRegistryPrivate(source) {
+  if (source.includes(PINNED_NODE_REGISTRY_SERIALIZATION_10_10_SOURCE)) {
+    const patched = replaceExactlyOnce(
+      source,
+      PINNED_NODE_REGISTRY_SERIALIZATION_10_10_SOURCE,
+      PATCHED_NODE_REGISTRY_SERIALIZATION_SOURCE,
+      "node registry scoped deferred serialization",
+    );
+    const dispatch = PATCHED_NODE_REGISTRY_PRE_DISPATCH_SOURCE.replace(
+      "\t\tparams: invokeParams\n",
+      "\t\tparams: invokeParams,\n\t\tturnSource\n",
+    ).replace(
+      NODE_REGISTRY_WORKER_LIMIT_SOURCE,
+      '\tif (params.command === "worker.launch.v1" && Buffer.byteLength(serializeNodeEvent("node.invoke.request", payload), "utf8") > 26214400) return { result: nodeInvokeError("INVALID_REQUEST", "worker launch exceeds the node payload limit") };',
+    );
+    return replaceExactlyOnce(
+      patched,
+      "\t" + PINNED_NODE_REGISTRY_PRE_DISPATCH_SOURCE.replaceAll("\n", "\n\t"),
+      "\t" + dispatch.replaceAll("\n", "\n\t"),
+      "node registry scoped pre-serialization dispatch callback",
+    );
+  }
   const hasTurnSource = source.includes(PINNED_NODE_REGISTRY_SERIALIZATION_10_5_SOURCE);
   let patched = replaceExactlyOnce(
     source,
@@ -1107,10 +1178,34 @@ const PATCHED_BASH_TOOLS_INVOKE_RESULT_SOURCE = `\t\tconst raw = await callGatew
 \t\t};`;
 
 export function patchPinnedOpenClawBashTools(source) {
+  const permissionFailure = `\tconst permissionMissing = readNodePermissionError(error);
+\tif (code === "PERMISSION_MISSING" && permissionMissing) return {
+\t\treason: "permission-missing",
+\t\tretrySafe: false,
+\t\tcode,
+\t\tmessage: error instanceof Error ? error.message : message,
+\t\tpermissionMissing,
+\t\tnodeCommandDispatched,
+\t\trequestSent
+\t};
+`;
+  const hasPermissionFailure = source.includes(permissionFailure);
+  const classifierSource = hasPermissionFailure
+    ? PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE.replace(
+        '\tif (code === "SYSTEM_RUN_DENIED")',
+        permissionFailure + '\tif (code === "SYSTEM_RUN_DENIED")',
+      )
+    : PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE;
+  const classifierReplacement = hasPermissionFailure
+    ? PATCHED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE.replace(
+        '\tif (code === "SYSTEM_RUN_DENIED"',
+        permissionFailure + '\tif (code === "SYSTEM_RUN_DENIED"',
+      )
+    : PATCHED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE;
   let patched = replaceExactlyOnce(
     source,
-    PINNED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
-    PATCHED_BASH_TOOLS_FAILURE_CLASSIFIER_SOURCE,
+    classifierSource,
+    classifierReplacement,
     "node pre-execution failure classification",
   );
   patched = replaceExactlyOnce(
@@ -1151,14 +1246,31 @@ export function patchPinnedOpenClawBashTools(source) {
   );
   patched = replaceExactlyOnce(
     patched,
-    PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
-    PATCHED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+    hasPermissionFailure
+      ? PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE.replace(
+          "\t\trequest: params,",
+          "\t\tsource: assertSourceActive,\n\t\trequest: params,",
+        )
+      : PINNED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
+    hasPermissionFailure
+      ? PATCHED_BASH_TOOLS_FINAL_DISPATCH_SOURCE.replace(
+          "\t\trequest: params,",
+          "\t\tsource: assertSourceActive,\n\t\trequest: params,",
+        )
+      : PATCHED_BASH_TOOLS_FINAL_DISPATCH_SOURCE,
     "node unresolved-outcome dispatch identity",
   );
   return replaceExactlyOnce(
     patched,
-    PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
-    PATCHED_BASH_TOOLS_HOST_SELECTION_SOURCE,
+    hasPermissionFailure
+      ? "\t\t\tconst host = resolveHostForParams(params);"
+      : PINNED_BASH_TOOLS_HOST_SELECTION_SOURCE,
+    hasPermissionFailure
+      ? PATCHED_BASH_TOOLS_HOST_SELECTION_SOURCE.replace(
+          "const host = target.effectiveHost;",
+          "const host = resolveHostForParams(params);",
+        ).replace("\n\t\t\tconst explicitSecurity = defaults?.security;", "")
+      : PATCHED_BASH_TOOLS_HOST_SELECTION_SOURCE,
     "MXC exec host lock",
   );
 }
@@ -1184,6 +1296,24 @@ const PATCHED_CRON_STARTUP_MISSED_JOBS_SOURCE = `\t\tconst microclawCronResumeFe
 \t\t});`;
 
 export function patchPinnedOpenClawCronService(source) {
+  if (source.includes(PINNED_CRON_WORKER_START_SOURCE)) {
+    const patched = replaceExactlyOnce(
+      source,
+      PINNED_CRON_WORKER_START_SOURCE,
+      PATCHED_CRON_WORKER_START_SOURCE,
+      "Cron worker startup missed-job fence",
+    );
+    const acknowledgement = PATCHED_CRON_STARTUP_ACK_SOURCE.slice(
+      PATCHED_CRON_STARTUP_ACK_SOURCE.indexOf("\t\tconst microclawCronResumeAckPath"),
+      PATCHED_CRON_STARTUP_ACK_SOURCE.lastIndexOf("\t\tstate.deps.log.info({"),
+    ).replace(/^\t/gm, "");
+    return replaceExactlyOnce(
+      patched,
+      PINNED_CRON_WORKER_ACK_SOURCE,
+      acknowledgement + PINNED_CRON_WORKER_ACK_SOURCE,
+      "Cron worker startup resume acknowledgement",
+    );
+  }
   let patched = replaceExactlyOnce(
     source,
     PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
@@ -1198,6 +1328,25 @@ export function patchPinnedOpenClawCronService(source) {
   );
   return patched;
 }
+
+export const PINNED_CRON_WORKER_START_SOURCE = `\tif (state.stopped || state.lifecycleGeneration !== generation) return;
+\tawait startCronScheduler(state, skipJobIds);`;
+const PATCHED_CRON_WORKER_START_SOURCE = `\tif (state.stopped || state.lifecycleGeneration !== generation) return;
+\tconst microclawCronWorkerResumeFenceRaw = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
+\tif (microclawCronWorkerResumeFenceRaw !== void 0) {
+\t\tconst microclawCronResumeFenceUnixMs = Number(microclawCronWorkerResumeFenceRaw);
+\t\tif (!Number.isSafeInteger(microclawCronResumeFenceUnixMs) || microclawCronResumeFenceUnixMs < 0 || microclawCronResumeFenceUnixMs > state.deps.nowMs()) throw new Error("Invalid MicroClaw Cron resume fence");
+\t\tawait locked(state, () => recomputeUnownedCronSchedules(state, {
+\t\t\trecomputeExpired: true,
+\t\t\tnowMs: microclawCronResumeFenceUnixMs
+\t\t}));
+\t\tif (state.stopped || state.lifecycleGeneration !== generation) return;
+\t}
+\tawait startCronScheduler(state, skipJobIds);`;
+export const PINNED_CRON_WORKER_ACK_SOURCE = `\tstate.deps.log.info({
+\t\tenabled: state.deps.cronEnabled,
+\t\tjobs: state.store?.jobs.length ?? 0
+\t}, "cron: started");`;
 
 export const PINNED_CRON_STARTUP_ACK_SOURCE = `\t\tarmTimer(state);
 \t\tresumeForeignReceiptMonitor(state);
@@ -1553,7 +1702,7 @@ export function validatePinnedOpenClawApprovalPackage(
     throw new Error("MICROCLAW_OPENCLAW_PACKAGE_DIR must be an absolute path");
   }
 
-  const canonicalPackageDir = realpathSync(packageDir);
+  const canonicalPackageDir = canonicalPath(packageDir);
   const packageJson = JSON.parse(readFileSync(join(canonicalPackageDir, "package.json"), "utf8"));
   const modules = Object.hasOwn(PINNED_RELEASE_MODULES, packageJson.version)
     ? PINNED_RELEASE_MODULES[packageJson.version]
@@ -1585,7 +1734,7 @@ export function validatePinnedOpenClawApprovalPackage(
   }
   return requestedTargets.map((target) => {
     const modulePath = join(canonicalPackageDir, "dist", target.module);
-    const targetPath = realpathSync(modulePath);
+    const targetPath = canonicalPath(modulePath);
     const targetRelative = relative(canonicalPackageDir, targetPath);
     if (targetRelative.startsWith("..") || isAbsolute(targetRelative)) {
       throw new Error("Pinned OpenClaw approval module escaped its package directory");
@@ -1598,6 +1747,28 @@ export function validatePinnedOpenClawApprovalPackage(
     target.patch(original.toString("utf8"));
     return { ...target, modulePath, targetPath, original };
   });
+}
+
+export function createPinnedApprovalLoadHook(targets) {
+  const lexicalTargets = new Map();
+  const canonicalTargets = new Map();
+  for (const target of targets) {
+    const lexical = resolve(target.modulePath);
+    if (!lexicalTargets.has(lexical)) lexicalTargets.set(lexical, target);
+    if (!canonicalTargets.has(target.targetPath)) canonicalTargets.set(target.targetPath, target);
+  }
+  return function load(url, context, nextLoad) {
+    const result = nextLoad(url, context);
+    if (!url.startsWith("file:")) return result;
+    const requestedPath = resolve(fileURLToPath(url));
+    const lexicalTarget = lexicalTargets.get(requestedPath);
+    const loadedPath = canonicalPath(requestedPath);
+    if (lexicalTarget && lexicalTarget.targetPath !== loadedPath) {
+      throw new Error(`Pinned OpenClaw module changed after validation (${lexicalTarget.module})`);
+    }
+    const target = lexicalTarget ?? canonicalTargets.get(loadedPath);
+    return target ? { ...result, source: target.patch(target.original.toString("utf8")) } : result;
+  };
 }
 
 function initialize() {
@@ -1628,27 +1799,7 @@ function initialize() {
   );
   if (approvalEnabled) installApprovalProofMinter();
 
-  registerHooks({
-    load(url, context, nextLoad) {
-      const result = nextLoad(url, context);
-      const requestedPath = url.startsWith("file:") ? resolve(fileURLToPath(url)) : null;
-      const lexicalTarget = targets.find(
-        (candidate) => resolve(candidate.modulePath) === requestedPath,
-      );
-      const loadedPath = requestedPath ? realpathSync(requestedPath) : null;
-      if (lexicalTarget && lexicalTarget.targetPath !== loadedPath) {
-        throw new Error(
-          `Pinned OpenClaw module changed after validation (${lexicalTarget.module})`,
-        );
-      }
-      const target =
-        lexicalTarget ?? targets.find((candidate) => candidate.targetPath === loadedPath);
-      if (target) {
-        return { ...result, source: target.patch(target.original.toString("utf8")) };
-      }
-      return result;
-    },
-  });
+  registerHooks({ load: createPinnedApprovalLoadHook(targets) });
   globalThis.console.log(
     `[microclaw-openclaw-compat] enabled ${[
       approvalEnabled ? "one-use node proof and prepared-plan backports" : null,

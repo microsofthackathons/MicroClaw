@@ -15,6 +15,7 @@ describe("GatewayClient WebSocket transport", () => {
   let server: WebSocketServer;
   let client: GatewayClient;
   let peer: WebSocket;
+  let startupRejections = 0;
   const onConnected = vi.fn();
   const onDisconnected = vi.fn();
   const onEvent = vi.fn();
@@ -22,6 +23,7 @@ describe("GatewayClient WebSocket transport", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    startupRejections = 0;
     vi.spyOn(deviceIdentity, "loadOrCreateDeviceIdentity").mockReturnValue({
       deviceId: "test-device",
       publicKey: Buffer.alloc(32, 2).toString("base64url"),
@@ -34,6 +36,23 @@ describe("GatewayClient WebSocket transport", () => {
         const request = JSON.parse(String(data));
         onRequest(request);
         if (request.method === "never.reply") return;
+        if (request.method === "connect" && startupRejections > 0) {
+          startupRejections--;
+          sendFragmentedFrame(socket, {
+            type: "res",
+            id: request.id,
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "gateway starting; retry shortly",
+              retryable: true,
+              retryAfterMs: 100,
+              details: { reason: "startup-sidecars" },
+            },
+          });
+          socket.close(1013, "gateway starting");
+          return;
+        }
         sendFragmentedFrame(socket, {
           type: "res",
           id: request.id,
@@ -73,6 +92,19 @@ describe("GatewayClient WebSocket transport", () => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
     vi.restoreAllMocks();
+  });
+
+  it("connects promptly after fragmented startup rejections and immediate peer closes", async () => {
+    const port = (server.address() as { port: number }).port;
+    client.stop();
+    startupRejections = 2;
+    client = new GatewayClient({ port, token: "test-token", onConnected });
+    client["backoffMs"] = 15_000;
+    client.start();
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    expect(startupRejections).toBe(0);
+    expect(client.connected).toBe(true);
+    await expect(client.request("echo", { ready: true })).resolves.toEqual({ ready: true });
   });
 
   it("negotiates the gateway handshake and exchanges fragmented JSON messages", async () => {

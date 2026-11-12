@@ -6,6 +6,7 @@ configures npm to use the taobao registry, and installs openclaw.
 
 import hashlib
 import json
+import ntpath
 import os
 import platform
 import re
@@ -32,7 +33,8 @@ from deployer.install_manifest import (
     resolve_bundled_install_manifest,
     write_install_manifest,
 )
-from deployer.install_timing import RuntimePreparationTiming
+from deployer.install_timing import RuntimePreparationTiming, run_timed_process
+from deployer.lightweight_backup import BACKUP_SCOPE, create_lightweight_archive
 from deployer.logger import DeployerLogger
 from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
 from deployer.openclaw_upgrade import (
@@ -83,7 +85,7 @@ _RETRYABLE_NPM_REGISTRY_ERROR = re.compile(
 )
 _LOCAL_MODEL_PLUGIN_ID = "llama-cpp"
 _LOCAL_MODEL_PLUGIN_PACKAGE = "@openclaw/llama-cpp-provider"
-_LOCAL_MODEL_PLUGIN_VERSION = OPENCLAW_TARGET_VERSION
+_LOCAL_MODEL_PLUGIN_VERSION = "2026.10.5"
 _LOCAL_MODEL_PLUGIN_SHA256 = "8c782ef30d528be1a7b57f80d9cfd30b18d52087452f98168894d2da387519e9"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
 _SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
@@ -488,9 +490,11 @@ class WindowsSetup:
     # ────────────────────── Subprocess helper ──────────────────────
 
     @staticmethod
-    def _run(cmd, **kwargs):
+    def _run(cmd, *, timing=None, **kwargs):
         """Wrapper around subprocess.run that hides console windows on Windows."""
         kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+        if timing is not None:
+            return run_timed_process(cmd, timing=timing, **kwargs)
         return subprocess.run(cmd, **kwargs)
 
     # ────────────────────── Mirror selection ──────────────────────
@@ -694,10 +698,17 @@ class WindowsSetup:
 
     def ensure_git(self) -> bool:
         """Install Git if not already available."""
+        git_dir = Path.home() / ".openclaw-git"
         git_path = shutil.which("git")
-        if git_path:
+        if git_path and not Path(git_path).is_relative_to(git_dir):
             self._git_bin = str(Path(git_path).parent)
             self.log.info("git already in PATH")
+            return True
+
+        git_exe = self._find_managed_git(git_dir)
+        if git_exe is not None:
+            self._activate_managed_git(git_exe)
+            self.log.info(f"Reusing managed Git: {git_exe}")
             return True
 
         self._select_download_mirror()
@@ -720,13 +731,13 @@ class WindowsSetup:
             filename = f"MinGit-{git_version}-32-bit.zip"
         else:
             filename = f"PortableGit-{git_version}-64-bit.7z.exe"
-        git_dir = Path.home() / ".openclaw-git"
+        git_dir_existed = git_dir.exists()
+        tmp_dir = None
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_git_"))
             dl_path = tmp_dir / filename
 
             if not self._download_git_installer(git_version, filename, dl_path):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
                 return False
 
             self.log.step("Extracting Git…")
@@ -738,27 +749,19 @@ class WindowsSetup:
                     zf.extractall(git_dir)
             else:
                 # PortableGit self-extracts with -o flag
-                self._run(
+                result = self._run(
                     [str(dl_path), "-o" + str(git_dir), "-y"],
                     capture_output=True,
                     text=True,
                     timeout=120,
                 )
+                if result.returncode != 0:
+                    raise RuntimeError(f"Git extraction exited with code {result.returncode}")
 
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-            git_exe = git_dir / "bin" / "git.exe"
-            if not git_exe.exists():
-                # Some versions use cmd/git.exe
-                git_exe = git_dir / "cmd" / "git.exe"
-
-            if git_exe.exists():
-                # Add to current process PATH
+            git_exe = self._find_managed_git(git_dir)
+            if git_exe is not None:
+                self._activate_managed_git(git_exe)
                 git_bin = str(git_exe.parent)
-                self._git_bin = git_bin
-                os.environ["PATH"] = git_bin + os.pathsep + os.environ.get("PATH", "")
-                # Add to system PATH permanently
-                self._add_to_system_path(git_bin)
                 self.log.success(f"Git installed to {git_dir}")
 
                 # Register rollback
@@ -766,14 +769,55 @@ class WindowsSetup:
                     shutil.rmtree(d, ignore_errors=True)
                     self._remove_from_system_path(b)
 
-                self._register_rollback("删除 Git", _rollback_git)
+                if not git_dir_existed:
+                    self._register_rollback("删除 Git", _rollback_git)
                 return True
 
-            self.log.error("Git extraction failed — git.exe not found")
+            self.log.error("Git extraction failed — no working git.exe found")
             return False
         except Exception as e:
             self.log.error(f"Git install failed: {e}")
             return False
+        finally:
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _find_managed_git(self, git_dir: Path) -> Path | None:
+        for directory in ("bin", "cmd"):
+            executable = git_dir / directory / "git.exe"
+            if not executable.is_file():
+                continue
+            try:
+                result = self._run(
+                    [str(executable), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip().startswith("git version "):
+                    return executable
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self.log.warn(f"Managed Git is unusable: {executable}")
+        return None
+
+    @staticmethod
+    def _path_contains(value: str, directory: str) -> bool:
+        def normalized(entry):
+            return ntpath.normcase(ntpath.normpath(ntpath.expandvars(entry.strip().strip('"'))))
+
+        return any(
+            normalized(entry) == normalized(directory) for entry in value.split(";") if entry
+        )
+
+    def _activate_managed_git(self, executable: Path) -> None:
+        git_bin = str(executable.parent)
+        self._git_bin = git_bin
+        current = os.environ.get("PATH", "")
+        if not self._path_contains(current, git_bin):
+            os.environ["PATH"] = git_bin + os.pathsep + current
+        # PortableGit belongs to this user; do not require machine registry access.
+        self._add_to_user_path(git_bin)
 
     def _git_download_bases(self) -> list[tuple[str, str]]:
         """Ordered, de-duplicated list of ``(mirror_name, git_mirror_base)``.
@@ -836,25 +880,50 @@ class WindowsSetup:
         # Fallback: hardcoded recent version
         return "2.53.0"
 
-    def _add_to_system_path(self, directory: str):
-        """Add a directory to system PATH via registry (persistent)."""
+    def _add_to_user_path(self, directory: str):
+        """Persist a managed tool without requiring administrator permissions."""
         try:
             import winreg
 
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            key = winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER,
+                "Environment",
                 0,
-                winreg.KEY_ALL_ACCESS,
+                winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
             )
-            current, _ = winreg.QueryValueEx(key, "Path")
-            if directory.lower() not in current.lower():
-                new_path = current.rstrip(";") + ";" + directory
-                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                self.log.info(f"  Added to system PATH: {directory}")
-            winreg.CloseKey(key)
+            try:
+                try:
+                    current, value_type = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    current, value_type = "", winreg.REG_EXPAND_SZ
+                if self._path_contains(current, directory):
+                    return
+                new_path = ";".join(filter(None, (current.rstrip(";"), directory)))
+                winreg.SetValueEx(key, "Path", 0, value_type, new_path)
+            finally:
+                winreg.CloseKey(key)
+            self.log.info(f"  Added to user PATH: {directory}")
+            self._notify_environment_change()
         except Exception as e:
-            self.log.warn(f"  Could not update system PATH: {e}")
+            self.log.warn(f"  Could not update user PATH: {e}")
+
+    @staticmethod
+    def _notify_environment_change():
+        try:
+            import ctypes
+
+            result = ctypes.c_size_t()
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF,
+                0x001A,
+                0,
+                ctypes.c_wchar_p("Environment"),
+                0x0002,
+                1000,
+                ctypes.byref(result),
+            )
+        except Exception:
+            pass
 
     def _remove_from_system_path(self, directory: str):
         """Remove a directory from both system and user PATH via registry.
@@ -2214,12 +2283,12 @@ class WindowsSetup:
         return True
 
     def update_openclaw_windows(self, installation: OpenClawInstallation) -> bool:
-        """Replace the pinned package after backup, then run the target Doctor once."""
+        """Replace the pinned package after backup without running Doctor."""
         if not self._allow_openclaw_update(installation):
             return False
         self.install_prefix = installation.prefix
         if installation.version == OPENCLAW_TARGET_VERSION:
-            self.log.info("OpenClaw version unchanged; skipping core update and Doctor.")
+            self.log.info("OpenClaw version unchanged; skipping core update.")
             return True
         return self._upgrade_openclaw_with_package_manager(installation)
 
@@ -2287,6 +2356,70 @@ class WindowsSetup:
                 outcome = {}
             success = True
             return outcome
+        finally:
+            self.log.info(
+                f"Package upgrade timing: {label} [{'success' if success else 'failed'}] "
+                f"{time.monotonic() - started:.2f}s"
+            )
+
+    def _create_lightweight_upgrade_backup(
+        self,
+        upgrade: PackageManagerUpgrade,
+        installation: OpenClawInstallation,
+        node: str,
+        env: dict[str, str],
+    ) -> None:
+        state_dir = Path.home() / ".openclaw"
+        desktop_dir = Path(os.environ["APPDATA"]) / "MicroClaw"
+        label = "Backing up whitelisted configuration, databases, credentials and workspaces"
+        self.log.step(label)
+        self.log.info(
+            "Lightweight backup only: models, browser profiles, old installers and runtime "
+            "caches are not archived or deleted. No full-archive fallback is performed."
+        )
+        started = time.monotonic()
+        success = False
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="lightweight-", dir=upgrade.backup_dir
+            ) as scratch:
+                plan = Path(scratch) / "plan.json"
+                outcome = self._run_package_upgrade_phase(
+                    "Creating verified SQLite snapshots for the lightweight backup",
+                    [
+                        node,
+                        str(Path(__file__).parent / "assets" / "upgrade-backup.mjs"),
+                        "backup",
+                        "--package",
+                        str(installation.package_dir),
+                        "--output",
+                        str(plan),
+                        "--desktop",
+                        str(desktop_dir),
+                    ],
+                    upgrade.prefix,
+                    env,
+                    json_output=True,
+                )
+                if (
+                    outcome.get("scope") != BACKUP_SCOPE
+                    or outcome.get("verifiedSqlite") is not True
+                    or Path(outcome.get("stateDir", "")).resolve() != state_dir.resolve()
+                    or Path(outcome.get("planPath", "")).resolve() != plan.resolve()
+                ):
+                    raise ValueError("Lightweight snapshot did not verify the required state plan")
+                create_lightweight_archive(
+                    plan,
+                    upgrade.archive,
+                    state_dir=state_dir,
+                    desktop_dir=desktop_dir,
+                    source_version=installation.version,
+                    progress=self.log.info,
+                )
+            upgrade.save(
+                "backed-up", archiveSha256=upgrade.archive_digest(), backupScope=BACKUP_SCOPE
+            )
+            success = True
         finally:
             self.log.info(
                 f"Package upgrade timing: {label} [{'success' if success else 'failed'}] "
@@ -2389,42 +2522,7 @@ class WindowsSetup:
                         f"Upgrading OpenClaw {installation.version} -> {OPENCLAW_TARGET_VERSION} "
                         "with npm after a verified data backup; no old runtime snapshot is taken."
                     )
-                    backup = self._run_package_upgrade_phase(
-                        "Backing up OpenClaw state and workspaces",
-                        [
-                            node,
-                            str(installation.entry_path),
-                            "backup",
-                            "create",
-                            "--output",
-                            str(upgrade.archive),
-                            "--verify",
-                            "--json",
-                        ],
-                        prefix,
-                        env,
-                        json_output=True,
-                    )
-                    if (
-                        backup.get("verified") is not True
-                        or backup.get("includeWorkspace") is not True
-                        or backup.get("onlyConfig") is not False
-                        or not isinstance(backup.get("archivePath"), str)
-                        or not isinstance(backup.get("assets"), list)
-                        or Path(backup.get("archivePath", "")).resolve()
-                        != upgrade.archive.resolve()
-                        or not any(
-                            asset.get("kind") == "state"
-                            and isinstance(asset.get("sourcePath"), str)
-                            and Path(asset.get("sourcePath", "")).resolve() == state_dir.resolve()
-                            for asset in backup.get("assets", [])
-                            if isinstance(asset, dict)
-                        )
-                    ):
-                        raise ValueError(
-                            "Official backup did not verify the full state/workspace plan"
-                        )
-                    upgrade.save("backed-up", archiveSha256=upgrade.archive_digest())
+                    self._create_lightweight_upgrade_backup(upgrade, installation, node, env)
                 upgrade.verify_archive()
                 self.log.info(f"SHA-256 verified pre-upgrade data backup: {upgrade.archive}")
                 if not self._package_upgrade_is_idle():
@@ -2462,27 +2560,17 @@ class WindowsSetup:
                     raise ValueError(
                         f"The replacement runtime is not OpenClaw {OPENCLAW_TARGET_VERSION}"
                     )
-                env = self._with_state_owner_compatibility(env, installation)
-                command = [node, str(installation.entry_path)]
                 if not self._package_upgrade_is_idle():
                     return False
-                upgrade.save("migrating")
-                self._run_package_upgrade_phase(
-                    "Repairing OpenClaw configuration and data with Doctor",
-                    command + ["doctor", "--fix", "--non-interactive"],
-                    prefix,
-                    env,
-                )
+                upgrade.save("verifying")
                 if (
                     not self._validate_installed_version()
                     or not self._gateway_is_stopped_for_upgrade()
                 ):
-                    raise RuntimeError("OpenClaw verification failed after package-manager repair")
+                    raise RuntimeError("OpenClaw verification failed after package replacement")
                 upgrade.save("complete")
                 self._successful_npm_registry = registry
-                self.log.success(
-                    f"OpenClaw {OPENCLAW_TARGET_VERSION} npm upgrade and Doctor completed"
-                )
+                self.log.success(f"OpenClaw {OPENCLAW_TARGET_VERSION} npm upgrade completed")
                 return True
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             self.log.error(f"OpenClaw package-manager upgrade failed: {error}")
@@ -2490,7 +2578,7 @@ class WindowsSetup:
                 self.log.error(
                     f"Keep backup/recovery artifacts at {upgrade.backup_dir}. "
                     "Gateway will not start and older data will not be restored automatically. "
-                    "Retry this installer to resume repair."
+                    "Retry this installer to resume the upgrade."
                 )
             return False
 
@@ -4024,7 +4112,10 @@ class WindowsSetup:
             self.log.error("The packaged desktop executable or Node runtime is missing")
             return False
         self.log.step("Preparing the bundled OpenClaw runtime before service startup…")
-        timing = RuntimePreparationTiming(self.log)
+        install_timing = getattr(self, "install_timing", None)
+        timing = RuntimePreparationTiming(
+            self.log, context=install_timing.context() if install_timing else None
+        )
         try:
             with timing.phase("preparation-total", summary=True):
                 with timing.phase("environment-preparation"):
@@ -4040,13 +4131,15 @@ class WindowsSetup:
                             encoding="utf-8",
                             errors="replace",
                             timeout=_DESKTOP_RUNTIME_PREPARATION_TIMEOUT,
+                            timing=timing,
                         )
                     except subprocess.TimeoutExpired as error:
                         timing.forward_output(error.stdout)
                         timing.forward_output(error.stderr)
                         raise
-                    timing.forward_output(result.stdout)
-                    timing.forward_output(result.stderr)
+                    with timing.phase("helper-output-forward"):
+                        timing.forward_output(result.stdout)
+                        timing.forward_output(result.stderr)
                     if result.returncode != 0:
                         detail = (result.stderr or result.stdout or "").strip()[-1500:]
                         raise RuntimeError(
@@ -4076,7 +4169,7 @@ class WindowsSetup:
                         .strip()
                         or not isinstance(package, dict)
                         or package.get("name") != "openclaw"
-                        or not package.get("version")
+                        or package.get("version") != OPENCLAW_TARGET_VERSION
                     ):
                         raise ValueError("The prepared OpenClaw runtime is incomplete")
                     self._desktop_runtime_root = runtime_root

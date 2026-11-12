@@ -25,11 +25,14 @@ describe("trusted renderer URL", () => {
       developmentUrl: "http://localhost:5173",
       packagedIndexPath,
     };
-    expect(isTrustedRendererUrl(`${pathToFileURL(packagedIndexPath).href}#/settings`, options)).toBe(
-      true,
-    );
     expect(
-      isTrustedRendererUrl(pathToFileURL(path.resolve(path.dirname(packagedIndexPath), "evil.html")).href, options),
+      isTrustedRendererUrl(`${pathToFileURL(packagedIndexPath).href}#/settings`, options),
+    ).toBe(true);
+    expect(
+      isTrustedRendererUrl(
+        pathToFileURL(path.resolve(path.dirname(packagedIndexPath), "evil.html")).href,
+        options,
+      ),
     ).toBe(false);
     expect(isTrustedRendererUrl("file:///C:/Users/Public/attacker.html", options)).toBe(false);
   });

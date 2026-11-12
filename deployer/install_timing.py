@@ -1,20 +1,52 @@
 """Installation timing metrics shared by both installer frontends."""
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from subprocess import TimeoutExpired
 from time import perf_counter
+from uuid import uuid4
 
 RUNTIME_PREPARATION_TIMING_PREFIX = "MICROCLAW_RUNTIME_TIMING "
+INSTALL_TIMING_PREFIX = "MICROCLAW_INSTALL_TIMING "
+
+
+def run_timed_process(command, *, timing, timeout=None, capture_output=False, **kwargs):
+    """Observe process creation separately, preserving subprocess.run's cleanup contract."""
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr cannot be used with capture_output")
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    with timing.phase("helper-spawn"):
+        process = subprocess.Popen(command, **kwargs)
+    with process:
+        with timing.phase("helper-wait"):
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except TimeoutExpired as error:
+                process.kill()
+                with timing.phase("helper-timeout-reap"):
+                    if sys.platform == "win32":
+                        error.stdout, error.stderr = process.communicate()
+                    else:
+                        process.wait()
+                raise
+            except BaseException:
+                process.kill()
+                raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 class RuntimePreparationTiming:
-    def __init__(self, logger, clock: Callable[[], float] | None = None):
+    def __init__(self, logger, clock: Callable[[], float] | None = None, *, context=None):
         self._logger = logger
         self._clock = clock or perf_counter
         self._started_at = self._clock()
+        self._context = context or {}
 
     def _write(self, message: str) -> None:
         try:
@@ -24,6 +56,7 @@ class RuntimePreparationTiming:
 
     def _record(self, phase: str, kind: str, status: str, duration_ms: int | None = None):
         event = {
+            **self._context,
             "scope": "installer",
             "phase": phase,
             "kind": kind,
@@ -57,6 +90,14 @@ class RuntimePreparationTiming:
         if isinstance(output, str):
             for line in output.splitlines():
                 if line.startswith(RUNTIME_PREPARATION_TIMING_PREFIX):
+                    if self._context:
+                        try:
+                            event = json.loads(line[len(RUNTIME_PREPARATION_TIMING_PREFIX) :])
+                            line = RUNTIME_PREPARATION_TIMING_PREFIX + json.dumps(
+                                {**event, **self._context}
+                            )
+                        except (ValueError, TypeError):
+                            continue
                     self._write(line)
 
 
@@ -68,7 +109,7 @@ class StepTiming:
 
 
 class InstallTiming:
-    """Record readable per-step timings and a compact installation summary."""
+    """Readable logs plus versioned, locale-independent installation evidence."""
 
     def __init__(self, logger, clock: Callable[[], float] | None = None):
         self._logger = logger
@@ -76,27 +117,99 @@ class InstallTiming:
         self._started_at = self._clock()
         self._steps: list[StepTiming] = []
         self._finished = False
+        self.run_id = os.environ.get("MICROCLAW_PERF_RUN_ID") or str(uuid4())
+        self.sample_id = os.environ.get("MICROCLAW_PERF_SAMPLE_ID")
+        self.stage_id = "installation"
+        self._human_wait_ms = 0
 
-    def start_step(self) -> float:
-        return self._clock()
+    def context(self):
+        return {
+            "schemaVersion": 2,
+            "runId": self.run_id,
+            "sampleId": self.sample_id,
+            "stageId": self.stage_id,
+        }
+
+    def _write(self, message):
+        try:
+            self._logger.info(message)
+        except Exception:
+            pass
+
+    def _record(self, phase, kind, status, now, **details):
+        self._write(
+            INSTALL_TIMING_PREFIX
+            + json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "runId": self.run_id,
+                    "sampleId": self.sample_id,
+                    "scope": "installer",
+                    "stageId": self.stage_id,
+                    "phase": phase,
+                    "kind": kind,
+                    "status": status,
+                    "elapsedMs": max(0, round((now - self._started_at) * 1000)),
+                    **details,
+                }
+            )
+        )
+
+    def start_step(self, stage_id: str | None = None) -> float:
+        self.stage_id = stage_id or f"step-{len(self._steps) + 1}"
+        now = self._clock()
+        self._record(self.stage_id, "step", "started", now)
+        return now
 
     def record_step(self, label: str, started_at: float, status: str) -> None:
         clean_label = label.rstrip(".")
-        duration_ms = max(0, round((self._clock() - started_at) * 1000))
+        now = self._clock()
+        duration_ms = max(0, round((now - started_at) * 1000))
         self._steps.append(StepTiming(label=clean_label, status=status, duration_ms=duration_ms))
-        self._logger.info(f"Install timing: {clean_label} [{status}] {duration_ms / 1000:.2f}s")
+        self._write(f"Install timing: {clean_label} [{status}] {duration_ms / 1000:.2f}s")
+        self._record(self.stage_id, "step", status, now, durationMs=duration_ms)
+
+    @contextmanager
+    def span(self, phase: str, *, attempt: int | None = None):
+        started = self._clock()
+        details = {} if attempt is None else {"attempt": attempt}
+        self._record(phase, "phase", "started", started, **details)
+        outcome = {"status": "success"}
+        try:
+            yield outcome
+        except Exception:
+            outcome["status"] = "failed"
+            raise
+        finally:
+            now = self._clock()
+            duration = max(0, round((now - started) * 1000))
+            if phase == "human-wait":
+                self._human_wait_ms += duration
+            self._record(phase, "phase", outcome["status"], now, durationMs=duration, **details)
 
     def finish(self, status: str) -> None:
         if self._finished:
             return
         self._finished = True
 
-        total_ms = max(0, round((self._clock() - self._started_at) * 1000))
-        self._logger.info(
+        now = self._clock()
+        total_ms = max(0, round((now - self._started_at) * 1000))
+        self._write(
             f"Install timing summary: status={status} "
             f"total={total_ms / 1000:.2f}s steps={len(self._steps)}"
         )
         if self._steps:
             slowest = sorted(self._steps, key=lambda step: step.duration_ms, reverse=True)[:5]
             details = "; ".join(f"{step.label}={step.duration_ms / 1000:.2f}s" for step in slowest)
-            self._logger.info(f"Slowest install steps: {details}")
+            self._write(f"Slowest install steps: {details}")
+        self._record(
+            "installation-total",
+            "summary",
+            status,
+            now,
+            stageId="installation",
+            stepCount=len(self._steps),
+            durationMs=total_ms,
+            humanWaitMs=self._human_wait_ms,
+            activeMs=max(0, total_ms - self._human_wait_ms),
+        )

@@ -34,7 +34,7 @@ checks the exact Gateway process owning the listener before connecting.
 ## Security settings and live changes
 
 Security settings stage sandboxing, selected folders, and command consent
-until **Apply changes** is confirmed. Folder edits
+until **Apply changes** is selected. Folder edits
 are saved while Off and take effect on the next successful activation. Applying
 multiple settings performs the folder, consent, and mode updates
 in order; if a later update fails, earlier successful updates remain saved.

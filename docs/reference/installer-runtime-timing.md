@@ -22,6 +22,10 @@
 | installer | preparation-total | 整个运行时准备调用，含环境准备、子进程及结果校验；汇总项 |
 | installer | environment-preparation | 准备子进程环境变量、移除 ELECTRON_RUN_AS_NODE |
 | installer | helper-process | 从启动桌面准备进程至退出/失败/超时；汇总项 |
+| installer | helper-spawn | 创建子进程（Popen）并取得进程句柄；不等于 Electron ready |
+| installer | helper-wait | 等待子进程退出并收集 stdout/stderr；包含子进程内部各阶段、原生初始化及退出开销 |
+| installer | helper-timeout-reap | 超时后终止并回收子进程、保留部分输出；位于 helper-wait 内 |
+| installer | helper-output-forward | 子进程结束后，将其埋点转存到安装日志 |
 | desktop | desktop-startup | 从 Node/Electron 进程时钟起点到进入准备模式，含模块加载及 Electron ready |
 | desktop | preparation-total | 准备模式内部工作；汇总项，不含前面的 desktop-startup |
 | desktop | archive-metadata | 读取包元数据、生成原有缓存版本标识 |
@@ -47,5 +51,36 @@
 - 非零退出也转存记录；超时时尽量转存 `TimeoutExpired` 中已有的 stdout/stderr，包括字节形式的部分输出。
   进程被强制终止且没有机会输出的记录无法补回。
 - 不要把不同作用域的同一工作、`summary` 汇总项和内部子阶段重复相加。
-- 普通桌面启动不启用这些详细日志；只在安装器的专用准备模式传递计时器并记录。
+- `helper-spawn`、`helper-wait`、`helper-output-forward` 是 `helper-process` 的内部明细。
+  `helper-wait` 成功表示等待及输出收集完成，子进程非零退出仍会令外层 `helper-process`
+  失败；超时另记 `timeout`。这些计时可区分进程创建、运行等待和日志转存，不能单独将
+  `helper-wait` 与桌面内部计时的差额认定为原生启动或退出耗时。
+- 普通桌面启动同样传递计时器，通过 `startup-runtime-phase` 写入 Electron 生命周期日志；
+  安装器专用准备模式继续输出带前缀的 JSON。worker 明细由父进程转发，保留原始作用域。
 - 修改后的源码需要重新构建桌面包与安装器才会生效。不能用新增日志还原此前未采样安装的耗时分布。
+
+## 安装全过程
+
+Web 安装器另外输出 `MICROCLAW_INSTALL_TIMING ` JSON（`schemaVersion: 2`）：
+
+- `runId`、`sampleId`：适配器通过 `MICROCLAW_PERF_RUN_ID`、`MICROCLAW_PERF_SAMPLE_ID`
+  环境变量传入；手动安装自动生成 runId，sampleId 为 null。
+- `stageId`：不依赖界面语言的阶段编号，例如 `desktop-60`、`prepareUpgrade-18` 和
+  `prepareUpgrade-52`。重复文案仍可区分，运行时子进程记录继承相同安装身份。
+- `kind: step` 记录整个步骤；`phase: attempt`、`retry-wait`、`human-wait`
+  分别记录单次尝试、退避等待和关闭现有应用前的人工确认等待。
+- `installation-total` 汇总包含 `durationMs`（总经过时间）、`humanWaitMs` 和
+  `activeMs`（扣除已观测人工确认等待）。系统 UAC 和外部安装器内部等待未单独拆分。
+- 失败、取消和意外异常保留已完成阶段；日志写入失败不会改变安装结果。
+
+安装结束边界是安装完成与最终校验，不包含启动桌面应用或服务就绪。安装成功后停留在完成页，
+提供“关闭”和“打开 MicroClaw”；只有点击“打开”才启动桌面应用，启动请求成功后关闭安装窗口。
+启动请求失败时保留完成页并允许重试，不会将已成功的安装改记为失败。
+下载和桌面 ZIP 展开仍包含在各自安装步骤内，未提供逐下载子阶段。
+步骤、内部尝试、运行时汇总与子阶段不能重复相加。VM 适配器计时覆盖确认安装到最终完成；
+本地结构化日志从安装线程进入开始，两者之间的调度开销不应被误当成某个安装步骤。
+
+## 实测记录
+
+- [2026-11-11 老用户覆盖安装：62.410 秒](installation-timing-2026-11-11.md)：记录已有依赖、
+  运行时缓存命中条件下的安装耗时，并解释桌面客户端安装、更新前置检查与管理状态备份的实际范围。

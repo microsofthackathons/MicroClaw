@@ -295,17 +295,101 @@ describe("privacy-safe approval context diagnostics", () => {
     );
   });
 
-  it("routes approvals in both modes while keeping WeChat diagnostics behind the MXC gate", () => {
-    const source = readFileSync(join(__dirname, "main.ts"), "utf8");
-    const branch = source.indexOf('if (evt.event === "exec.approval.requested")');
-    const diagnosticsGate = source.indexOf("if (isWindowsNodeMxcDesired())", branch);
-    const diagnostic = source.indexOf("describeGatewayApprovalContext(evt.payload)", branch);
-    const normalize = source.indexOf("normalizeWindowsNodeMxcGatewayApproval(", branch);
-    expect(branch).toBeGreaterThan(-1);
-    expect(diagnosticsGate).toBeGreaterThan(branch);
-    expect(diagnostic).toBeGreaterThan(diagnosticsGate);
-    expect(normalize).toBeGreaterThan(diagnostic);
-  });
+  it.each([
+    { mxcEnabled: false, validApproval: true },
+    { mxcEnabled: true, validApproval: true },
+    { mxcEnabled: false, validApproval: false },
+    { mxcEnabled: true, validApproval: false },
+  ])(
+    "routes approvals in both modes and logs raw diagnostics only with MXC=$mxcEnabled, valid=$validApproval",
+    ({ mxcEnabled, validApproval }) => {
+      const source = ts.createSourceFile(
+        "main.ts",
+        readFileSync(join(__dirname, "main.ts"), "utf8"),
+        ts.ScriptTarget.ESNext,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const connection = source.statements.find(
+        (statement) =>
+          ts.isFunctionDeclaration(statement) && statement.name?.text === "connectGatewayWs",
+      );
+      if (!connection) throw new Error("Cannot locate the Gateway connection");
+      function findApprovalBranch(node: ts.Node): ts.IfStatement | undefined {
+        if (
+          ts.isIfStatement(node) &&
+          node.expression.getText(source).includes('"exec.approval.requested"')
+        )
+          return node;
+        return ts.forEachChild(node, findApprovalBranch);
+      }
+      const branch = findApprovalBranch(connection);
+      if (!branch) throw new Error("Cannot locate the Gateway approval handler");
+      const payload = {
+        id: "approval-id",
+        request: {
+          host: "node",
+          nodeId: "node-id",
+          sessionKey: "PRIVATE SESSION",
+          command: "PRIVATE COMMAND",
+          token: "PRIVATE TOKEN",
+        },
+      };
+      const approval = { id: payload.id };
+      const mode = mxcEnabled ? "full" : "off";
+      const scope = {
+        evt: { event: "exec.approval.requested", payload },
+        console: { info: vi.fn(), error: vi.fn() },
+        isWindowsNodeMxcDesired: () => mxcEnabled,
+        describeGatewayApprovalContext: vi.fn(describeGatewayApprovalContext),
+        normalizeWindowsNodeMxcGatewayApproval: vi.fn(() => (validApproval ? approval : null)),
+        settingsStore: { get: vi.fn(() => "node-id") },
+        gatewayGenerationId: "gateway-generation",
+        getWindowsNodeMxcRequestedMode: () => mode,
+        handleWindowsNodeMxcGatewayApproval: vi.fn(async () => {}),
+        gwClient: { connected: true, request: vi.fn(async () => {}) },
+      };
+      const executable = ts.transpileModule(
+        `function observeApproval() { ${branch.getText(source)} }\nobserveApproval();`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
+      ).outputText;
+      new Function(...Object.keys(scope), executable)(...Object.values(scope));
+
+      expect(scope.normalizeWindowsNodeMxcGatewayApproval).toHaveBeenCalledExactlyOnceWith(
+        payload,
+        "node-id",
+        "gateway-generation",
+        mode,
+      );
+      if (mxcEnabled) {
+        expect(scope.describeGatewayApprovalContext).toHaveBeenCalledExactlyOnceWith(payload);
+        expect(scope.describeGatewayApprovalContext.mock.invocationCallOrder[0]).toBeLessThan(
+          scope.normalizeWindowsNodeMxcGatewayApproval.mock.invocationCallOrder[0],
+        );
+        expect(scope.console.info).toHaveBeenCalledExactlyOnceWith(
+          "[weixin-remote-approval-context]",
+          describeGatewayApprovalContext(payload),
+        );
+        expect(JSON.stringify(scope.console.info.mock.calls)).not.toContain("PRIVATE");
+      } else {
+        expect(scope.describeGatewayApprovalContext).not.toHaveBeenCalled();
+        expect(scope.console.info).not.toHaveBeenCalled();
+      }
+      if (validApproval) {
+        expect(scope.handleWindowsNodeMxcGatewayApproval).toHaveBeenCalledExactlyOnceWith(
+          approval,
+          "gateway-generation",
+        );
+        expect(scope.gwClient.request).not.toHaveBeenCalled();
+      } else {
+        expect(scope.handleWindowsNodeMxcGatewayApproval).not.toHaveBeenCalled();
+        expect(scope.gwClient.request).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
+          id: payload.id,
+          decision: "deny",
+        });
+      }
+    },
+  );
 });
 
 const publishedPackage = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
@@ -315,8 +399,14 @@ describe.skipIf(!publishedPackage)("real pinned exec diagnostic boundaries", () 
 
   beforeAll(() => {
     if (!publishedPackage) throw new Error("A verified pinned package is required");
-    compat.validatePinnedOpenClawApprovalPackage(publishedPackage, { approval: true });
-    const source = readFileSync(join(publishedPackage, "dist", "bash-tools-Bl8Bd3CR.mjs"), "utf8");
+    const targets = compat.validatePinnedOpenClawApprovalPackage(publishedPackage, {
+      approval: true,
+    });
+    const bashTools = targets.find((target: { module: string }) =>
+      target.module.startsWith("bash-tools-"),
+    );
+    if (!bashTools) throw new Error("Missing pinned bash-tools module");
+    const source = bashTools.original.toString("utf8");
     original = ts.createSourceFile(
       "original.mjs",
       source,
@@ -371,6 +461,7 @@ describe.skipIf(!publishedPackage)("real pinned exec diagnostic boundaries", () 
         console: { info },
         process: { env: { MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: gate } },
         isSecretEgressProxyActive: () => false,
+        readExecRequestOwners: () => ({}),
         resolveExecPreparedRunEnvironment: () => ({}),
         resolveStoredSubagentCapabilities: () => ({ depth: 0 }),
         clampWithDefault: (_value: unknown, fallback: number) => fallback,
@@ -396,7 +487,9 @@ describe.skipIf(!publishedPackage)("real pinned exec diagnostic boundaries", () 
         }),
         EXEC_TOOL_DISPLAY_SUMMARY: "",
         execSchema: {},
+        createExecSchema: () => ({}),
         createExecToolExecutionTimeoutResolver: () => () => 0,
+        bindAgentToolAvailability: (tool: unknown) => tool,
         captureAgentToolSourceExecutionGuard: () => () => undefined,
         assertSupportedExecParams: vi.fn(),
         normalizeOptionalString: (value: unknown) =>

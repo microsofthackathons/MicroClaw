@@ -4,6 +4,7 @@ import {
   buildSessionTitlePrompt,
   GatewayClient,
   GatewayRequestError,
+  gatewayStartupRetryAfterMs,
   isAgentWarmupEvent,
   normalizeSessionTitle,
   normalizeGatewayChannelsStatus,
@@ -168,6 +169,7 @@ describe("GatewayClient approval capability", () => {
       sessionObserver: new GatewaySessionObserver(vi.fn()),
       connectSent: false,
       connectTimer: null,
+      reconnectTimer: null,
       connectNonce: "test",
       deviceIdentity: {
         deviceId: "test",
@@ -274,8 +276,9 @@ describe("GatewayClient handshake recovery", () => {
     const connect = vi.fn();
     const close = vi.fn(() => client["scheduleReconnect"]());
     const onAuthError = vi.fn();
+    const onStartupRetry = vi.fn();
     Object.assign(client, {
-      opts: { port: 18789, token: "test-token", onAuthError },
+      opts: { port: 18789, token: "test-token", onAuthError, onStartupRetry },
       sessionObserver: new GatewaySessionObserver(vi.fn()),
       pending: new Map(),
       sessionTitleWaiters: new Map(),
@@ -293,13 +296,135 @@ describe("GatewayClient handshake recovery", () => {
       ws: { readyState: 1, send, close },
     });
     const rejectHandshake = async (error: NonNullable<GatewayResponseFrame["error"]>) => {
+      client["connectSent"] = false;
       client["sendConnect"]();
-      const request = JSON.parse(send.mock.calls[0][0]);
+      const request = JSON.parse(send.mock.lastCall![0]);
       client["handleMessage"](JSON.stringify({ type: "res", id: request.id, ok: false, error }));
       await vi.advanceTimersByTimeAsync(0);
     };
-    return { client, connect, close, onAuthError, send, rejectHandshake };
+    return { client, connect, close, onAuthError, onStartupRetry, send, rejectHandshake };
   }
+
+  it("keeps repeated startup-sidecars retries short after a long disconnect backoff", async () => {
+    const { client, connect, onAuthError, onStartupRetry, rejectHandshake } =
+      createHandshakeClient();
+    client["backoffMs"] = WS_RECONNECT_MAX_MS;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await rejectHandshake({
+        code: "UNAVAILABLE",
+        message: "gateway starting; retry shortly",
+        retryable: true,
+        retryAfterMs: 500,
+        details: { reason: "startup-sidecars" },
+      });
+      await vi.advanceTimersByTimeAsync(499);
+      expect(connect).toHaveBeenCalledTimes(attempt - 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(connect).toHaveBeenCalledTimes(attempt);
+    }
+    expect(onAuthError).not.toHaveBeenCalled();
+    expect(client["closed"]).toBe(false);
+    expect(onStartupRetry).toHaveBeenCalledTimes(4);
+    expect(onStartupRetry).toHaveBeenLastCalledWith(500);
+  });
+
+  it("retries even when the startup timing observer fails", async () => {
+    const { client, connect, rejectHandshake } = createHandshakeClient();
+    client["opts"].onStartupRetry = () => {
+      throw new Error("diagnostics unavailable");
+    };
+    await rejectHandshake({
+      code: "UNAVAILABLE",
+      message: "starting",
+      retryable: true,
+      retryAfterMs: 500,
+      details: { reason: "startup-sidecars" },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("replaces an already scheduled long retry when the peer closes immediately", async () => {
+    const { client, connect, send } = createHandshakeClient();
+    client["backoffMs"] = WS_RECONNECT_MAX_MS;
+    client["sendConnect"]();
+    const request = JSON.parse(send.mock.lastCall![0]);
+    client["handleMessage"](
+      JSON.stringify({
+        type: "res",
+        id: request.id,
+        ok: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "starting",
+          retryable: true,
+          retryAfterMs: 500,
+          details: { reason: "startup-sidecars" },
+        },
+      }),
+    );
+    client["ws"] = null;
+    client["scheduleReconnect"]();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(connect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels a pending startup retry when the client is stopped", async () => {
+    const { client, connect, rejectHandshake } = createHandshakeClient();
+    await rejectHandshake({
+      code: "UNAVAILABLE",
+      message: "starting",
+      retryable: true,
+      retryAfterMs: 500,
+      details: { reason: "startup-sidecars" },
+    });
+    client.stop();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(connect).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    [undefined, 500],
+    [Number.NaN, 500],
+    [Number.POSITIVE_INFINITY, 500],
+    [-1, 100],
+    [0, 100],
+    [200.9, 200],
+    [2_147_483_648, 2000],
+  ])("bounds the startup retry hint %s to %s ms", (hint, expected) => {
+    expect(
+      gatewayStartupRetryAfterMs(
+        new GatewayRequestError(
+          "starting",
+          "UNAVAILABLE",
+          { reason: "startup-sidecars" },
+          hint,
+          true,
+        ),
+      ),
+    ).toBe(expected);
+  });
+
+  it.each([
+    new Error("gateway starting; retry shortly"),
+    new GatewayRequestError("starting", "UNAVAILABLE", { reason: "startup-sidecars" }, 500),
+    new GatewayRequestError("starting", "UNAVAILABLE", { reason: "startup-sidecars" }, 500, false),
+    new GatewayRequestError("starting", "UNAVAILABLE", { reason: "overloaded" }, 500, true),
+    new GatewayRequestError(
+      "starting",
+      "INVALID_REQUEST",
+      { reason: "startup-sidecars" },
+      500,
+      true,
+    ),
+  ])("does not shorten unrecognized or non-retryable failures: %s", (error) => {
+    expect(gatewayStartupRetryAfterMs(error)).toBeNull();
+  });
 
   it.each([
     {

@@ -301,33 +301,42 @@ describe("SettingsView", () => {
     },
   );
 
-  it("shows Gateway status and log export at the end of General", async () => {
-    const pinia = createPinia();
-    useGatewayStore(pinia).addLog("[info] Gateway started");
-    const wrapper = shallowMount(SettingsView, {
-      global: {
-        plugins: [pinia],
-      },
-    });
+  it.each([
+    ["en-US", "General", "Connected", "Restart Gateway", "Export Gateway logs", "Export"],
+    ["zh-CN", "通用", "已连接", "重启网关", "导出网关日志", "导出"],
+  ] as const)(
+    "shows Gateway status in the General heading and preserves log export in %s",
+    async (locale, general, connected, restartLabel, exportLabel, exportAction) => {
+      setLocale(locale);
+      const pinia = createPinia();
+      const gateway = useGatewayStore(pinia);
+      gateway.addLog("[info] Gateway started");
+      gateway.status = "running";
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [pinia] } });
+      await flushPromises();
 
-    await flushPromises();
+      const menuItems = wrapper.findAll(".settings-menu-item");
+      await menuItems.find((item) => item.text() === general)!.trigger("click");
+      expect(wrapper.get(".sub-label-row .status-indicator").text()).toBe(connected);
+      expect(wrapper.find(".sub-label-row .status-indicator--ok").exists()).toBe(true);
+      expect(wrapper.find(".settings-content").text()).toContain(restartLabel);
+      expect(wrapper.find(".settings-content").text()).toContain(exportLabel);
+      expect(menuItems.some((item) => item.text() === "Gateway")).toBe(false);
 
-    const menuItems = wrapper.findAll(".settings-menu-item");
-    await menuItems.find((item) => item.text() === "General")!.trigger("click");
-    expect(wrapper.find(".settings-content").text()).toContain("Gateway");
-    expect(wrapper.find(".settings-content").text()).toContain("Connection status");
-    expect(wrapper.find(".settings-content").text()).toContain("Logs");
-    expect(wrapper.find(".settings-content").text()).toContain("Gateway logs");
-    expect(menuItems.some((item) => item.text() === "Gateway")).toBe(false);
+      gateway.status = "stopped";
+      await wrapper.vm.$nextTick();
+      expect(wrapper.get(".sub-label-row .status-indicator").text()).toBe("stopped");
+      expect(wrapper.find(".sub-label-row .status-indicator--error").exists()).toBe(true);
 
-    await wrapper
-      .findAll("el-button")
-      .find((button) => button.text() === "Export")!
-      .trigger("click");
-    await flushPromises();
-
-    expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
-  });
+      await wrapper
+        .findAll("el-button")
+        .find((button) => button.text() === exportAction)!
+        .trigger("click");
+      await flushPromises();
+      expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
+      wrapper.unmount();
+    },
+  );
 
   it("shows a verified snapshot without waiting for a background refresh", async () => {
     routeState.section = "security";
@@ -2400,7 +2409,65 @@ describe("SettingsView", () => {
     wrapper.unmount();
   });
 
-  it("opens the English legal documents from About", async () => {
+  it.each([
+    ["en-US", "Usage", "Refresh", "Retry"],
+    ["zh-CN", "用量", "刷新", "重试"],
+  ] as const)(
+    "keeps the Usage icon accessible, disables duplicate refresh and recovers after failure in %s",
+    async (locale, usageLabel, refreshLabel, retryLabel) => {
+      const stats = {
+        totalSpend: 0,
+        totalTokens: 0,
+        maxBudget: null,
+        modelSpend: {},
+        modelBreakdown: {},
+        hasDetailedLogs: false,
+      };
+      const getStats = vi.fn().mockResolvedValue(stats);
+      window.openclaw.usage = { ...createBrowserOpenClawMock().usage, getStats };
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      setLocale(locale);
+      await wrapper.vm.$nextTick();
+      await wrapper
+        .findAll(".settings-menu-item")
+        .find((item) => item.text() === usageLabel)!
+        .trigger("click");
+      await flushPromises();
+
+      const refresh = wrapper.get<HTMLButtonElement>(".usage-refresh-btn");
+      expect(refresh.attributes("type")).toBe("button");
+      expect(refresh.attributes("aria-label")).toBe(refreshLabel);
+      expect(refresh.attributes("title")).toBe(refreshLabel);
+      expect(refresh.get("svg").attributes("aria-hidden")).toBe("true");
+      let rejectRefresh!: (reason: Error) => void;
+      getStats.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectRefresh = reject;
+          }),
+      );
+      await refresh.trigger("click");
+      expect(refresh.element.disabled).toBe(true);
+      refresh.element.click();
+      expect(getStats).toHaveBeenCalledTimes(2);
+
+      rejectRefresh(new Error("Preview usage unavailable"));
+      await flushPromises();
+      expect(wrapper.find(".settings-content").text()).toContain("Preview usage unavailable");
+      expect(wrapper.find(".usage-refresh-btn").exists()).toBe(false);
+      await wrapper
+        .findAll("el-button")
+        .find((button) => button.text() === retryLabel)!
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get<HTMLButtonElement>(".usage-refresh-btn").element.disabled).toBe(false);
+      expect(getStats).toHaveBeenCalledTimes(3);
+      wrapper.unmount();
+    },
+  );
+
+  it("localizes About copyright and opens the legal documents", async () => {
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [createPinia()],
@@ -2413,6 +2480,7 @@ describe("SettingsView", () => {
       .find((item) => item.text() === "About")!
       .trigger("click");
 
+    expect(wrapper.get(".copyright-notice").text()).toBe("Copyright © 2026 MicroClaw");
     const links = wrapper.findAll(".legal-link");
     expect(links.map((link) => link.text())).toEqual([
       "MicroClaw End User License Agreement",
@@ -2434,6 +2502,8 @@ describe("SettingsView", () => {
 
     expect(links[0].text()).toBe("MicroClaw 最终用户许可协议");
     expect(links[0].attributes("href")).toBe("https://microclaw.microsoft.com/eula.html");
+    expect(wrapper.get(".copyright-notice").text()).toBe("版权 © 2026 阿虾");
+    wrapper.unmount();
   });
 });
 

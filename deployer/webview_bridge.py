@@ -2,12 +2,14 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 import traceback
 import webbrowser
+from contextlib import nullcontext
 from pathlib import Path
 from tkinter import filedialog
 
@@ -22,8 +24,8 @@ from deployer.windows_setup import (
 )
 
 _ACTIVE_WINDOW = None
-INSTALLER_WINDOW_WIDTH = 710
-INSTALLER_WINDOW_HEIGHT = 680
+INSTALLER_WINDOW_WIDTH = 680
+INSTALLER_WINDOW_HEIGHT = 500
 UNINSTALL_WINDOW_WIDTH = 500
 UNINSTALL_WINDOW_HEIGHT = 300
 PRIVACY_STATEMENT_URL = "https://www.microsoft.com/privacy/privacystatement"
@@ -318,6 +320,7 @@ def _assets_dir():
 _STRINGS = {
     "zh": {
         "language": "语言",
+        "windowLabel": "安装",
         "welcomeTitle": "欢迎来到 MicroClaw",
         "legalLine": "点击“快速安装”即同意",
         "serviceAgreement": "MicroClaw 最终用户许可协议",
@@ -342,6 +345,12 @@ _STRINGS = {
         "installCancelled": "安装已取消，正在运行的应用未被关闭",
         "installFailTitle": "安装失败",
         "installFailMsg": "请检查日志后重试。",
+        "installSuccessTitle": "安装完成",
+        "installSuccessMsg": "MicroClaw 已安装完成，随时可以开始使用。",
+        "openDesktop": "打开 MicroClaw",
+        "openingDesktop": "正在打开…",
+        "desktopLaunchFailed": "无法打开 MicroClaw，请重试，或从桌面快捷方式打开。",
+        "desktopLaunchUnavailable": "请等待安装成功后再打开 MicroClaw。",
         "retrying": "{step} 正在重试（{attempt}/{attempts}）…",
         "steps": {
             "executionPolicy": "正在配置 PowerShell 执行策略…",
@@ -371,6 +380,7 @@ _STRINGS = {
     },
     "en": {
         "language": "Language",
+        "windowLabel": "Setup",
         "welcomeTitle": "Welcome to MicroClaw",
         "legalLine": 'By clicking "Quick Install", you agree to the',
         "serviceAgreement": "MicroClaw End User License Agreement",
@@ -395,6 +405,12 @@ _STRINGS = {
         "installCancelled": "Installation cancelled; the running app was not closed",
         "installFailTitle": "Installation Failed",
         "installFailMsg": "Please check the logs and retry.",
+        "installSuccessTitle": "Installation complete",
+        "installSuccessMsg": "MicroClaw is installed and ready to open.",
+        "openDesktop": "Open MicroClaw",
+        "openingDesktop": "Opening…",
+        "desktopLaunchFailed": "Could not open MicroClaw. Try again or use the desktop shortcut.",
+        "desktopLaunchUnavailable": "Wait for installation to complete before opening MicroClaw.",
         "retrying": "{step} retrying ({attempt}/{attempts})…",
         "steps": {
             "executionPolicy": "Configuring PowerShell execution policy...",
@@ -432,6 +448,8 @@ class WebInstallerBridge:
         self._settings_path = Path(settings_path or _app_settings_path())
         self._lang = _normalize_lang(lang) or _detect_lang(self._settings_path)
         self._state_lock = threading.Lock()
+        self._desktop_launch_lock = threading.Lock()
+        self._desktop_launched = False
         self._default_install_dir = str(DEFAULT_DESKTOP_DIR)
         self._default_allow_read = True
         self._state = {
@@ -588,12 +606,45 @@ class WebInstallerBridge:
             _ACTIVE_WINDOW.destroy()
         return True
 
+    def open_desktop(self):
+        """Hand off to normal desktop startup only after an explicit completion-page click."""
+        with self._desktop_launch_lock:
+            with self._state_lock:
+                if self._state["status"] != "success" or self._state["running"]:
+                    return {"ok": False, "error": _STRINGS[self._lang]["desktopLaunchUnavailable"]}
+                if self._desktop_launched:
+                    return {"ok": True}
+            executable = DEFAULT_DESKTOP_DIR / "MicroClawDesktop.exe"
+            try:
+                if not executable.is_file():
+                    raise FileNotFoundError(f"Desktop executable not found: {executable}")
+                environment = os.environ.copy()
+                environment.pop("ELECTRON_RUN_AS_NODE", None)
+                subprocess.Popen(
+                    [str(executable)],
+                    cwd=str(executable.parent),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                )
+            except OSError as error:
+                self._logger.error(f"Could not open MicroClaw desktop after installation: {error}")
+                return {"ok": False, "error": _STRINGS[self._lang]["desktopLaunchFailed"]}
+            with self._state_lock:
+                self._desktop_launched = True
+            self._logger.info("MicroClaw desktop launch requested from the completion page")
+            return {"ok": True}
+
     # -- internal helpers --------------------------------------------------
 
     def _start_install(self):
         with self._state_lock:
             if self._state["running"]:
                 return
+            self._desktop_launched = False
             self._state.update(
                 {
                     "progress": 0,
@@ -678,7 +729,17 @@ class WebInstallerBridge:
 
     def _install_thread(self):
         timing = InstallTiming(self._logger)
+        self._install_timing = timing
+        try:
+            self._execute_installation(timing)
+        finally:
+            # Preserve partial evidence even if setup/rollback unexpectedly raises.
+            timing.finish("failed")
+            self._install_timing = None
+
+    def _execute_installation(self, timing):
         ws = WindowsSetup(self._config, self._logger)
+        ws.install_timing = timing
         ws.progress_callback = self._set_progress_detail
         steps = self._build_install_steps(ws)
 
@@ -701,7 +762,7 @@ class WebInstallerBridge:
             if progress_key:
                 label = _STRINGS[self._lang]["steps"][progress_key]
             self._set_progress(pct, label, progress_key)
-            started_at = timing.start_step()
+            started_at = timing.start_step(f"{progress_key or 'step'}-{pct}")
             step_ok = self._run_step_with_retry(pct, label, fn, retries, progress_key)
             step_status = "success" if step_ok else self.get_state()["status"]
             timing.record_step(label, started_at, step_status)
@@ -719,7 +780,7 @@ class WebInstallerBridge:
         for pct, progress_key, fn, retries in final_steps:
             label = _STRINGS[self._lang]["steps"][progress_key]
             self._set_progress(pct, label, progress_key)
-            started_at = timing.start_step()
+            started_at = timing.start_step(f"{progress_key}-{pct}")
             step_ok = self._run_step_with_retry(pct, label, fn, retries, progress_key)
             timing.record_step(label, started_at, "success" if step_ok else "failed")
             if not step_ok:
@@ -729,8 +790,8 @@ class WebInstallerBridge:
                 timing.finish("failed")
                 return
 
-        timing.finish("success")
         self._finish_ok()
+        timing.finish("success")
 
     def _build_final_steps(self, ws):
         return [
@@ -757,12 +818,19 @@ class WebInstallerBridge:
         attempts = retries + 1
         detail = ""
         clean_label = label.rstrip(".")
+        timing = getattr(self, "_install_timing", None)
         for attempt in range(1, attempts + 1):
             if not self.get_state()["running"]:
                 self._finish_fail("Installation cancelled.")
                 return False
             try:
-                result = fn()
+                with (
+                    timing.span("attempt", attempt=attempt)
+                    if timing
+                    else nullcontext({}) as observed
+                ):
+                    result = fn()
+                    observed["status"] = "success" if result is None or result else "failed"
                 if result is None or result:
                     if attempt > 1:
                         log.success(f"{clean_label} succeeded on attempt {attempt}/{attempts}.")
@@ -794,11 +862,12 @@ class WebInstallerBridge:
                 )
                 self._set_progress(pct, retrying, progress_key)
                 # Cancellation-aware wait so a user can abort during backoff.
-                for _ in range(delay):
-                    if not self.get_state()["running"]:
-                        self._finish_fail("Installation cancelled.")
-                        return False
-                    time.sleep(1)
+                with timing.span("retry-wait", attempt=attempt) if timing else nullcontext():
+                    for _ in range(delay):
+                        if not self.get_state()["running"]:
+                            self._finish_fail("Installation cancelled.")
+                            return False
+                        time.sleep(1)
 
         self._finish_fail(f"{clean_label} failed after {attempts} attempt(s): {detail}")
         return False
@@ -806,7 +875,10 @@ class WebInstallerBridge:
     def _prepare_upgrade(self, ws):
         active = ws.get_active_installation()
         if active is not None:
-            if not self._confirm_close_running_apps(active):
+            timing = getattr(self, "_install_timing", None)
+            with timing.span("human-wait") if timing else nullcontext():
+                confirmed = self._confirm_close_running_apps(active)
+            if not confirmed:
                 raise InstallationCancelled
             if not ws.stop_active_installation_for_upgrade(active):
                 raise RuntimeError(_STRINGS[self._lang]["runningAppsCloseFailed"])
@@ -1087,7 +1159,13 @@ def run_web_installer(mode="install"):
             resizable=False,
             text_select=False,
             frameless=True,
-            transparent=True,
+            # WebView2 easy_drag handles every mousedown, including native select
+            # popups. Restrict dragging to the templates' explicit title region.
+            easy_drag=False,
+            # The opaque installer surface lets Windows draw its native shadow.
+            # pywebview skips that frame for transparent windows.
+            transparent=is_uninstall,
+            shadow=True,
             focus=os.environ.get("MICROCLAW_BACKGROUND") != "1",
         )
         bridge.attach_window(window)
@@ -1095,9 +1173,7 @@ def run_web_installer(mode="install"):
             window.events.closing += bridge.can_close
 
         def _on_shown():
-            """Applies a native rounded-corner clipping region to the window.
-            This removes the default gray square background from the frameless window.
-            """
+            """Keep the installer system frame; clip the transparent uninstaller."""
             try:
                 import ctypes
                 import threading
@@ -1108,8 +1184,8 @@ def run_web_installer(mode="install"):
                     # Wait briefly to ensure the window has been fully created and rendered
                     time.sleep(0.1)
 
-                    # Retrieve the native window handle (HWND)
-                    hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
+                    # Use this window's handle even if another installer is open.
+                    hwnd = window.native.Handle.ToInt64()
                     if not hwnd:
                         return
 
@@ -1120,6 +1196,26 @@ def run_web_installer(mode="install"):
                     h = rect.bottom - rect.top
 
                     _center_native_window(hwnd, logger)
+
+                    if not is_uninstall:
+                        # Let DWM own the corners as well as the shadow. A custom
+                        # window region would disable system rounding on Windows 11.
+                        # Older Windows versions keep their normal square frame.
+                        corner_preference = ctypes.c_int(2)  # DWMWCP_ROUND
+                        set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+                        set_attribute.argtypes = [
+                            wintypes.HWND,
+                            wintypes.DWORD,
+                            ctypes.c_void_p,
+                            wintypes.DWORD,
+                        ]
+                        set_attribute(
+                            hwnd,
+                            33,
+                            ctypes.byref(corner_preference),
+                            ctypes.sizeof(corner_preference),
+                        )
+                        return
 
                     # Calculate the DPI scale factor to adjust the corner radius
                     scale = 1.0

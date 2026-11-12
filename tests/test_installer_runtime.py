@@ -109,6 +109,7 @@ class InstallerRuntimeTests(unittest.TestCase):
         call = self.setup._run.call_args
         self.assertEqual(call.args[0], [str(self.executable), "--prepare-installer-runtime"])
         self.assertEqual(call.kwargs["timeout"], 600)
+        self.assertIsNotNone(call.kwargs["timing"])
         self.assertNotIn("ELECTRON_RUN_AS_NODE", call.kwargs["env"])
         self.assertEqual(self.setup._desktop_runtime_root, self.runtime)
         self.assertEqual(self.setup._find_openclaw_cmd(), [str(self.node), str(self.entry)])
@@ -144,6 +145,7 @@ class InstallerRuntimeTests(unittest.TestCase):
         for phase in (
             "environment-preparation",
             "helper-process",
+            "helper-output-forward",
             "result-validation",
             "preparation-total",
         ):

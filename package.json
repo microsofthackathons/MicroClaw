@@ -1,6 +1,9 @@
 {
   "private": true,
   "scripts": {
+    "bench:shop": "node scripts/benchmarks/shop-01/cli.mjs",
+    "bench:shop:run": "node scripts/benchmarks/shop-01/run-cli.mjs",
+    "test:bench:shop": "node --test scripts/benchmarks/shop-01/*.test.mjs",
     "perf": "node scripts/performance/cli.mjs",
     "test:perf": "node --test scripts/performance/*.test.mjs",
     "test": "npm test --prefix desktop && npm test --prefix desktop/renderer",

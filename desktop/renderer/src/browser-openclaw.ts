@@ -429,6 +429,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
     },
     shell: { openExternal: noopAsync },
     attachment: {
+      readImage: async () => ({ ok: false, error: "Unavailable in browser development" }),
       open: async () => ({ ok: false, error: "Unavailable in browser development" }),
       importClipboardImages: async () => emptyFiles,
     },

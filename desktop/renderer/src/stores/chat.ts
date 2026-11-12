@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed, watch } from "vue";
+import { ref, computed, reactive, watch } from "vue";
 import { useSessionStore } from "./sessions";
 import { redactPii } from "@/utils/pii-scanner";
 import { hydratePrivacyControls, privacyControlsToScanOptions } from "@/utils/privacy-settings";
@@ -25,9 +25,23 @@ export interface ChatMessage {
   timestamp?: number;
   text?: string;
   attachments?: ChatAttachment[];
+  __openclaw?: {
+    media?: unknown[];
+  };
   originalText?: string;
   stopReason?: string;
   performanceRunId?: string;
+}
+
+export interface ChatDraft {
+  sessionKey: string;
+  text: string;
+  attachments: ChatAttachment[];
+  revision: number;
+  importingImages: number;
+  pickingFiles: boolean;
+  submittingMessage: boolean;
+  attachmentImportQueue: Promise<void>;
 }
 
 /**
@@ -236,6 +250,47 @@ export const useChatStore = defineStore("chat", () => {
   const agentPreparationError = computed(
     () => agentPreparationErrors.value[currentSessionAgentId.value] ?? null,
   );
+
+  const drafts = new Map<string, ChatDraft>();
+  const agentSessionKeys = new Map<string, string>();
+
+  watch(
+    () => [sessionKey.value, currentSessionAgentId.value] as const,
+    ([key, agentId]) => agentSessionKeys.set(agentId, key),
+    { immediate: true, flush: "sync" },
+  );
+
+  function getDraft(key = sessionKey.value): ChatDraft {
+    let draft = drafts.get(key);
+    if (!draft) {
+      draft = reactive({
+        sessionKey: key,
+        text: "",
+        attachments: [],
+        revision: 0,
+        importingImages: 0,
+        pickingFiles: false,
+        submittingMessage: false,
+        attachmentImportQueue: Promise.resolve(),
+      });
+      drafts.set(key, draft);
+    }
+    return draft;
+  }
+
+  function clearDraft(key = sessionKey.value) {
+    const draft = getDraft(key);
+    draft.revision += 1;
+    draft.text = "";
+    draft.attachments = [];
+  }
+
+  function switchAgentSession(agentId: string) {
+    if (currentSessionAgentId.value === agentId) return;
+    const key = agentSessionKeys.get(agentId);
+    if (key) return switchSession(key);
+    newSession(agentId);
+  }
 
   function reportChatError(raw: string, agentId = currentSessionAgentId.value) {
     if (window.openclaw.features?.performance && agentId === currentSessionAgentId.value)
@@ -506,6 +561,16 @@ export const useChatStore = defineStore("chat", () => {
     }
     sessionStateCache.delete(aliasKey);
 
+    const aliasDraft = drafts.get(aliasKey);
+    if (aliasDraft && !drafts.has(canonicalKey)) {
+      aliasDraft.sessionKey = canonicalKey;
+      drafts.set(canonicalKey, aliasDraft);
+    }
+    drafts.delete(aliasKey);
+    for (const [agentId, key] of agentSessionKeys) {
+      if (key === aliasKey) agentSessionKeys.set(agentId, canonicalKey);
+    }
+
     if (lastMessageMap.value[aliasKey] && !lastMessageMap.value[canonicalKey]) {
       lastMessageMap.value[canonicalKey] = lastMessageMap.value[aliasKey];
     }
@@ -646,9 +711,27 @@ export const useChatStore = defineStore("chat", () => {
       .trim();
   }
 
+  function getPersistedMediaFacts(message: unknown): Record<string, unknown>[] {
+    const metadata = (message as Record<string, unknown>).__openclaw;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+    const media = (metadata as Record<string, unknown>).media;
+    if (!Array.isArray(media)) return [];
+    return media.filter((candidate): candidate is Record<string, unknown> => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+      const fact = candidate as Record<string, unknown>;
+      return (
+        [fact.path, fact.url, fact.contentType].some(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        ) ||
+        (typeof fact.kind === "string" && fact.kind.trim().length > 0 && fact.kind !== "unknown")
+      );
+    });
+  }
+
   function hasAttachmentEvidence(message: unknown): boolean {
     const m = message as Record<string, unknown>;
     if (
+      getPersistedMediaFacts(message).length > 0 ||
       (Array.isArray(m.attachments) && m.attachments.length > 0) ||
       (Array.isArray(m.MediaPaths) && m.MediaPaths.length > 0) ||
       typeof m.MediaPath === "string"
@@ -732,50 +815,73 @@ export const useChatStore = defineStore("chat", () => {
 
   function getMessageAttachments(message: unknown): ChatAttachment[] {
     const m = message as Record<string, unknown>;
-    const mediaPaths = [
-      ...(Array.isArray(m.MediaPaths) ? m.MediaPaths : []),
-      ...(typeof m.MediaPath === "string" ? [m.MediaPath] : []),
-    ];
-    const mediaTypes = [
-      ...(Array.isArray(m.MediaTypes) ? m.MediaTypes : []),
-      ...(typeof m.MediaType === "string" ? [m.MediaType] : []),
-    ];
+    const mediaFacts = getPersistedMediaFacts(message);
+    const mediaPaths = mediaFacts.length
+      ? mediaFacts.map(
+          (fact) =>
+            (typeof fact.path === "string" && fact.path) ||
+            (typeof fact.url === "string" && fact.url) ||
+            "",
+        )
+      : [
+          ...(Array.isArray(m.MediaPaths) ? m.MediaPaths : []),
+          ...(typeof m.MediaPath === "string" ? [m.MediaPath] : []),
+        ];
+    const mediaTypes = mediaFacts.length
+      ? mediaFacts.map(
+          (fact) =>
+            (typeof fact.contentType === "string" && fact.contentType) ||
+            (fact.kind === "image" ? "image/*" : "application/octet-stream"),
+        )
+      : [
+          ...(Array.isArray(m.MediaTypes) ? m.MediaTypes : []),
+          ...(typeof m.MediaType === "string" ? [m.MediaType] : []),
+        ];
     const optimisticAttachments = Array.isArray(m.attachments) ? m.attachments : [];
     const candidates =
       optimisticAttachments.length > 0
         ? optimisticAttachments
         : mediaPaths.length > 0
           ? mediaPaths.map((mediaPath, index) => {
+              const mediaFact = mediaFacts[index];
               const mimeType =
                 typeof mediaTypes[index] === "string"
                   ? (mediaTypes[index] as string)
                   : "application/octet-stream";
+              const isImage = mimeType.startsWith("image/") || mediaFact?.kind === "image";
               const rawName =
-                typeof mediaPath === "string"
-                  ? mediaPath
-                      .replace(/^media:\/\/inbound\//i, "")
-                      .split(/[\\/]/)
-                      .at(-1) || ""
-                  : "";
+                typeof mediaFact?.fileName === "string" && mediaFact.fileName
+                  ? mediaFact.fileName
+                  : typeof mediaPath === "string"
+                    ? mediaPath
+                        .replace(/^media:\/\/inbound\//i, "")
+                        .split(/[\\/]/)
+                        .at(-1) || ""
+                    : "";
               const extensionIndex = rawName.lastIndexOf(".");
               const nameWithoutExtension =
                 extensionIndex > 0 ? rawName.slice(0, extensionIndex) : rawName;
               const isBareUuid =
-                mimeType.startsWith("image/") &&
+                isImage &&
                 /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
                   nameWithoutExtension,
                 );
-              const displayName = mimeType.startsWith("image/")
+              const displayName = isImage
                 ? rawName
                 : rawName.replace(
                     /---[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?=\.[^.]+$)/i,
                     "",
                   );
               return {
-                type: mimeType.startsWith("image/") ? "image" : "file",
+                type: isImage ? "image" : "file",
                 mimeType,
                 fileName: isBareUuid ? "" : displayName,
-                size: 0,
+                size:
+                  typeof mediaFact?.sizeBytes === "number" &&
+                  Number.isFinite(mediaFact.sizeBytes) &&
+                  mediaFact.sizeBytes >= 0
+                    ? mediaFact.sizeBytes
+                    : 0,
                 content: "",
                 mediaPath: typeof mediaPath === "string" ? mediaPath : undefined,
               };
@@ -1019,13 +1125,24 @@ export const useChatStore = defineStore("chat", () => {
       const ta = extractText(a[i]);
       const tb = extractText(b[i]);
       if (ta !== tb) return false;
-      const aa = getMessageAttachments(a[i])
-        .map((attachment) => `${attachment.fileName}:${attachment.mimeType}:${attachment.size}`)
-        .join("|");
-      const ab = getMessageAttachments(b[i])
-        .map((attachment) => `${attachment.fileName}:${attachment.mimeType}:${attachment.size}`)
-        .join("|");
-      if (aa !== ab) return false;
+      const attachmentsA = getMessageAttachments(a[i]);
+      const attachmentsB = getMessageAttachments(b[i]);
+      if (attachmentsA.length !== attachmentsB.length) return false;
+      if (
+        attachmentsA.some((attachment, index) => {
+          const other = attachmentsB[index];
+          return (
+            attachment.type !== other.type ||
+            attachment.fileName !== other.fileName ||
+            attachment.mimeType !== other.mimeType ||
+            attachment.size !== other.size ||
+            attachment.content !== other.content ||
+            attachment.mediaPath !== other.mediaPath
+          );
+        })
+      ) {
+        return false;
+      }
     }
     return true;
   }
@@ -1037,9 +1154,14 @@ export const useChatStore = defineStore("chat", () => {
     _syncToSessionStore();
     _saveCurrentState();
 
-    sessionKey.value = targetKey;
     const sessionStore = useSessionStore();
-    sessionStore.ensureSession(targetKey);
+    const targetAgentId =
+      /^agent:([^:]+):/.exec(targetKey)?.[1] ||
+      sessionStore.sessions.find((session) => session.key === targetKey)?.agentId ||
+      "main";
+    pendingSessionAgentId.value = canonicalAgentId(targetAgentId);
+    sessionKey.value = targetKey;
+    sessionStore.ensureSession(targetKey, canonicalAgentId(targetAgentId));
 
     // Try to restore cached state (streaming session we switched away from)
     if (_restoreState(targetKey)) {
@@ -1250,6 +1372,8 @@ export const useChatStore = defineStore("chat", () => {
 
     sending.value = true;
     lastError.value = null;
+    const sendingDraft = getDraft();
+    const draftRevision = sendingDraft.revision;
     const sendingAgentId = currentSessionAgentId.value;
     const requestedSessionKey = resolvedSessionKey.value || sessionKey.value;
     let optimisticTimestamp: number | undefined;
@@ -1257,6 +1381,9 @@ export const useChatStore = defineStore("chat", () => {
       // Strict privacy mode redacts PII before sending.
       let finalMsg = msg;
       const privacySettings = await window.openclaw.settings.get();
+      if (sessionKey.value !== sendingDraft.sessionKey || sendingDraft.revision !== draftRevision) {
+        return false;
+      }
       const privacyLevel = privacySettings?.privacyLevel ?? "basic";
       if (privacyLevel === "strict") {
         const controls = hydratePrivacyControls("strict", privacySettings.privacyControls);
@@ -1829,9 +1956,18 @@ export const useChatStore = defineStore("chat", () => {
     const last = [...messages.value]
       .reverse()
       .find((m) => m.role === "assistant" || m.role === "user");
-    if (!firstUser && !last) return;
-
     const sessionStore = useSessionStore();
+    if (!firstUser && !last) {
+      const draft = drafts.get(key);
+      if (
+        draft &&
+        (draft.text || draft.attachments.length || draft.importingImages || draft.pickingFiles)
+      ) {
+        sessionStore.ensureSession(key, currentSessionAgentId.value);
+      }
+      return;
+    }
+
     sessionStore.ensureSession(key, pendingSessionAgentId.value);
     pendingSessionAgentId.value = undefined;
     // Auto-title from first user message
@@ -1971,6 +2107,7 @@ export const useChatStore = defineStore("chat", () => {
     const active = affectedKeys.has(sessionKey.value) || resolvedSessionKey.value === gatewayKey;
     const sessionStore = useSessionStore();
     for (const affectedKey of affectedKeys) {
+      clearDraft(affectedKey);
       const cached = sessionStateCache.get(affectedKey);
       serverRuns.reset(affectedKey, cached?.chatRunId);
       sessionStateCache.delete(affectedKey);
@@ -2008,6 +2145,15 @@ export const useChatStore = defineStore("chat", () => {
     const gatewayKey = gatewaySessionKey(key);
 
     await window.openclaw.chat.deleteSession(gatewayKey);
+
+    const deletedKeys = new Set([key, gatewayKey]);
+    for (const deletedKey of deletedKeys) {
+      clearDraft(deletedKey);
+      drafts.delete(deletedKey);
+    }
+    for (const [agentId, rememberedKey] of agentSessionKeys) {
+      if (deletedKeys.has(rememberedKey)) agentSessionKeys.delete(agentId);
+    }
 
     // Clean up cached streaming state
     sessionStateCache.delete(key);
@@ -2067,6 +2213,9 @@ export const useChatStore = defineStore("chat", () => {
     // 1. Wipe persisted transcripts on the gateway (source of truth).
     await window.openclaw.chat.clearHistory();
 
+    for (const key of drafts.keys()) clearDraft(key);
+    agentSessionKeys.clear();
+
     // 2. Drop cached per-session streaming state.
     sessionStateCache.clear();
     lastMessageMap.value = {};
@@ -2092,6 +2241,7 @@ export const useChatStore = defineStore("chat", () => {
     lastStreamEventAt.value = null;
     lastError.value = null;
     if (mainSessionKey.value) sessionStore.ensureSession(newKey, "main");
+    agentSessionKeys.set(currentSessionAgentId.value, newKey);
   }
 
   return {
@@ -2123,6 +2273,9 @@ export const useChatStore = defineStore("chat", () => {
     lastMessageMap,
     lastStreamEventAt,
     pendingPrompt,
+    getDraft,
+    clearDraft,
+    switchAgentSession,
     extractText,
     extractTextOnly,
     getMessageAttachments,

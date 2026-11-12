@@ -47,7 +47,11 @@ export class ElectronLifecycleDiagnostics {
     private readonly context: () => ElectronLifecycleDiagnosticContext,
   ) {}
 
-  log(event: string, details: Record<string, DiagnosticValue> = {}): void {
+  log(
+    event: string,
+    details: Record<string, DiagnosticValue> = {},
+    options: { durable?: boolean } = {},
+  ): void {
     try {
       const target = this.filePath();
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -66,7 +70,7 @@ export class ElectronLifecycleDiagnostics {
       const fd = fs.openSync(target, "a");
       try {
         fs.writeFileSync(fd, `${JSON.stringify(record)}\n`, "utf8");
-        fs.fsyncSync(fd);
+        if (options.durable !== false) fs.fsyncSync(fd);
       } finally {
         fs.closeSync(fd);
       }

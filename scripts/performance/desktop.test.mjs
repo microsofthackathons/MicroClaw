@@ -46,6 +46,9 @@ async function createHarness(mainProcessIds = [10001, 10002]) {
       records.push({ event: "gateway-spawned", gatewayPid, gatewayGeneration });
       records.push({
         event: "startup-summary",
+        timingVersion: 2,
+        processId: mainProcessId,
+        gatewayGeneration,
         mode: "spawned",
         microclawPreflightMs: 42,
       });
@@ -121,6 +124,19 @@ test("startup records Electron's main PID rather than its Windows shell wrapper"
   await harness.driver.shutdown();
   assert.equal(harness.driver.application, null);
   assert.equal(harness.driver.mainProcessId, null);
+});
+
+test("first launch measures exactly one launch and refuses to reuse an initialized fixture", async () => {
+  const harness = await createHarness();
+  harness.driver.options.firstLaunchTimeoutMs = 800000;
+  const result = await harness.driver.firstLaunch();
+  assert.equal(result.outcome, "success");
+  assert.equal(harness.launches.length, 1);
+  assert.equal(harness.launches[0].timeout, 800000);
+  assert.ok(result.metrics.totalMs >= 0);
+  assert.equal(result.startupTiming.coverage, "partial");
+  await harness.driver.shutdown();
+  await assert.rejects(harness.driver.firstLaunch(), /unused fixture/);
 });
 
 test("the initial setup timeout does not leak into measured restart launches", async () => {

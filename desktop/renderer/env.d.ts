@@ -412,6 +412,7 @@ interface OpenClawAPI {
     openExternal(url: string): Promise<void>;
   };
   attachment: {
+    readImage(mediaPath: string): Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
     open(attachment: ChatAttachment): Promise<{ ok: boolean; error?: string }>;
     importClipboardImages(
       images: ClipboardImageInput[],

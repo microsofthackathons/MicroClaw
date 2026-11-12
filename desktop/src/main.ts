@@ -18,6 +18,7 @@ import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
+import { RuntimePreparationTiming, parseRuntimeTiming } from "./runtime-preparation-timing";
 import { prepareBundledOpenClawDir } from "./bundled-runtime";
 import { INSTALLER_RUNTIME_ARGUMENT, prepareInstallerRuntime } from "./installer-runtime";
 import {
@@ -107,6 +108,7 @@ import {
   validateChatAttachments,
 } from "./chat-attachments";
 import { prepareAttachmentForOpen } from "./attachment-open";
+import { readInboundImage } from "./attachment-preview";
 import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
@@ -1505,31 +1507,62 @@ function logStartupTiming(
   phase: string,
   owner: "microclaw" | "openclaw" | "integration" = "microclaw",
 ): void {
+  const appElapsedMs = Math.round(performance.now());
   console.log(
-    `[startup-timing] ${phase} +${Math.round(performance.now())}ms owner=${owner} generation=${gatewayGenerationId || "pending"}`,
+    `[startup-timing] ${phase} +${appElapsedMs}ms owner=${owner} generation=${gatewayGenerationId || "pending"}`,
+  );
+  electronLifecycleDiagnostics.log(
+    "startup-milestone",
+    {
+      timingVersion: 2,
+      processId: process.pid,
+      phase,
+      owner,
+      appElapsedMs,
+    },
+    { durable: false },
   );
 }
 
 function logGatewayStartupTiming(event: StartupTimingEvent): void {
-  const prefix = event.kind === "summary" ? "startup-summary" : "startup-breakdown";
+  const prefix =
+    event.kind === "summary"
+      ? "startup-summary"
+      : event.kind === "outcome"
+        ? "startup-outcome"
+        : "startup-breakdown";
   console.info(`[${prefix}] ${JSON.stringify(event)}`);
-  if (event.kind === "summary") {
-    electronLifecycleDiagnostics.log("startup-summary", { ...event });
-  }
+  electronLifecycleDiagnostics.log(
+    prefix,
+    { ...event, timingVersion: 2, processId: process.pid },
+    { durable: event.kind !== "phase" },
+  );
 }
 
 function beginWindowsNodeMxcStartupTiming(): void {
-  const now = Date.now();
+  const now = performance.now();
   windowsNodeMxcStartupTiming = { startedAt: now, previousAt: now, generation: null };
 }
 
 function markWindowsNodeMxcStartupTiming(phase: string, detail = ""): void {
   const timing = windowsNodeMxcStartupTiming;
   if (!timing) return;
-  const now = Date.now();
+  const now = performance.now();
   if (gatewayGenerationId) timing.generation = gatewayGenerationId;
   console.log(
     `[windows-node-mxc][startup-timing] phase=${phase} durationMs=${now - timing.previousAt} totalMs=${now - timing.startedAt} generation=${timing.generation ?? "pending"}${detail ? ` ${detail}` : ""}`,
+  );
+  electronLifecycleDiagnostics.log(
+    "startup-mxc-phase",
+    {
+      timingVersion: 2,
+      processId: process.pid,
+      phase,
+      durationMs: Math.round(now - timing.previousAt),
+      elapsedMs: Math.round(now - timing.startedAt),
+      gatewayGeneration: timing.generation,
+    },
+    { durable: false },
   );
   timing.previousAt = now;
 }
@@ -5040,6 +5073,7 @@ function createMainWindow(): BrowserWindow {
   Menu.setApplicationMenu(null);
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
   const showWindowOnStartup = () => showStartupWindow(win, backgroundLaunch);
+  win.once("show", () => logStartupTiming("window-shown", "integration"));
   win.once("ready-to-show", showWindowOnStartup);
   win.webContents.once("did-finish-load", showWindowOnStartup);
 
@@ -5974,11 +6008,25 @@ async function startGatewayInner(
 ): Promise<void> {
   if (explicitQuitRequested) return;
   const startupTiming = new GatewayStartupTiming(++gatewayStartupAttempt, logGatewayStartupTiming);
+  try {
+    await runGatewayStartup(startupTiming, startupRetriesRemaining, preparedContainment);
+  } catch (error) {
+    startupTiming.outcome(explicitQuitRequested ? "cancelled" : "failed", "gateway-startup");
+    throw error;
+  }
+}
+
+async function runGatewayStartup(
+  startupTiming: GatewayStartupTiming,
+  startupRetriesRemaining: number,
+  preparedContainment?: PreparedWindowsNodeMxcContainment,
+): Promise<void> {
   logStartupTiming("gateway-preflight-start");
   // Read config to get token and configured port
   let config = readConfig();
   if (config === null && !fs.existsSync(getConfigPath())) {
     console.info("[gateway] Waiting for initial configuration before starting command consent");
+    startupTiming.outcome("cancelled", "configuration-missing");
     setGatewayStatus("stopped");
     return;
   }
@@ -5987,6 +6035,7 @@ async function startGatewayInner(
   }
   await checkWindowsNodeMxcStartupPlatform();
   const configuredPort = config?.gateway?.port || DEFAULT_PORT;
+  startupTiming.completeMicroclawPhase("configuration-read");
   const alreadyRunning = await checkExistingGateway(configuredPort);
   if (
     (alreadyRunning || (await isGatewayPortOccupied(configuredPort))) &&
@@ -5997,6 +6046,8 @@ async function startGatewayInner(
     }
     failForExternalGateway(configuredPort);
   }
+  startupTiming.completeMicroclawPhase("existing-gateway-check");
+  logStartupTiming("gateway-existing-check-complete");
   if (!alreadyRunning && !isManagedGatewayProcessAlive()) await ensureDefaultWorkspaceFolderGrant();
   if (!isWindowsNodeMxcDesired()) {
     const backups = settingsStore.get("windowsNodeMxcToolBackups");
@@ -6039,6 +6090,7 @@ async function startGatewayInner(
       console.error(`[windows-node-mxc] ${message}`);
       mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
       setGatewayStatus("failed");
+      startupTiming.outcome("failed", "gateway-policy-validation");
       return;
     }
   }
@@ -6114,6 +6166,7 @@ async function startGatewayInner(
       console.error(`[windows-node-mxc] ${message}`);
       mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
       setGatewayStatus("failed");
+      startupTiming.outcome("failed", "agent-policy-validation");
       return;
     }
   }
@@ -6135,8 +6188,6 @@ async function startGatewayInner(
   if (performanceFixture && alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null)) {
     throw new Error("Performance fixture refuses to reuse or stop an external Gateway");
   }
-  startupTiming.completeMicroclawPhase("existing-gateway-check");
-  logStartupTiming("gateway-existing-check-complete");
   const externallyManagedGateway =
     alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
   if (externallyManagedGateway) failForExternalGateway(configuredPort);
@@ -6300,6 +6351,7 @@ async function startGatewayInner(
   startupTiming.completeMicroclawPhase("agent-skills-and-workspaces");
   try {
     if (explicitQuitRequested) {
+      startupTiming.outcome("cancelled", "gateway-preflight");
       rollbackStartupAgentSkills();
       return;
     }
@@ -6380,12 +6432,6 @@ async function startGatewayInner(
       `Launching gateway: stateDir=${stateDir} auth=${gatewayToken ? "configured" : "missing"}`,
     );
     console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
-
-    // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
-    const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
-    if (!fs.existsSync(compileCacheDir)) {
-      fs.mkdirSync(compileCacheDir, { recursive: true });
-    }
 
     // Spawn gateway as a hidden background process — logs are forwarded
     // to the renderer via the gateway:log IPC channel (visible in Settings).
@@ -6501,14 +6547,14 @@ async function startGatewayInner(
       OPENCLAW_STATE_DIR: stateDir,
       NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
       NODE_ENV: "production",
-      NODE_COMPILE_CACHE: compileCacheDir,
-      // The Desktop owns the Gateway process and its compile cache.
-      OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
+      NODE_DISABLE_COMPILE_CACHE: "1",
       OPENCLAW_NO_RESPAWN: "1",
       OPENCLAW_NO_AUTO_UPDATE: "1",
       OPENCLAW_GATEWAY_HOST_LIFELINE: "stdin",
     };
     for (const reservedName of [
+      "NODE_COMPILE_CACHE",
+      "OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED",
       "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED",
       "MICROCLAW_MXC_CRON_PAUSED",
       "MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS",
@@ -6751,6 +6797,7 @@ async function startGatewayInner(
       () => !explicitQuitRequested && gatewayProcess === child && !child.killed,
     );
     if (explicitQuitRequested) {
+      startupTiming.outcome("cancelled", "gateway-http-wait");
       rollbackStartupAgentSkills();
       return;
     }
@@ -6782,6 +6829,7 @@ async function startGatewayInner(
         startupRetriesRemaining,
       );
       if (retryConvergence) {
+        startupTiming.outcome("retry", "plugin-migration-convergence");
         stopGatewayProcess("Gateway requested plugin migration convergence retry");
         rollbackStartupAgentSkills();
         console.log("[gateway] Retrying once after plugin migration convergence requested restart");
@@ -6802,6 +6850,10 @@ async function startGatewayInner(
       rollbackStartupAgentSkills();
       setGatewayStatus(failure.status);
       signalPostInstallFailure(new Error(failure.message));
+      startupTiming.outcome(
+        failure.status === "failed" ? "failed" : "timeout",
+        "gateway-http-wait",
+      );
       if (failure.status === "failed") return;
     }
     // Always connect WS — even on timeout the gateway may start shortly after,
@@ -6895,6 +6947,13 @@ function connectGatewayWs(): void {
     token: gatewayToken,
     supportsExecApprovals: true,
     beforeChatSend: requireEffectiveWindowsNodeMxc,
+    onStartupRetry: (retryAfterMs) => {
+      electronLifecycleDiagnostics.log(
+        "gateway-ws-startup-retry",
+        { processId: process.pid, retryAfterMs },
+        { durable: false },
+      );
+    },
     onConnected: () => {
       if (explicitQuitRequested || gatewayStopPromise) return;
       console.log("[gateway-ws] connected");
@@ -9412,6 +9471,15 @@ function registerIpcHandlers(): void {
     return shell.openExternal(url);
   });
 
+  ipcMain.handle("attachment:read-image", async (event, mediaPath: unknown) => {
+    assertTrustedRendererIpc(event);
+    try {
+      return { ok: true, dataUrl: await readInboundImage(mediaPath, getOpenClawStateDir()) };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   ipcMain.handle("attachment:open", async (_event, request: unknown) => {
     try {
       const targetPath = await prepareAttachmentForOpen(
@@ -9597,10 +9665,26 @@ const applicationStartup = app.whenReady().then(async () => {
     app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
   }
 
+  const runtimeTiming = new RuntimePreparationTiming("desktop", (message) => {
+    const event = parseRuntimeTiming(message);
+    if (event)
+      electronLifecycleDiagnostics.log(
+        "startup-runtime-phase",
+        {
+          ...event,
+          timingVersion: 2,
+          processId: process.pid,
+        },
+        { durable: event.kind === "summary" && event.status !== "started" },
+      );
+  });
+  const finishRuntime = runtimeTiming.start("preparation-total", "summary");
   try {
-    await prepareBundledOpenClawDir();
+    await prepareBundledOpenClawDir(runtimeTiming);
+    finishRuntime("success");
     logStartupTiming("runtime-prepared");
   } catch (error) {
+    finishRuntime("failed");
     signalPostInstallFailure(error);
     console.error("[runtime] Bundled OpenClaw preparation failed:", error);
     if (!performanceFixture) {

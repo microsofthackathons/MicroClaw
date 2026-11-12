@@ -102,6 +102,7 @@ def stage_paths(root, stage):
             "Directory.Packages.props",
         ]
         resources = [
+            "deployer/openclaw_version.py",
             "desktop/scripts",
             "desktop/package.json",
             "desktop/package-lock.json",
@@ -112,6 +113,8 @@ def stage_paths(root, stage):
             (common + sources, (*SOURCE_EXCLUDES, "bin", "obj")),
             (resources, SOURCE_EXCLUDES),
         ], [
+            "desktop/resources/openclaw.asar",
+            "desktop/resources/node.exe",
             "desktop/resources/windows-node",
             "desktop/resources/openclaw-weixin",
         ]

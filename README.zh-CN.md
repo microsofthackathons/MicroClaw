@@ -32,9 +32,9 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 内建信任
 
 - **动作透明、权限可控**：文件和工具访问需要明确向用户申请，而不是静默放行
-- **MXC 是唯一的工具执行沙箱**：明确选择 Full 或 Limited；不再提供旧 AppContainer 后端
-- **关闭即不使用沙箱**：MXC Off 时，工具直接使用当前 Windows 账号的权限执行
-- **原生模式边界**：Full 强制独占目录权限上限；Limited 采用附加授权，并在激活前评估环境访问权限
+- **MXC 命令沙箱**：可启用或关闭 Full 隔离；不再提供旧 DACL 或 AppContainer 后端
+- **关闭即不使用沙箱**：MXC Off 时，Windows Node 命令直接使用当前 Windows 账号的权限执行
+- **原生模式边界**：Full 使用所选文件夹授权和上游受保护路径限制；激活失败时保持锁定
 
 ---
 
@@ -43,7 +43,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 | 组件 | 路径 | 技术栈 | 说明 |
 |---|---|---|---|
 | **桌面应用** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
-| **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及 Full/Limited 原生隔离 |
+| **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及可选的 Full 原生隔离 |
 | **安装器** | `deploy.py` + `deployer/` | Python 3 + pywebview | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
 | **微信插件** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | 微信频道接入 |
@@ -60,7 +60,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 从源码构建安装器后运行：
 
-> **构建前置依赖**（仅运行 `build.ps1` 时需要）：**Node.js 26.1+（推荐）** 或 **24.x 系列的 24.16+**，以及 **Python 3.10+**。OpenClaw **2026.10.5** 要求 `>=24.16.0 <25 || >=26.1.0`，不再支持 Node 22 和 25。使用 `pip install -r requirements.txt` 安装 Python 构建依赖（其中包含用于打包安装器 exe 的 PyInstaller）。终端用户运行已打包的 `MicroClawInstaller.exe` **无需** 安装 Python。
+> **构建前置依赖**（仅运行 `build.ps1` 时需要）：**Node.js 26.1+（推荐）** 或 **24.x 系列的 24.16+**，以及 **Python 3.10+**。OpenClaw **2026.10.10** 要求 `>=24.16.0 <25 || >=26.1.0`，不再支持 Node 22 和 25。使用 `pip install -r requirements.txt` 安装 Python 构建依赖（其中包含用于打包安装器 exe 的 PyInstaller）。终端用户运行已打包的 `MicroClawInstaller.exe` **无需** 安装 Python。
 
 ```powershell
 .\build.ps1                                        # 生成 dist/MicroClawInstaller/MicroClawInstaller.exe
@@ -71,7 +71,7 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 - Git for Windows（PortableGit → `~/.openclaw-git`）
 - Node.js 26，通过官方签名 `.msi` 以 per-machine 方式安装到 `%ProgramFiles%\nodejs\`（UAC 提权；若该路径已存在受支持的系统 Node 则直接复用；支持范围为 `>=24.16.0 <25 || >=26.1.0`，下载回退版本为 `26.1.0`）
-- OpenClaw Gateway，默认 `stable` 通道固定为 **2026.10.5**（`npm install -g openclaw@2026.10.5`）
+- OpenClaw Gateway，默认 `stable` 通道固定为 **2026.10.10**（`npm install -g openclaw@2026.10.10`）
 - 配置 npm 镜像源与 V8 编译缓存
 - 安装 MicroClaw 桌面客户端、托管技能及 Windows 沙箱组件；微信插件不随安装包捆绑，也不会自动安装
 - 添加 Windows Defender 排除项，创建桌面快捷方式（含一键卸载）
@@ -151,7 +151,7 @@ OpenClaw 固定版本未变化时，桌面更新只刷新托管文件，不在�
 - **连接已有服务**：展开“高级选项与说明”，接入自行运行在 `localhost`、`127.0.0.1` 或 `::1` 的 llama-server，仅在服务要求时填写密钥。MicroClaw 不接管或停止该服务。
 - 切换模型会保留云端及本地连接，不新增自动云端兜底。已有 OpenClaw fallback、agent 或会话模型覆盖仍需单独检查。本地推理不代表联网技能可以离线运行。
 - 本地向导未结束时仍可打开云端设置。只有实际保存或切换模型时，才会询问是否先取消冲突的本地配置；拒绝后保持原状。本地模型未配置的目录项仅限这两个固定预设，其他已有连接仍保留；本地连接管理放在高级选项中。
-- 集成会检查 Gateway 的公开设置接口，支持 OpenClaw 2026.10.2、2026.10.3 或 2026.9.x 中的 2026.9.3 及以上版本。内置官方目录没有该插件时，MicroClaw 核对 ClawHub 官方包身份并请求固定版本 `@openclaw/llama-cpp-provider@2026.9.3`，不追随浮动最新版。下载、运行时依赖与 GPU 支持仍以官方插件为准。
+- 默认安装器固定 OpenClaw 2026.10.10。集成检查 Gateway 的公开设置接口，支持 2026.10.10、2026.10.5 及原有的 2026.10.2、2026.10.3 和 2026.9.3+ 宿主。10.10 和 10.5 宿主均使用独立审核的 `@openclaw/llama-cpp-provider@2026.10.5`，旧宿主保留 2026.9.3 provider；内置目录和 ClawHub 回退始终请求固定版本，不追随浮动最新版。下载、运行时依赖与 GPU 支持仍以官方插件为准。
 - 实际配置写入仍受 Windows Node + MXC、当前回复和未结束配置操作的保护。准备本地模型本身不再阻止已有聊天，真正应用模型变更时仍会保护当前请求。断线后恢复原操作，不重复启动；OpenClaw 正在完成受保护步骤时可能暂不接受取消。
 
 **Windows 兼容处理：**MicroClaw 为受支持 OpenClaw 中的指定 `fs-safe@0.8.5` 依赖回移了[上游 Windows 文件打开时间戳修复](https://github.com/openclaw/fs-safe/commit/6ae2e2e5086f2c48b813f78cb65fd787c9879a3f)，并补充复制后 `ctime` 延迟更新的收尾处理：仅允许身份、大小和修改时间不变的单链接普通文件进入复核，且内容必须与复制时记录的 SHA-256 一致。复核采用固定大小缓冲区，核对打开的文件句柄和路径，并在删除授权后再次比对完整身份。真实修改仍报错，硬链接别名不使用该例外。预加载模块核对版本及移动、清理两个模块的 SHA-256 后，仅在内存中应用修复，不修改已安装的 OpenClaw 文件。其他依赖版本保持原样；修改过的 0.8.5 源码会被明确拒绝。这些检查只在文件移动时执行，不会在打开模型设置时读取模型内容。
@@ -271,8 +271,11 @@ npm run dev
 | **技能完整性校验** | SHA-256 哈希 + Ed25519 签名，启动时检测所有技能文件是否被篡改 |
 | **设备认证** | 每台设备生成 Ed25519 密钥对，Gateway 连接时签名认证 |
 | **技能白名单** | `allowBundled` / `allowManaged` 控制可用技能范围 |
-| **沙盒隔离** | 原生 MXC Full/Limited；明确关闭后不使用执行沙箱 |
+| **沙盒隔离** | Windows Node 命令使用原生 MXC Full 隔离；关闭后不使用沙箱 |
 | **本地 Gateway** | 仅绑定 loopback，不接受远程连接 |
+
+Gateway 原生工具、插件、频道、Cron、Hooks 和 Canvas 在两种模式下都位于此沙箱之外。
+安全设置可即时应用，无需重启 Gateway；关闭沙箱时仍会保留已保存的文件夹授权。
 
 ---
 
@@ -373,7 +376,7 @@ Windows 侧运维脚本现在统一放在 `scripts/windows/` 下。仓库根目�
 
 普通用户在**桌面应用 设置**里完成所有配置即可：模型、Brave API Key、技能白名单等。运行时配置存于 `~/.openclaw/openclaw.json`，如有需要可手动编辑。
 
-全新安装会预装与默认 OpenClaw 运行时同版的官方 Parallel 联网搜索插件（固定为 **2026.10.5**），并默认选择无需 API 密钥的 `parallel-free`
+全新安装会预装与默认 OpenClaw 运行时同版的官方 Parallel 联网搜索插件（固定为 **2026.10.10**），并默认选择无需 API 密钥的 `parallel-free`
 提供商，因此安装后即可直接使用联网搜索。升级时会保留可用的联网搜索提供商；未配置 API 密钥
 的 Brave 或 Tavily 会自动回退到 Parallel。之后也可在**设置**中修改。
 

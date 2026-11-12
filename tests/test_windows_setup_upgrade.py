@@ -2667,7 +2667,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             [
                 "plugins",
                 "install",
-                f"clawhub:@openclaw/llama-cpp-provider@{OPENCLAW_TARGET_VERSION}",
+                "clawhub:@openclaw/llama-cpp-provider@2026.10.5",
                 "--accept-capabilities",
             ],
         )

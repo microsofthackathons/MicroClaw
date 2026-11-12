@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
     resetSession: vi.fn(),
     deleteSession: vi.fn(),
     switchSession: vi.fn(),
+    switchAgentSession: vi.fn(),
   },
   sessions: {
     sessions: [] as Session[],
@@ -31,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   agents: {
     currentAgentId: "main",
     agents: [{ id: "main", name: "MicroClaw", avatar: "" }],
+    selectAgent: vi.fn(),
   },
 }));
 
@@ -67,6 +69,9 @@ beforeEach(() => {
   mocks.listSessionTitles.mockResolvedValue({ titles: {} });
   mocks.agents.currentAgentId = "main";
   mocks.agents.agents = [{ id: "main", name: "MicroClaw", avatar: "" }];
+  mocks.agents.selectAgent.mockImplementation((agentId: string) => {
+    mocks.agents.currentAgentId = agentId;
+  });
   localStorage.clear();
   setLocale("en-US");
   vi.stubGlobal("openclaw", {
@@ -87,6 +92,7 @@ async function mountPanel() {
   const wrapper = mount(SidePanel, {
     global: {
       stubs: {
+        teleport: true,
         WeixinConnectionShortcut: {
           name: "WeixinConnectionShortcut",
           template: '<button data-testid="weixin-shortcut" />',
@@ -142,6 +148,25 @@ describe("SidePanel footer actions", () => {
     expect(mocks.push).toHaveBeenLastCalledWith("/chat/main");
     await wrapper.get('[data-testid="settings-shortcut"]').trigger("click");
     expect(mocks.push).toHaveBeenLastCalledWith("/settings");
+  });
+
+  it("navigates between agents without requesting a draft clear or a fresh session", async () => {
+    mocks.agents.agents.push({ id: "writer", name: "Writer", avatar: "" });
+    const clearDraft = vi.fn();
+    window.addEventListener("microclaw:clear-compose", clearDraft);
+    try {
+      const wrapper = await mountPanel();
+      await wrapper.get(".sp-brand-inner").trigger("click");
+      await wrapper.findAll(".sp-agent-avatar-item")[1].trigger("click");
+      expect(mocks.chat.switchAgentSession).toHaveBeenLastCalledWith("writer");
+      expect(mocks.push).toHaveBeenLastCalledWith("/chat/writer");
+      await wrapper.get(".sp-brand-inner").trigger("click");
+      await wrapper.findAll(".sp-agent-avatar-item")[0].trigger("click");
+      expect(mocks.chat.switchAgentSession).toHaveBeenLastCalledWith("main");
+      expect(clearDraft).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("microclaw:clear-compose", clearDraft);
+    }
   });
 
   it.each(["/settings", "/settings/security"])(

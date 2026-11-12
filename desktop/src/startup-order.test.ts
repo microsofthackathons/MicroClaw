@@ -3,6 +3,16 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("desktop startup order", () => {
+  it("attributes gateway checks before configuration and persona work", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const startup = source.slice(source.indexOf("async function runGatewayStartup("));
+    const check = startup.indexOf("await checkExistingGateway(configuredPort)");
+    const checkEnd = startup.indexOf('completeMicroclawPhase("existing-gateway-check")');
+    const configWork = startup.indexOf("await ensureDefaultWorkspaceFolderGrant()");
+    expect(check).toBeGreaterThan(startup.indexOf('completeMicroclawPhase("configuration-read")'));
+    expect(checkEnd).toBeGreaterThan(check);
+    expect(configWork).toBeGreaterThan(checkEnd);
+  });
   it("rejects missing gateway runtime files instead of silently waiting for the installer timeout", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     for (const filename of ["nodePath", "entryPath"]) {
@@ -119,7 +129,7 @@ describe("desktop startup order", () => {
       source.indexOf('app.on("window-all-closed"'),
     );
 
-    const preparationIndex = lifecycle.indexOf("await prepareBundledOpenClawDir()");
+    const preparationIndex = lifecycle.indexOf("await prepareBundledOpenClawDir(runtimeTiming)");
     const integrityIndex = lifecycle.indexOf("verifySkillIntegrity()");
     const snapshotIndex = lifecycle.indexOf("generateAndSignSnapshot()");
     const windowIndex = lifecycle.indexOf("const initialWindow = createMainWindow()");

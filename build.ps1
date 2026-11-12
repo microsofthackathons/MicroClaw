@@ -1,7 +1,7 @@
 ﻿# One-click build: desktop app + native MXC resources -> portable zip -> installer exe
 param(
-    [ValidateSet('2026.9.3', '2026.10.3', '2026.10.5')]
-    [string]$OpenClawVersion = '2026.10.5',
+    [ValidateSet('2026.10.10')]
+    [string]$OpenClawVersion = '2026.10.10',
     [ValidateSet('zlib', 'lzma')]
     [string]$SetupCompression = 'zlib',
     [ValidateSet('Optimal', 'Fastest', 'NoCompression')]
@@ -139,7 +139,7 @@ if (-not $nodeFound) {
     Write-Host "  ERROR: supported node.exe not found in any of:" -ForegroundColor Red
     foreach ($candidate in $nodeCandidates) { Write-Host "    - $candidate" -ForegroundColor Red }
     Write-Host "    - PATH (Get-Command node.exe)" -ForegroundColor Red
-    Write-Host "  OpenClaw 2026.10.5 requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
+    Write-Host "  OpenClaw $OpenClawVersion requires Node.js >=24.16.0 <25 || >=26.1.0." -ForegroundColor Red
     Write-Host "  Install Node.js 26 (https://nodejs.org/) and re-run build.ps1." -ForegroundColor Red
     Write-BuildTimingSummary -Status failed
     exit 1
@@ -219,6 +219,10 @@ if (-not $nativeCache.hit) {
     Save-BuildCache -Cache $nativeCache
 }
 
+Start-BuildStage 'Preflight: verify core resource target'
+& node "$root\desktop\scripts\openclaw-resource.mjs" $OpenClawVersion
+if ($LASTEXITCODE -ne 0) { throw 'Packaged OpenClaw resources do not match the installer target' }
+
 Start-BuildStage 'Preflight: desktop toolchain context'
 $desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString())
 $signingConfigured = [bool]($env:CSC_LINK -or $env:WIN_CSC_LINK -or $env:CSC_NAME -or
@@ -276,6 +280,8 @@ if (Test-Path $desktopAsar) {
         Write-Host "  Verified: app.asar is newer than source files" -ForegroundColor Green
     }
 }
+& node "$root\desktop\scripts\openclaw-resource.mjs" $OpenClawVersion "$root\desktop\release\win-unpacked\resources"
+if ($LASTEXITCODE -ne 0) { throw 'Packed desktop OpenClaw resources do not match the installer target' }
 Start-BuildStage 'Step 3/7: save desktop cache'
 if (-not $desktopCache.hit) { Save-BuildCache -Cache $desktopCache }
 
