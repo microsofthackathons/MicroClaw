@@ -377,6 +377,19 @@ $installerBuilt = $false
 
 # --- Ensure Python dependencies are installed (like npm install for Node) ---
 $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+if ($uvCmd) {
+    $uvUsable = $false
+    try {
+        $uvVersion = & $uvCmd.Source --version
+        $uvUsable = $LASTEXITCODE -eq 0 -and $uvVersion -match '^uv '
+    } catch [System.Management.Automation.ApplicationFailedException] {
+        Write-Host "  WARNING: uv launch failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    if (-not $uvUsable) {
+        Write-Host "  WARNING: uv is unavailable; using the Python/pip build strategies." -ForegroundColor Yellow
+        $uvCmd = $null
+    }
+}
 $hasUvProject = $false
 if ($uvCmd -and (Test-Path "$root\pyproject.toml")) {
     $hasUvProject = [bool](Select-String -Path "$root\pyproject.toml" -Pattern '^\s*\[project\]\s*$')
@@ -536,7 +549,7 @@ $nsiScript = "$root\installer\microclaw-setup.nsi"
 $setupIcon = "$root\deployer\assets\microclaw.ico"
 
 # Resolve makensis: PATH first, then common install locations, then the copy
-# that ships inside electron-builder's cache (already present after Step 3).
+# in electron-builder's legacy or versioned cache (when previously downloaded).
 $makensis = $null
 $mkCmd = Get-Command makensis -ErrorAction SilentlyContinue
 if ($mkCmd) { $makensis = $mkCmd.Source }
@@ -545,7 +558,7 @@ if (-not $makensis) {
         "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
         "$env:ProgramFiles\NSIS\makensis.exe"
     )
-    $mkCandidates += Get-ChildItem "$env:LOCALAPPDATA\electron-builder\Cache\nsis" -Recurse -Filter makensis.exe -ErrorAction SilentlyContinue |
+    $mkCandidates += Get-ChildItem "$env:LOCALAPPDATA\electron-builder\Cache\nsis*" -Recurse -Filter makensis.exe -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty FullName
     $makensis = $mkCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
