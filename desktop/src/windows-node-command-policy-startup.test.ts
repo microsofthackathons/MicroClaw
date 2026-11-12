@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ensureAgentPersonasConfig } from "./agent-personas";
 import { readAgentRoster } from "./agent-roster";
-import { applyWindowsNodeCommandPolicy, buildWindowsNodeMxcToolPolicy } from "./windows-node-mxc";
+import {
+  applyWindowsNodeCommandPolicy,
+  applyWindowsNodeMxcGatewayPolicy,
+  buildWindowsNodeMxcToolPolicy,
+  validateWindowsNodeMxcGatewayPolicy,
+} from "./windows-node-mxc";
 
 const nodeId = "startup-node";
 const stateDir = resolve("test-state", "command-policy-startup");
@@ -51,6 +56,25 @@ describe("Windows Node command policy startup", () => {
     expect(JSON.stringify(applyWindowsNodeCommandPolicy(config, nodeId))).toBe(
       JSON.stringify(config),
     );
+  });
+
+  it("creates and pins the initial roster before Full-mode startup attestation", () => {
+    const config = {
+      gateway: { port: 18789 },
+      agents: { defaults: { model: { primary: "custom/m" } } },
+    };
+    ensureAgentPersonasConfig(config, stateDir);
+    const pinned = applyWindowsNodeMxcGatewayPolicy(config, nodeId, {}, "locked").config;
+    expect(readAgentRoster(pinned.agents)).toHaveLength(1);
+    expect(validateWindowsNodeMxcGatewayPolicy(pinned, nodeId, "locked").ready).toBe(true);
+
+    const source = readFileSync(resolve("src/main.ts"), "utf8");
+    const start = source.indexOf("async function startGatewayInner(");
+    const preflight = source.slice(start, source.indexOf("gatewayToken =", start));
+    expect(
+      preflight.indexOf("ensureAgentPersonasConfig(config, getOpenClawStateDir())"),
+    ).toBeLessThan(preflight.indexOf("applyWindowsNodeMxcGatewayPolicy("));
+    expect(preflight).toContain("configBeforePersonas !== JSON.stringify(pinned.config)");
   });
 
   it.each(["entries", "list"] as const)(

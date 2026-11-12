@@ -301,7 +301,7 @@ describe("privacy-safe approval context diagnostics", () => {
     { mxcEnabled: false, validApproval: false },
     { mxcEnabled: true, validApproval: false },
   ])(
-    "observes the raw approval before normalization with MXC=$mxcEnabled, valid=$validApproval",
+    "routes approvals in both modes and logs raw diagnostics only with MXC=$mxcEnabled, valid=$validApproval",
     ({ mxcEnabled, validApproval }) => {
       const source = ts.createSourceFile(
         "main.ts",
@@ -328,6 +328,8 @@ describe("privacy-safe approval context diagnostics", () => {
       const payload = {
         id: "approval-id",
         request: {
+          host: "node",
+          nodeId: "node-id",
           sessionKey: "PRIVATE SESSION",
           command: "PRIVATE COMMAND",
           token: "PRIVATE TOKEN",
@@ -353,21 +355,26 @@ describe("privacy-safe approval context diagnostics", () => {
       ).outputText;
       new Function(...Object.keys(scope), executable)(...Object.values(scope));
 
-      expect(scope.describeGatewayApprovalContext).toHaveBeenCalledExactlyOnceWith(payload);
       expect(scope.normalizeWindowsNodeMxcGatewayApproval).toHaveBeenCalledExactlyOnceWith(
         payload,
         "node-id",
         "gateway-generation",
         mode,
       );
-      expect(scope.describeGatewayApprovalContext.mock.invocationCallOrder[0]).toBeLessThan(
-        scope.normalizeWindowsNodeMxcGatewayApproval.mock.invocationCallOrder[0],
-      );
-      expect(scope.console.info).toHaveBeenCalledExactlyOnceWith(
-        "[weixin-remote-approval-context]",
-        describeGatewayApprovalContext(payload),
-      );
-      expect(JSON.stringify(scope.console.info.mock.calls)).not.toContain("PRIVATE");
+      if (mxcEnabled) {
+        expect(scope.describeGatewayApprovalContext).toHaveBeenCalledExactlyOnceWith(payload);
+        expect(scope.describeGatewayApprovalContext.mock.invocationCallOrder[0]).toBeLessThan(
+          scope.normalizeWindowsNodeMxcGatewayApproval.mock.invocationCallOrder[0],
+        );
+        expect(scope.console.info).toHaveBeenCalledExactlyOnceWith(
+          "[weixin-remote-approval-context]",
+          describeGatewayApprovalContext(payload),
+        );
+        expect(JSON.stringify(scope.console.info.mock.calls)).not.toContain("PRIVATE");
+      } else {
+        expect(scope.describeGatewayApprovalContext).not.toHaveBeenCalled();
+        expect(scope.console.info).not.toHaveBeenCalled();
+      }
       if (validApproval) {
         expect(scope.handleWindowsNodeMxcGatewayApproval).toHaveBeenCalledExactlyOnceWith(
           approval,
@@ -392,8 +399,14 @@ describe.skipIf(!publishedPackage)("real pinned exec diagnostic boundaries", () 
 
   beforeAll(() => {
     if (!publishedPackage) throw new Error("A verified pinned package is required");
-    compat.validatePinnedOpenClawApprovalPackage(publishedPackage, { approval: true });
-    const source = readFileSync(join(publishedPackage, "dist", "bash-tools-Bl8Bd3CR.mjs"), "utf8");
+    const targets = compat.validatePinnedOpenClawApprovalPackage(publishedPackage, {
+      approval: true,
+    });
+    const bashTools = targets.find((target: { module: string }) =>
+      target.module.startsWith("bash-tools-"),
+    );
+    if (!bashTools) throw new Error("Missing pinned bash-tools module");
+    const source = bashTools.original.toString("utf8");
     original = ts.createSourceFile(
       "original.mjs",
       source,
@@ -448,6 +461,7 @@ describe.skipIf(!publishedPackage)("real pinned exec diagnostic boundaries", () 
         console: { info },
         process: { env: { MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: gate } },
         isSecretEgressProxyActive: () => false,
+        readExecRequestOwners: () => ({}),
         resolveExecPreparedRunEnvironment: () => ({}),
         resolveStoredSubagentCapabilities: () => ({ depth: 0 }),
         clampWithDefault: (_value: unknown, fallback: number) => fallback,
@@ -473,7 +487,9 @@ describe.skipIf(!publishedPackage)("real pinned exec diagnostic boundaries", () 
         }),
         EXEC_TOOL_DISPLAY_SUMMARY: "",
         execSchema: {},
+        createExecSchema: () => ({}),
         createExecToolExecutionTimeoutResolver: () => () => 0,
+        bindAgentToolAvailability: (tool: unknown) => tool,
         captureAgentToolSourceExecutionGuard: () => () => undefined,
         assertSupportedExecParams: vi.fn(),
         normalizeOptionalString: (value: unknown) =>

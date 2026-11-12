@@ -123,7 +123,6 @@ class BuildCacheTests(unittest.TestCase):
     def test_native_source_dependency_and_plugin_changes_invalidate_native(self):
         for name in (
             "windows-node-host/Program.cs",
-            "windows-node-canvas-host/App.xaml",
             "third_party/openclaw-windows-node/source/src/OpenClaw.Shared/Shared.cs",
             "third_party/mxc-host-prep-patch/source/Program.cs",
             "desktop/package-lock.json",
@@ -282,6 +281,23 @@ class BuildCacheTests(unittest.TestCase):
         source.write_text("after!", encoding="utf-8")
         os.utime(source, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
         self.assertNotEqual(build_cache.fingerprint(self.root, ["tree"]), before)
+
+    @unittest.skipUnless(os.name == "nt", "Requires Windows long paths")
+    def test_long_worker_paths_are_hashed_and_invalidate_output_cache(self):
+        long_tree = self.root / "output" / ("worker-" + "x" * 50)
+        target = long_tree.joinpath(*(["nested-" + "y" * 50] * 4), "worker.dll")
+        self.assertGreater(len(str(target)), 260)
+        extended_tree = Path("\\\\?\\" + str(long_tree))
+        extended_target = Path("\\\\?\\" + str(target))
+        extended_target.parent.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, extended_tree)
+        extended_target.write_bytes(b"worker-before")
+
+        self.remember()
+        self.assertTrue(self.probe()["hit"])
+        extended_target.write_bytes(b"worker-after!")
+        self.assertFalse(self.probe()["hit"])
+        self.assertEqual(self.probe()["reason"], "outputs missing or changed")
 
     def test_content_hashing_errors_are_not_silently_ignored(self):
         self.write("tree/nested/data.txt", "source")

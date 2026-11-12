@@ -105,18 +105,20 @@ class InstallerArchiveTests(unittest.TestCase):
         self.payload.mkdir(parents=True)
         (self.payload / "resource.txt").write_text("complete installer", encoding="utf-8")
         self.archive = self.work / "dist" / "MicroClawInstaller.zip"
-        repository = Path(__file__).parents[1]
-        source = (repository / "build.ps1").read_text(encoding="utf-8-sig")
+        source = (Path(__file__).parents[1] / "build.ps1").read_text(encoding="utf-8-sig")
         parameters = source[: source.index("Set-StrictMode")]
+        archive_function = source[
+            source.index("function New-BuildArchive {") : source.index(
+                "Start-BuildStage 'Step 4/7: create portable zip'"
+            )
+        ]
         archive_step = source[source.index("# Step 6:") : source.index("# Step 7:")]
-        timing_script = self.work / "scripts" / "windows" / "build-timing.ps1"
-        timing_script.parent.mkdir(parents=True)
-        shutil.copyfile(repository / "scripts" / "windows" / "build-timing.ps1", timing_script)
         self.harness = self.work / "archive-step.ps1"
         self.harness.write_text(
             parameters
             + "$ErrorActionPreference = 'Stop'\n$root = $PSScriptRoot\n"
-            + '. "$root\\scripts\\windows\\build-timing.ps1"\nStart-BuildTiming\n'
+            + "function Start-BuildStage { param($Name) }\n"
+            + archive_function
             + archive_step,
             encoding="utf-8-sig",
         )

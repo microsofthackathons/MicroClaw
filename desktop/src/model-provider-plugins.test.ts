@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ensureEnabledPluginsAllowed,
   ensureGitHubCopilotProviderPlugin,
   ensureSelectedModelProviderPlugins,
 } from "./model-provider-plugins";
@@ -23,7 +24,6 @@ describe("ensureSelectedModelProviderPlugins", () => {
       expect(ensureSelectedModelProviderPlugins(config)).toBe(true);
       expect(config).toMatchObject({
         plugins: {
-          allow: ["github-copilot"],
           entries: { "github-copilot": { enabled: true } },
         },
       });
@@ -67,9 +67,38 @@ describe("ensureSelectedModelProviderPlugins", () => {
     expect(ensureGitHubCopilotProviderPlugin(config)).toBe(true);
     expect(config).toMatchObject({
       plugins: {
-        allow: ["github-copilot"],
         entries: { "github-copilot": { enabled: true } },
       },
     });
+  });
+
+  it("preserves an unrestricted empty allowlist when enabling a model provider", () => {
+    const config = { plugins: { allow: [] as string[] } };
+    expect(ensureGitHubCopilotProviderPlugin(config)).toBe(true);
+    expect(config.plugins.allow).toEqual([]);
+  });
+});
+
+describe("ensureEnabledPluginsAllowed", () => {
+  it.each([
+    { entries: { weixin: { enabled: true } } },
+    { allow: [], entries: { weixin: { enabled: true } } },
+  ])("does not turn an unrestricted plugin policy into an allowlist: %j", (plugins) => {
+    const config = { plugins };
+    const expected = structuredClone(plugins);
+    expect(ensureEnabledPluginsAllowed(config)).toBe(false);
+    expect(config.plugins).toEqual(expected);
+  });
+
+  it("keeps explicitly enabled plugins in an existing restrictive allowlist", () => {
+    const config = {
+      plugins: {
+        allow: ["existing"],
+        entries: { enabled: { enabled: true }, disabled: { enabled: false } },
+      },
+    };
+    expect(ensureEnabledPluginsAllowed(config)).toBe(true);
+    expect(config.plugins.allow).toEqual(["existing", "enabled"]);
+    expect(ensureEnabledPluginsAllowed(config)).toBe(false);
   });
 });

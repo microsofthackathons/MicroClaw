@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   applyWindowsNodeMxcGatewayPolicy,
-  WINDOWS_NODE_MXC_CANVAS_ACTIONS,
-  WINDOWS_NODE_MXC_CANVAS_COMMANDS,
-  WINDOWS_NODE_MXC_MEMORY_TOOLS,
-  WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS,
-  WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST,
-  WINDOWS_NODE_MXC_TOOL_ALLOWLIST,
   validateWindowsNodeMxcSettings,
 } from "./windows-node-mxc";
 import {
@@ -14,47 +8,28 @@ import {
   WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION,
 } from "./windows-node-mxc-disclosure";
 
-const disclosureIds = WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups.flatMap((group) =>
-  group.items.map((item) => item.id),
-);
-
 describe("Windows Node MXC capability disclosure", () => {
-  it("has a typed versioned render model with unique critical entries", () => {
+  it("accurately identifies the command-only containment boundary", () => {
+    const groups = WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups;
     expect(WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.version).toBe(
       WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION,
     );
-    expect(new Set(disclosureIds).size).toBe(disclosureIds.length);
-    expect(WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups.map((group) => group.id)).toEqual([
-      "disabled",
-      "paused",
-      "available-restricted",
+    expect(groups.map((group) => group.id)).toEqual(["contained", "outside-mxc"]);
+    expect(groups[0].items.map((item) => item.id)).toEqual(["windows-node-exec"]);
+    expect(groups[1].items.map((item) => item.id)).toEqual([
+      "gateway-native-filesystem",
+      "gateway-runtime",
+      "canvas",
     ]);
+    const allItems = [...groups[0].items, ...groups[1].items];
+    expect(new Set(allItems.map((item) => item.id)).size).toBe(allItems.length);
+    for (const item of allItems) {
+      expect(item.translationKey).toBe(`settings.windowsNodeMxcConsent.item.${item.id}`);
+    }
   });
 
-  it("locks disabled disclosure entries to current policy invariants", () => {
-    expect(WINDOWS_NODE_MXC_GATEWAY_NATIVE_FS_TOOLS).toEqual([
-      "read",
-      "write",
-      "edit",
-      "apply_patch",
-    ]);
-    expect(WINDOWS_NODE_MXC_LOCKED_TOOL_DENYLIST).toEqual(
-      expect.arrayContaining(["group:runtime", "group:fs", "group:plugins", "browser"]),
-    );
-    expect(disclosureIds).toEqual(
-      expect.arrayContaining([
-        "gateway-native-filesystem",
-        "browser-automation",
-        "mcp",
-        "screen",
-        "camera",
-        "location",
-        "tts",
-        "stt",
-      ]),
-    );
-
-    const strictSettings = {
+  it("does not disable unrelated node features in MXC settings validation", () => {
+    const settings = {
       EnableNodeMode: true,
       NodeSystemRunEnabled: true,
       NodeCanvasEnabled: true,
@@ -63,112 +38,46 @@ describe("Windows Node MXC capability disclosure", () => {
       SystemRunAllowWindowsUi: true,
       SystemRunAllowOutbound: true,
       SandboxClipboard: 0,
-      EnableMcpServer: false,
-      NodeScreenEnabled: false,
-      NodeCameraEnabled: false,
-      NodeLocationEnabled: false,
-      NodeBrowserProxyEnabled: false,
-      NodeSttEnabled: false,
-      NodeTtsEnabled: false,
+      EnableMcpServer: true,
+      NodeScreenEnabled: true,
+      NodeCameraEnabled: true,
+      NodeLocationEnabled: true,
+      NodeBrowserProxyEnabled: true,
+      NodeSttEnabled: true,
+      NodeTtsEnabled: true,
     };
-    expect(validateWindowsNodeMxcSettings(strictSettings).ready).toBe(true);
-    for (const property of [
-      "EnableMcpServer",
-      "NodeScreenEnabled",
-      "NodeCameraEnabled",
-      "NodeLocationEnabled",
-      "NodeBrowserProxyEnabled",
-      "NodeSttEnabled",
-      "NodeTtsEnabled",
-    ] as const) {
-      expect(
-        validateWindowsNodeMxcSettings({ ...strictSettings, [property]: true }).ready,
-        property,
-      ).toBe(false);
-    }
+
+    expect(validateWindowsNodeMxcSettings(settings).ready).toBe(true);
+    expect(
+      validateWindowsNodeMxcSettings({ ...settings, SystemRunSandboxEnabled: false }).blockers,
+    ).toContain("Windows node MXC sandbox is disabled");
   });
 
-  it("locks paused and restricted disclosure entries to the reviewed surface", () => {
-    expect(WINDOWS_NODE_MXC_TOOL_ALLOWLIST).toEqual([
-      "exec",
-      "web_search",
-      "web_fetch",
-      "message",
-      "canvas",
-      ...WINDOWS_NODE_MXC_MEMORY_TOOLS,
-    ]);
-    expect(WINDOWS_NODE_MXC_CANVAS_COMMANDS).toEqual([
-      "canvas.present",
-      "canvas.hide",
-      "canvas.snapshot",
-      "canvas.caps",
-      "canvas.a2ui.push",
-      "canvas.a2ui.pushJSONL",
-      "canvas.a2ui.reset",
-      "canvas.a2ui.dump",
-    ]);
-    expect(WINDOWS_NODE_MXC_CANVAS_ACTIONS).toEqual(["cancel", "click", "confirm", "submit"]);
-    expect(disclosureIds).toEqual(
-      expect.arrayContaining([
-        "cron",
-        "hooks-webhooks",
-        "exec",
-        "gateway-web",
-        "wechat-message",
-        "canvas-phase-1",
-        "gateway-memory",
-      ]),
-    );
-
-    const applied = applyWindowsNodeMxcGatewayPolicy(
-      {
-        agents: { list: [{ id: "main" }] },
-        channels: {
-          discord: { enabled: true },
-          "openclaw-weixin": { enabled: true },
-        },
-        cron: { enabled: true },
-        hooks: { enabled: true, internal: { enabled: true } },
-        plugins: {
-          enabled: true,
-          entries: {
-            "openclaw-weixin": { enabled: true },
-            "memory-core": { enabled: true },
-          },
-        },
-      },
-      "node-123",
-      {},
-      "active",
-    ).config;
-    expect(applied).toMatchObject({
-      channels: {
-        discord: { enabled: false },
-        "openclaw-weixin": { enabled: true },
-      },
-      cron: { enabled: false },
-      hooks: { enabled: false, internal: { enabled: false } },
+  it("preserves Gateway tools, channels, plugins, Cron, and Hooks", () => {
+    const source = {
+      agents: { list: [{ id: "main" }] },
+      tools: { allow: ["read", "write", "browser"] },
+      channels: { discord: { enabled: true } },
+      cron: { enabled: true },
+      hooks: { enabled: true, internal: { enabled: true } },
       plugins: {
-        allow: ["canvas", "memory-core", "openclaw-weixin"],
-        slots: { memory: "memory-core" },
-        entries: {
-          canvas: { enabled: true },
-          "openclaw-weixin": { enabled: true },
-          "memory-core": { enabled: true },
-        },
+        enabled: true,
+        entries: { "openclaw-weixin": { enabled: true }, "custom-plugin": { enabled: true } },
+      },
+    };
+
+    const applied = applyWindowsNodeMxcGatewayPolicy(source, "node-123");
+
+    expect(applied.config).toMatchObject({
+      tools: { allow: ["read", "write", "browser"] },
+      channels: { discord: { enabled: true } },
+      cron: { enabled: true },
+      hooks: { enabled: true, internal: { enabled: true } },
+      plugins: {
+        enabled: true,
+        entries: { "openclaw-weixin": { enabled: true }, "custom-plugin": { enabled: true } },
       },
     });
-  });
-
-  it("discloses Gateway-host memory recall as restricted availability, not disabled", () => {
-    const disabled = WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups.find(
-      (group) => group.id === "disabled",
-    );
-    const available = WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE.groups.find(
-      (group) => group.id === "available-restricted",
-    );
-    expect(disabled?.items.map((item) => item.id)).not.toContain("gateway-memory");
-    expect(available?.items.map((item) => item.id)).toContain("gateway-memory");
-    expect(WINDOWS_NODE_MXC_MEMORY_TOOLS).toEqual(["memory_search", "memory_get"]);
+    expect(applied.backups).toEqual({});
   });
 });

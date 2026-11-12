@@ -23,7 +23,8 @@ internal static class ReadinessProbeContract
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$child=& 'C:\\Windows\\System32\\hostname.exe'; if ([string]::IsNullOrWhiteSpace(($child -join ''))) { exit 41 }; [Console]::Out.Write('MICROCLAW_MXC_EXECUTION_OK')",
+                PowerShellFilesystemScope.Bootstrap
+                    + "$child=& 'C:\\Windows\\System32\\hostname.exe'; if ([string]::IsNullOrWhiteSpace(($child -join ''))) { exit 41 }; [Console]::Out.Write('MICROCLAW_MXC_EXECUTION_OK')",
             ],
         };
 

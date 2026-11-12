@@ -132,6 +132,7 @@ function harness(mode: "full" | "limited-dacl" | "off" = "full") {
     events.push("fail-closed");
   });
   const closeTransport = vi.fn();
+  const invalidateRemote = vi.fn();
   const qr = new WeixinQrSession();
   const handlers = new Map<
     string,
@@ -223,6 +224,7 @@ function harness(mode: "full" | "limited-dacl" | "off" = "full") {
     bundledWindowsNodeHost: host,
     allPendingWindowsNodeMxcGatewayApprovals: () => [],
     windowsNodeMxcWeixinRemoteApprovalBroker: broker,
+    invalidateWindowsNodeMxcWeixinRemoteApproval: invalidateRemote,
     getWindowsNodeMxcStatus: getStatus,
     assertWindowsNodeMxcBaseReady: attest,
     releaseWindowsNodeMxcIngress: release,
@@ -273,6 +275,7 @@ function harness(mode: "full" | "limited-dacl" | "off" = "full") {
     release,
     failClosed,
     closeTransport,
+    invalidateRemote,
     transport,
     qr,
     readAccount,
@@ -453,7 +456,7 @@ describe("actual guarded WeChat disconnect IPC handler", () => {
         expect(h.gateway.weixinResumeAfterLogin).not.toHaveBeenCalled();
       } else {
         expect(h.requireEffective).not.toHaveBeenCalled();
-        expect(h.closeTransport).toHaveBeenCalledWith("weixin-logout");
+        expect(h.invalidateRemote).toHaveBeenCalledWith("weixin-logout");
         expect(h.host.revokeActivationLease).not.toHaveBeenCalled();
       }
     },

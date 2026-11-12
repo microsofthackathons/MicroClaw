@@ -12,15 +12,20 @@ type JsonObject = Record<string, unknown>;
 const roots: string[] = [];
 const services: BackgroundSearchProvider[] = [];
 
-function fixture() {
+function fixture(provider = "parallel-free") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-search-"));
   roots.push(root);
   const pendingPath = path.join(root, SEARCH_SETUP_FILENAME);
-  const search = { provider: "parallel-free", maxResults: 7 };
+  const pluginId = provider === "parallel-free" ? "parallel" : provider;
+  const search = { provider, maxResults: 7 };
   const suspendedSearch = { enabled: false, maxResults: 7 };
+  const pluginEntry =
+    provider === "parallel-free"
+      ? { enabled: true }
+      : { enabled: true, config: { webSearch: { apiKey: "${SEARCH_KEY}" } } };
   fs.writeFileSync(
     pendingPath,
-    JSON.stringify({ schemaVersion: 1, search, suspendedSearch, pluginEntry: { enabled: true } }),
+    JSON.stringify({ schemaVersion: 1, search, suspendedSearch, pluginEntry }),
   );
   let config = {
     gateway: { reload: { mode: "hybrid" } },
@@ -33,11 +38,14 @@ function fixture() {
     ready: true,
     plugin: { installed: false } as JsonObject,
     active: true,
+    lazy: false,
+    activateOnApply: false,
+    reloadStaysUnloaded: false,
     onInstall: () => {},
     installResult: {
       ok: true,
       restartRequired: false,
-      runtime: { generation: 1, pluginIds: ["parallel"] },
+      runtime: { generation: 1, pluginIds: [pluginId] },
     },
     failure: undefined as Error | undefined,
     applyFailure: undefined as Error | undefined,
@@ -70,27 +78,51 @@ function fixture() {
           return { plugins: [state.plugin], mutationAllowed: true };
         case "plugins.inspect":
           return {
+            ok: true,
             plugin: {
-              id: "parallel",
+              id: pluginId,
               installed: true,
               enabled: true,
               version: "2026.10.5",
-              runtime: { state: state.active ? "active" : "service-failed" },
             },
           };
         case "plugins.install":
           if (state.failure) throw state.failure;
+          config.plugins.entries[pluginId] = { enabled: true };
+          config.plugins.allow.push(pluginId);
+          state.plugin = {
+            id: pluginId,
+            installed: true,
+            enabled: true,
+            version: "2026.10.5",
+            runtime: {
+              state: state.lazy ? "unloaded" : state.active ? "active" : "service-failed",
+            },
+          };
           state.onInstall();
-          config.plugins.entries.parallel = { enabled: true };
-          config.plugins.allow.push("parallel");
           return state.installResult;
         case "plugins.reload":
         case "plugins.setEnabled":
+          state.plugin = {
+            id: pluginId,
+            installed: true,
+            enabled: true,
+            version: "2026.10.5",
+            runtime: {
+              state: state.reloadStaysUnloaded
+                ? "unloaded"
+                : state.active
+                  ? "active"
+                  : "service-failed",
+            },
+          };
           return state.installResult;
         case "config.apply":
           expect(params.baseHash).toBe(hash);
           if (state.applyFailure) throw state.applyFailure;
           config = JSON.parse(String(params.raw));
+          if (state.activateOnApply)
+            state.plugin = { ...state.plugin, runtime: { state: "active" } };
           hash = "after";
           return { ok: true, hash };
         default:
@@ -105,7 +137,18 @@ function fixture() {
     services.push(service);
     return service;
   };
-  return { root, pendingPath, search, state, config, gateway, log, create, service: create() };
+  return {
+    root,
+    pendingPath,
+    search,
+    pluginEntry,
+    state,
+    config,
+    gateway,
+    log,
+    create,
+    service: create(),
+  };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -153,6 +196,86 @@ describe("background web search setup", () => {
     expect(test.log).toHaveBeenLastCalledWith("Web search is ready; Gateway was not restarted");
   });
 
+  it.each(["brave", "tavily"])(
+    "restores a deferred %s plugin configuration without exposing its key in search",
+    async (provider) => {
+      const test = fixture(provider);
+      test.service.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(test.gateway.request).toHaveBeenCalledWith(
+        "plugins.install",
+        {
+          source: "npm",
+          spec: `@openclaw/${provider}-plugin@2026.10.5`,
+          expectedPluginId: provider,
+        },
+        300_000,
+      );
+      const applied = test.gateway.request.mock.calls.find(([method]) => method === "config.apply");
+      const config = JSON.parse(String(applied?.[1].raw));
+      expect(config.tools.web.search).toEqual(test.search);
+      expect(config.plugins.entries[provider]).toEqual(test.pluginEntry);
+      expect(fs.existsSync(test.pendingPath)).toBe(false);
+    },
+  );
+
+  it("preserves deferred credentials when installation adds plugin configuration", async () => {
+    const test = fixture("brave");
+    test.state.onInstall = () => {
+      test.config.plugins.entries.brave = {
+        enabled: true,
+        config: { unrelated: true, webSearch: { count: 4 } },
+      };
+    };
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const applied = test.gateway.request.mock.calls.find(([method]) => method === "config.apply");
+    const config = JSON.parse(String(applied?.[1].raw));
+    expect(config.plugins.entries.brave.config).toEqual({
+      unrelated: true,
+      webSearch: { apiKey: "${SEARCH_KEY}", count: 4 },
+    });
+  });
+
+  it("does not enable a plugin explicitly disabled while setup is pending", async () => {
+    const test = fixture("brave");
+    test.config.plugins.entries.brave = { enabled: false };
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(test.gateway.request.mock.calls.map(([method]) => method)).toEqual(["config.get"]);
+    expect(fs.existsSync(test.pendingPath)).toBe(true);
+    expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining("disabled"));
+  });
+
+  it("does not apply pending search when the plugin is disabled during installation", async () => {
+    const test = fixture("brave");
+    test.state.onInstall = () => {
+      test.config.plugins.entries.brave = { enabled: false };
+    };
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(test.gateway.request.mock.calls.map(([method]) => method)).not.toContain("config.apply");
+    expect(test.config.plugins.entries.brave).toEqual({ enabled: false });
+    expect(fs.existsSync(test.pendingPath)).toBe(true);
+    expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining("disabled"));
+  });
+
+  it.each([null, [], "invalid"])(
+    "does not replace a malformed pending plugin entry: %s",
+    async (pluginEntry) => {
+      const test = fixture("brave");
+      const pending = JSON.parse(fs.readFileSync(test.pendingPath, "utf-8"));
+      fs.writeFileSync(test.pendingPath, JSON.stringify({ ...pending, pluginEntry }));
+      test.service.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(test.gateway.request).not.toHaveBeenCalled();
+      expect(fs.existsSync(test.pendingPath)).toBe(true);
+      expect(test.log).toHaveBeenLastCalledWith(
+        expect.stringContaining("Unrecognized pending web search setup"),
+      );
+    },
+  );
+
   it("does not enable search when the installed plugin reports a runtime failure", async () => {
     const test = fixture();
     test.state.active = false;
@@ -162,7 +285,34 @@ describe("background web search setup", () => {
     expect(test.gateway.request.mock.calls.some(([method]) => method === "config.apply")).toBe(
       false,
     );
-    expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining("search remains disabled"));
+    expect(test.log).toHaveBeenLastCalledWith(
+      expect.stringContaining("runtime state: service-failed"),
+    );
+  });
+
+  it("selects an unloaded plugin before confirming its activation", async () => {
+    const test = fixture();
+    test.state.lazy = true;
+    test.state.activateOnApply = true;
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const calls = test.gateway.request.mock.calls.map(([method]) => method);
+    expect(calls).toContain("config.apply");
+    expect(calls).not.toContain("plugins.reload");
+    expect(calls.lastIndexOf("plugins.list")).toBeGreaterThan(calls.indexOf("config.apply"));
+    expect(fs.existsSync(test.pendingPath)).toBe(false);
+  });
+
+  it("keeps the setup pending when the selected plugin stays unloaded", async () => {
+    const test = fixture();
+    test.state.lazy = true;
+    test.state.reloadStaysUnloaded = true;
+    test.service.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const calls = test.gateway.request.mock.calls.map(([method]) => method);
+    expect(calls.indexOf("plugins.reload")).toBeGreaterThan(calls.indexOf("config.apply"));
+    expect(fs.existsSync(test.pendingPath)).toBe(true);
+    expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining("runtime state: unloaded"));
   });
 
   it("keeps pending setup after a config conflict instead of forcing an overwrite", async () => {

@@ -261,6 +261,7 @@
                     class="chat-edit-btn confirm"
                     @click="confirmEdit"
                     :title="t('chat.editConfirm')"
+                    :disabled="!canConfirmEdit"
                   >
                     {{ t("chat.editConfirm") }}
                   </button>
@@ -533,9 +534,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from "vue";
+import { ref, computed, nextTick, watch, inject } from "vue";
 import { useRouter } from "vue-router";
 import { useChatStore, type ChatMessage } from "@/stores/chat";
+import {
+  isWindowsNodeMxcExecutionBlocked,
+  windowsNodeMxcLifecycleStateKey,
+} from "@/windows-node-mxc-lifecycle";
 import { useAgentStore } from "@/stores/agents";
 import {
   renderMarkdown,
@@ -559,6 +564,7 @@ import mapGif from "@/assets/map.gif";
 import defaultAvatar from "@/assets/main-avatar.png";
 
 const chatStore = useChatStore();
+const mxcLifecycleState = inject(windowsNodeMxcLifecycleStateKey, ref(null));
 const performanceEnabled = Boolean(window.openclaw.features?.performance);
 const agentStore = useAgentStore();
 const router = useRouter();
@@ -590,6 +596,14 @@ const editingGroupKey = ref<string | null>(null);
 const editingMsgIdx = ref<number>(-1);
 const editText = ref("");
 const editInputRef = ref<HTMLTextAreaElement[]>();
+const canConfirmEdit = computed(
+  () =>
+    !!editText.value.trim() &&
+    chatStore.wsConnected &&
+    !isWindowsNodeMxcExecutionBlocked(mxcLifecycleState.value) &&
+    !chatStore.sending &&
+    !chatStore.streaming,
+);
 
 const groupedMessages = useGroupedMessages(computed(() => chatStore.messages));
 
@@ -1016,7 +1030,7 @@ function cancelEdit() {
 
 async function confirmEdit() {
   const text = editText.value.trim();
-  if (!text || !chatStore.wsConnected || chatStore.sending || chatStore.streaming) return;
+  if (!canConfirmEdit.value) return;
   cancelEdit();
   await chatStore.sendMessage(text);
 }
@@ -1188,8 +1202,13 @@ function handleEditKeydown(e: KeyboardEvent) {
   color: #fff;
 }
 
-.chat-edit-btn.confirm:hover {
+.chat-edit-btn.confirm:not(:disabled):hover {
   filter: brightness(1.1);
+}
+
+.chat-edit-btn.confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .chat-edit-btn.cancel {

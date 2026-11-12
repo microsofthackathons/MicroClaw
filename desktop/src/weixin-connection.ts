@@ -1,4 +1,5 @@
 import type { GatewayChannelsStatusPayload } from "./gateway-client";
+import { includeInRestrictedPluginAllowlist } from "./plugin-allowlist";
 
 export type WeixinQrStart = {
   ok: boolean;
@@ -177,10 +178,6 @@ export function ensureDefaultWeixinPlugin(value: object): boolean {
   const entry = config.plugins.entries["openclaw-weixin"] ?? {};
   let changed = entry.enabled !== true;
   config.plugins.entries["openclaw-weixin"] = { ...entry, enabled: true };
-  config.plugins.allow ??= [];
-  if (!config.plugins.allow.includes("openclaw-weixin")) {
-    config.plugins.allow.push("openclaw-weixin");
-    changed = true;
-  }
+  if (includeInRestrictedPluginAllowlist(config.plugins, "openclaw-weixin")) changed = true;
   return changed;
 }

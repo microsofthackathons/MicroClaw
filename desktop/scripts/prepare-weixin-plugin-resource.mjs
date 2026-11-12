@@ -69,6 +69,30 @@ function listRegularFiles(root) {
   return files.sort();
 }
 
+function prepareZodRuntime(root, packageJson) {
+  const sourceDir = path.join(root, "src");
+  if (
+    !fs.statSync(sourceDir, { throwIfNoEntry: false })?.isDirectory() ||
+    !packageJson.exports ||
+    typeof packageJson.exports !== "object" ||
+    Array.isArray(packageJson.exports)
+  ) {
+    throw new Error("The vendored Zod package does not have the expected runtime layout");
+  }
+  fs.rmSync(sourceDir, { recursive: true });
+  for (const relative of listRegularFiles(root)) {
+    if (/\.d\.(?:cts|ts)$/.test(relative)) fs.unlinkSync(path.join(root, relative));
+  }
+  delete packageJson.types;
+  for (const conditions of Object.values(packageJson.exports)) {
+    if (conditions && typeof conditions === "object" && !Array.isArray(conditions)) {
+      delete conditions.types;
+      delete conditions["@zod/source"];
+    }
+  }
+  fs.writeFileSync(path.join(root, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
+}
+
 function readRequiredOpenClawExports(root) {
   const imports = new Set();
   const distRoot = path.join(root, "dist");
@@ -156,6 +180,7 @@ export function prepareWeixinPluginResource({
       ) {
         throw new Error(`The vendored ${dependency.name} package identity does not match`);
       }
+      if (dependency.name === "zod") prepareZodRuntime(dependencyRoot, dependencyPackage);
     }
     const manifest = writeWeixinRuntimeManifest(staging);
     if (

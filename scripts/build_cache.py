@@ -16,6 +16,17 @@ STAGES = ("native", "desktop", "portable", "installer", "setup")
 SOURCE_EXCLUDES = (".git", "__pycache__", ".cache", ".vite", "*.pyc", "*.tsbuildinfo")
 
 
+def filesystem_path(path):
+    if os.name != "nt":
+        return Path(path)
+    absolute = os.path.abspath(path)
+    if absolute.startswith("\\\\?\\"):
+        return Path(absolute)
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
 def fingerprint(root, paths, excludes=()):
     digest = hashlib.sha256()
     entries = []
@@ -78,7 +89,7 @@ def fingerprint(root, paths, excludes=()):
                 if path.anchor.casefold() == root.anchor.casefold():
                     raise
                 label = path.as_posix()
-            visit(path, label, set(), executor)
+            visit(filesystem_path(path), label, set(), executor)
         for entry in entries:
             values = (*entry[:2], *entry[2].result()) if entry[1] == "file" else entry
             digest.update(json.dumps(values, ensure_ascii=True).encode("utf-8") + b"\n")
@@ -90,7 +101,6 @@ def stage_paths(root, stage):
     if stage == "native":
         sources = [
             "windows-node-host",
-            "windows-node-canvas-host",
             "third_party",
             "global.json",
             "NuGet.Config",
@@ -200,7 +210,7 @@ def input_key(root, stage, context=(), extra_inputs=()):
 
 def output_key(root, outputs):
     for name in outputs:
-        path = root / name
+        path = filesystem_path(root / name)
         if not path.exists():
             return None
         if path.is_dir() and not any(child.is_file() for child in path.rglob("*")):

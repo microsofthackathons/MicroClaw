@@ -1,5 +1,8 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import type { PowerShellFilesystemInitialization } from "./windows-node-mxc-powershell-scope";
+import {
+  POWERSHELL_FILESYSTEM_BOOTSTRAP,
+  type PowerShellFilesystemInitialization,
+} from "./windows-node-mxc-powershell-scope";
 
 export const WINDOWS_NODE_MXC_READINESS_PROOF_CONTRACT = "microclaw.windows-node-readiness.v1";
 export const WINDOWS_NODE_MXC_READINESS_COMMAND = "system.run.readiness";
@@ -20,7 +23,8 @@ export const WINDOWS_NODE_MXC_READINESS_PROBES: Record<
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    "$child=& 'C:\\Windows\\System32\\hostname.exe'; if ([string]::IsNullOrWhiteSpace(($child -join ''))) { exit 41 }; [Console]::Out.Write('MICROCLAW_MXC_EXECUTION_OK')",
+    POWERSHELL_FILESYSTEM_BOOTSTRAP +
+      "$child=& 'C:\\Windows\\System32\\hostname.exe'; if ([string]::IsNullOrWhiteSpace(($child -join ''))) { exit 41 }; [Console]::Out.Write('MICROCLAW_MXC_EXECUTION_OK')",
   ],
 };
 

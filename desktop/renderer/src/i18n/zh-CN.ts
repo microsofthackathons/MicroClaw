@@ -114,6 +114,8 @@ export default {
   "chat.newMessages": "新消息 ↓",
   "chat.inputPlaceholder": "按 ENTER 发送消息",
   "chat.waitingGateway": "等待 Gateway 连接…",
+  "chat.securityUpdating": "正在应用更改…",
+  "chat.executionLocked": "执行已锁定，请检查安全设置。",
   "chat.stopGeneration": "停止生成",
   "chat.stopTask": "停止任务",
   "chat.addAttachment": "添加附件",
@@ -328,29 +330,26 @@ export default {
   "settings.commandConsentHint":
     "按需询问使用 Windows Node 的允许列表，并询问未匹配的命令。始终允许会跳过命令审批提示。这两个选项均不会授予新的 MXC 文件夹权限，文件夹访问仍可能需要审批。",
   "settings.commandConsentNativeTools":
-    "命令审批适用于两种模式下的 exec。普通模式保留 OpenClaw 原生文件工具，这些工具不经过命令审批。MXC 模式禁用原生文件工具。",
+    "命令审批适用于两种模式下的 exec。OpenClaw 原生文件工具仍可使用，且不受命令审批和 MXC 文件夹权限限制。",
   "settings.commandConsentLiveUpdate": "更改会即时生效，无需重启网关。请先等待当前任务完成。",
   "settings.windowsNodeMxcOn": "开启",
   "settings.windowsNodeMxcAutomatic": "MicroClaw 会自动使用此电脑支持的保护方式。",
   "settings.windowsNodeMxcLearnMore": "了解有关沙盒隔离的更多信息",
-  "settings.windowsNodeMxcToggleUnavailable": "沙箱保护不可用或无法验证。请修复内置运行时后重试。",
+  "settings.windowsNodeMxcToggleUnavailable":
+    "此 Windows 安装不支持 MXC。命令将在没有 MXC 沙箱保护的情况下运行。",
+  "settings.windowsNodeMxcExecutionScope":
+    "MXC 仅保护 Windows Node 命令。网关原生工具、插件和通道可以访问 MXC 文件夹权限范围之外的文件。",
   "settings.windowsNodeMxcStatusRefreshing": "正在后台刷新 MXC 状态...",
   "settings.windowsNodeMxcStatusVerified": "上次验证时间：{time}",
   "perm.applyingFolders": "正在应用文件夹权限...",
   "perm.applyingDecision": "正在应用权限决定...",
   "settings.windowsNodeMxcStatusLoading": "正在检查 MXC 状态…",
-  "settings.windowsNodeMxcExperimental":
-    "应用自有无界面节点与固定版本的官方 MXC 0.7 运行时（安全框架议题 #202）",
+  "settings.windowsNodeMxcExperimental": "应用自有无界面节点与固定版本的官方 MXC 1.0 SDK",
   "settings.experimental": "实验性",
   "settings.windowsNodeMxcModeFull": "完整隔离",
   "settings.windowsNodeMxcFullBadge": "强边界",
   "settings.windowsNodeMxcModeFullDesc":
     "使用经证明的 MXC 文件系统边界。批准的文件夹构成排他的文件系统能力上限。",
-  "settings.windowsNodeMxcModeLimited": "有限隔离（DACL）",
-  "settings.windowsNodeMxcLimitedBadge": "有限",
-  "settings.windowsNodeMxcModeLimitedDesc": "完整 MXC 边界不可用时，使用基于 DACL 的文件系统隔离。",
-  "settings.windowsNodeMxcLimitedFilesystemWarning":
-    "额外文件夹授权是叠加式授权，并非排他允许列表。只读授权无法降低 Windows 环境 ACL 已允许的访问。",
   "settings.windowsNodeMxcModeOff": "关闭",
   "settings.windowsNodeMxcModeOffDesc":
     "关闭 MXC。智能体工具直接在 Windows 上执行，不使用执行沙箱。",
@@ -358,65 +357,34 @@ export default {
     "无执行沙箱：智能体工具可以访问当前 Windows 账号有权访问的资源。",
   "settings.windowsNodeMxcSelected": "已选择",
   "settings.windowsNodeMxcUseFull": "使用完整隔离",
-  "settings.windowsNodeMxcUseLimited": "使用有限隔离",
   "settings.windowsNodeMxcUseOff": "关闭隔离",
   "settings.windowsNodeMxcConsent.title": "启用{mode}？",
   "settings.windowsNodeMxcConsent.summary": "启用{mode}前，请确认以下安全影响。",
-  "settings.windowsNodeMxcConsent.group.disabled": "不可用",
-  "settings.windowsNodeMxcConsent.group.paused": "暂停",
-  "settings.windowsNodeMxcConsent.group.available-restricted": "受限保留",
-  "settings.windowsNodeMxcConsent.groupSummary.disabled":
-    "网关文件工具、浏览器自动化、MCP、屏幕/摄像头/位置/语音及网关内存。",
-  "settings.windowsNodeMxcConsent.groupSummary.paused":
-    "定时任务（不会补跑）及 Hooks/Webhook（返回 503 或丢弃事件，且不重放）。",
-  "settings.windowsNodeMxcConsent.groupSummary.available-restricted":
-    "exec 仅经 Windows Node、MXC 和命令审批；网关 web_search/web_fetch、允许列表内微信及已审查的画布 A2UI。",
+  "settings.windowsNodeMxcConsent.group.contained": "由 MXC 隔离",
+  "settings.windowsNodeMxcConsent.group.outside-mxc": "不受 MXC 隔离",
+  "settings.windowsNodeMxcConsent.groupSummary.contained":
+    "只有 Windows Node 命令执行会通过 MXC，并遵循已配置的文件夹授权。",
+  "settings.windowsNodeMxcConsent.groupSummary.outside-mxc":
+    "网关工具、频道、插件、定时任务和钩子仍保持启用，但不受 MXC 隔离。Canvas 使用 OpenClaw 标准路由连接受支持的已配对画布节点。",
+  "settings.windowsNodeMxcConsent.item.windows-node-exec":
+    "Windows Node exec 使用 MXC 隔离和命令审批流程。",
   "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
-    "禁用网关原生文件系统工具：read、write、edit 和 apply_patch。",
-  "settings.windowsNodeMxcConsent.item.browser-automation": "禁用浏览器自动化。",
-  "settings.windowsNodeMxcConsent.item.mcp": "禁用 MCP。",
-  "settings.windowsNodeMxcConsent.item.screen": "禁用屏幕访问。",
-  "settings.windowsNodeMxcConsent.item.camera": "禁用摄像头访问。",
-  "settings.windowsNodeMxcConsent.item.location": "禁用位置访问。",
-  "settings.windowsNodeMxcConsent.item.tts": "禁用文本转语音（TTS）。",
-  "settings.windowsNodeMxcConsent.item.stt": "禁用语音转文本（STT）。",
-  "settings.windowsNodeMxcConsent.item.gateway-memory":
-    "记忆搜索和记忆读取通过网关访问当前智能体范围内的记忆，不受 MXC 文件夹授权限制。通用文件系统工具仍被禁用。",
-  "settings.windowsNodeMxcConsent.item.cron":
-    "保留但暂停 Cron 和计划任务；隔离期间错过的任务不会补跑。",
-  "settings.windowsNodeMxcConsent.item.hooks-webhooks":
-    "暂停 Hooks 和 Webhook。Webhook 返回 503，内部事件被丢弃，之后均不会重放。",
-  "settings.windowsNodeMxcConsent.item.exec":
-    "exec 仅可通过应用自有 Windows 节点、MXC 策略和命令批准流程使用。",
-  "settings.windowsNodeMxcConsent.item.gateway-web":
-    "web_search 和仅限 HTTP(S) 的 web_fetch 仍可通过网关使用。",
-  "settings.windowsNodeMxcConsent.item.wechat-message":
-    "允许列表内的微信/message 仅在本地释放门控以及批准/媒体代理检查后可用。",
-  "settings.windowsNodeMxcConsent.item.canvas-phase-1":
-    "画布第一阶段仅保留已审查的原生 A2UI 操作。通用导航、脚本求值以及外部或本地内容仍不可用。",
+    "网关原生 read、write、edit 和 apply_patch 文件工具不受 MXC 沙箱保护，并使用网关帐户权限。",
+  "settings.windowsNodeMxcConsent.item.gateway-runtime":
+    "其他网关工具、频道、插件、定时任务和钩子不受 MXC 沙箱保护。",
+  "settings.windowsNodeMxcConsent.item.canvas":
+    "Canvas 使用 OpenClaw 标准路由连接受支持的已配对画布节点，不依赖 MXC 或应用自带的 Windows 节点。",
   "settings.windowsNodeMxcConsent.fullNote": "完整隔离提供排他文件系统边界，但仍需通过后端预检。",
-  "settings.windowsNodeMxcConsent.limitedNote":
-    "有限隔离叠加 DACL 授权，并非排他边界，需在原生后端重启确认中明确接受。",
-  "settings.windowsNodeMxcConsent.repeatNote": "每次切换沙箱保护只需一次原生后端重启确认。",
+  "settings.windowsNodeMxcConsent.repeatNote": "切换沙箱保护后，新命令会使用新设置，无需重启网关。",
   "settings.windowsNodeMxcConsent.enable": "启用 MXC",
   "settings.windowsNodeMxcRequestedMode": "请求的模式",
   "settings.windowsNodeMxcAttestedStrength": "经证明的实际强度",
   "settings.windowsNodeMxcAttestedTier": "经证明的实际层级",
-  "settings.windowsNodeMxcLimitedActive": "有限隔离已启用",
   "settings.windowsNodeMxcStatusActive": "已启用",
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "隔离 — 已关闭",
   "settings.windowsNodeMxcOffDisclosure": "MXC 已关闭。工具运行时不受 MXC 隔离保护。",
   "settings.windowsNodeMxcAvailabilityOnEnable": "开启沙箱时会检查其可用性。",
-  "settings.windowsNodeMxcHooksPausedBoth":
-    "MXC 处于已锁定或已激活状态时，Webhook 和内部钩子始终暂停。请求会被拒绝，内部事件会被丢弃，且均不会重放。",
-  "settings.windowsNodeMxcHooksPausedExternal":
-    "MXC 处于已锁定或已激活状态时，Webhook 始终暂停。请求会被拒绝且不会重放。",
-  "settings.windowsNodeMxcHooksPausedInternal":
-    "MXC 处于已锁定或已激活状态时，内部钩子始终暂停。事件会被丢弃且不会重放。",
-  "settings.windowsNodeMxcCanvasActive":
-    "画布第一阶段 — 已启用。仅限托管原生 A2UI；导航、脚本求值、本地文件和屏幕捕获仍不可用。",
-  "settings.windowsNodeMxcCanvasPaused": "已请求画布第一阶段，但在 MXC 达到“已启用”前不可用。",
   "settings.windowsNodeMxcSelectedNode": "已选择的本地 Windows 节点",
   "settings.windowsNodeMxcSelectNode": "请选择一个已配对的 Windows 节点",
   "settings.windowsNodeMxcEffective": "实际状态",
@@ -436,7 +404,6 @@ export default {
   "settings.windowsNodeMxcCompiledOut": "未编译",
   "settings.windowsNodeMxcVerified": "已验证",
   "settings.windowsNodeMxcUnverified": "未验证",
-  "settings.windowsNodeMxcDaclRequired": "需要 DACL 增强",
   "settings.windowsNodeMxcBundledHelper": "内置辅助程序",
   "settings.windowsNodeMxcRuntimeContract": "MXC 运行时 / 工作目录策略",
   "settings.windowsNodeMxcSettingsFingerprint": "设置指纹",
@@ -453,64 +420,28 @@ export default {
   "settings.windowsNodeMxcConnection": "连接 / 配对",
   "settings.windowsNodeMxcFolders": "MXC 全局批准文件夹",
   "settings.windowsNodeMxcFullFolders": "完整强边界批准文件夹",
-  "settings.windowsNodeMxcLimitedFolders": "有限模式额外文件系统授权",
   "settings.windowsNodeMxcConfiguredFolders": "已配置的 MXC 文件夹",
   "settings.windowsNodeMxcGrantReadWrite": "读写",
   "settings.windowsNodeMxcGrantReadOnly": "只读",
   "settings.windowsNodeMxcFoldersHint":
     "这些根目录是应用于每个受控命令的全局能力上限。声明仅说明预期用途，绝不会授予访问权限。默认向所有代理授予 OpenClawWorkspaces 的读写权限。独立的代理子文件夹不构成安全边界；你可以移除或修改此授权。",
-  "settings.windowsNodeMxcLimitedFoldersHint":
-    "这些授权会在有限模式中增加访问权限，并非排他允许列表。只读无法降低环境 Windows ACL 已提供的访问。默认向所有代理授予 OpenClawWorkspaces 的读写权限，包括其他代理的子文件夹。你可以移除或修改此授权。",
   "settings.windowsNodeMxcConfiguredFoldersHint":
-    "选择完整或有限隔离时将使用这些文件夹。默认向所有代理授予 OpenClawWorkspaces 的读写权限，包括其他代理的子文件夹。你可以移除或修改此授权。",
-  "settings.windowsNodeMxcAmbientAccess": "环境文件系统访问",
-  "settings.windowsNodeMxcAmbientBeforeGrants": "所选文件夹授权前的环境访问",
-  "settings.windowsNodeMxcAmbientExceptions":
-    "检测到继承的文件系统访问：{details}（{denied}/{total} 被拒绝）",
-  "settings.windowsNodeMxcAmbientContract": "证明契约",
-  "settings.windowsNodeMxcAmbientHash": "证明哈希",
-  "settings.windowsNodeMxcAmbientCheckedAt": "评估时间",
-  "settings.windowsNodeMxcAmbientAccessHint":
-    "此评估在 MicroClaw 添加所选文件夹授权之前运行。仅显示类别级证明；不会显示绝对路径。",
-  "settings.windowsNodeMxcAmbientUnavailable": "环境访问证明不可用。",
-  "settings.windowsNodeMxcAmbientCategory.desktop": "桌面",
-  "settings.windowsNodeMxcAmbientCategory.documents": "文档",
-  "settings.windowsNodeMxcAmbientCategory.downloads": "下载",
-  "settings.windowsNodeMxcAmbientCategory.microclaw-state": "MicroClaw 状态",
-  "settings.windowsNodeMxcAmbientCategory.openclaw-state": "OpenClaw 状态",
-  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state": "OpenClaw 漫游状态",
-  "settings.windowsNodeMxcAmbientCategory.ssh": "SSH",
-  "settings.windowsNodeMxcAmbientCategory.gnupg": "GnuPG",
-  "settings.windowsNodeMxcAmbientCategory.aws": "AWS 凭据",
-  "settings.windowsNodeMxcAmbientCategory.azure": "Azure 凭据",
-  "settings.windowsNodeMxcAmbientCategory.kube": "Kubernetes 凭据",
-  "settings.windowsNodeMxcAmbientCategory.gcloud": "Google Cloud 凭据",
-  "settings.windowsNodeMxcAmbientCategory.windows-credentials": "Windows 凭据",
-  "settings.windowsNodeMxcAmbientCategory.powershell-history": "PowerShell 历史记录",
-  "settings.windowsNodeMxcAmbientCategory.browser-chrome": "Chrome 数据",
-  "settings.windowsNodeMxcAmbientCategory.browser-edge": "Edge 数据",
-  "settings.windowsNodeMxcAmbientCategory.browser-brave": "Brave 数据",
-  "settings.windowsNodeMxcAmbientCategory.browser-firefox": "Firefox 数据",
-  "settings.windowsNodeMxcAmbientStatus.denied": "拒绝",
-  "settings.windowsNodeMxcAmbientStatus.read": "读取",
-  "settings.windowsNodeMxcAmbientStatus.read-write": "读写",
-  "settings.windowsNodeMxcFoldersLocked":
-    "请先禁用 Windows Node + MXC，再添加、更改或移除批准的文件夹。",
+    "启用沙箱时将使用这些文件夹。默认向所有代理授予 OpenClawWorkspaces 的读写权限，包括其他代理的子文件夹。你可以移除或修改此授权。",
   "settings.windowsNodeMxcFoldersStaged":
     "更改仅处于暂存状态。应用时将更新权限，网关保持运行。待处理的批准和运行中的受控命令将被取消。",
   "settings.windowsNodeMxcApplyChanges": "应用更改",
   "settings.windowsNodeMxcApplyFoldersImpact":
-    "更新文件夹权限时，新命令启动将短暂暂停。待处理的批准和运行中的受控命令将被取消，Canvas 将关闭。如果更新失败，执行将保持锁定。",
+    "更新文件夹权限时，新命令启动将短暂暂停。待处理的批准和运行中的受控命令将被取消。如果更新失败，执行将保持锁定。",
   "settings.windowsNodeMxcSaveFoldersImpact": "文件夹权限将保存，供启用沙盒隔离时使用。",
   "settings.commandConsentApplyImpact":
     "命令审批设置将更改为“{mode}”。应用新策略期间，新命令启动将短暂暂停。",
   "settings.windowsNodeMxcApplyFoldersBeforeRestart":
-    "将先应用文件夹更改，然后重启网关以更改沙盒隔离设置。运行中的任务将被中断。",
-  "settings.windowsNodeMxcApplyRestart": "更改沙盒隔离设置将重启网关并中断运行中的任务。",
+    "将先应用文件夹更改。更改沙箱设置会取消待处理的审批和运行中的节点命令，但不会重启网关。",
+  "settings.windowsNodeMxcApplyRestart":
+    "更改沙箱设置会取消待处理的审批和运行中的节点命令，但不会重启网关。",
   "settings.windowsNodeMxcApplyWithoutRestart": "网关不会重启。",
-  "settings.windowsNodeMxcApplyComplete": "安全设置更改已应用。",
   "settings.windowsNodeMxcChangesStale":
-    "确认期间，安全设置或正在运行的任务发生了变化。请检查待应用的更改，然后重新应用。",
+    "应用更改前，安全设置或正在运行的任务发生了变化。请检查待应用的更改，然后重新应用。",
   "settings.windowsNodeMxcChangesNotApplied": "无法验证请求的安全设置更改。请检查当前状态后重试。",
   "settings.windowsNodeMxcStagePreviousFolders": "暂存以前的策略",
   "settings.windowsNodeMxcLifecycle": "策略生命周期",
@@ -539,17 +470,9 @@ export default {
   "settings.windowsNodeMxcFolderNonlocal": "仅允许现有的本地磁盘文件夹；UNC 和设备路径会被拒绝。",
   "settings.windowsNodeMxcFolderMissing": "所选文件夹已不存在。",
   "settings.windowsNodeMxcFolderReparse": "包含联接、符号链接或其他重解析点的文件夹会被拒绝。",
-  "settings.windowsNodeMxcFolderSensitive":
-    "此文件夹与受保护的凭据、浏览器、SSH、云配置或 MicroClaw 状态根目录重叠。",
   "settings.windowsNodeMxcFolderAclFailed": "Windows 无法应用并验证文件夹访问策略。",
   "settings.windowsNodeMxcFolderNotConfigured": "此文件夹已不在配置中。",
   "settings.windowsNodeMxcFolderMutationFailed": "无法更新批准的文件夹策略。",
-  "settings.windowsNodeMxcLimitedAcknowledgeTitle": "启用有限文件系统隔离？",
-  "settings.windowsNodeMxcLimitedAcknowledgeBody":
-    "有限隔离依赖叠加式 Windows DACL 授权。它不是排他的文件系统允许列表，而且只读授权无法移除环境 ACL 已允许的访问。",
-  "settings.windowsNodeMxcLimitedAcknowledgeCheckbox":
-    "我理解这些文件系统限制，并希望启用有限隔离。",
-  "settings.windowsNodeMxcEnableLimited": "启用有限隔离",
   "settings.windowsNodeMxcNoDurableApprovals": "尚未记住任何精确命令。",
   "settings.windowsNodeMxcRevokeApproval": "撤销",
   "settings.windowsNodeMxcRevokeAllApprovals": "全部撤销",
@@ -573,7 +496,8 @@ export default {
   "settings.sandboxDirsRO": "只读",
   "settings.sandboxAddDir": "添加文件夹",
   "settings.sandboxNoDirs": "暂无自定义目录",
-  "settings.sandboxChildrenRemoved": "已自动移除 {count} 个被上级目录覆盖的子目录。",
+  "settings.windowsNodeMxcFolderOverlapHint":
+    "文件夹路径重叠时，以所选的最具体文件夹的权限为准。受保护的路径仍可能被拒绝访问。",
   "settings.cap.internetClient": "允许出站网络访问",
   "settings.cap.internetClientServer": "入站和出站网络（internetClientServer）",
   "settings.cap.privateNetworkClientServer": "私有网络或局域网（privateNetworkClientServer）",
@@ -628,6 +552,7 @@ export default {
   "settings.searchSettingsSaved": "联网搜索设置已保存",
   "settings.searchConfigured": "已配置",
   "settings.searchNotConfigured": "未配置",
+  "settings.enableWebSearch": "启用搜索",
   "settings.searchDefault": "默认",
   "settings.searchApiKeyRequired": "需要 API 密钥",
   "settings.searchApiKeyFormatInvalid": "请检查密钥格式",
@@ -842,6 +767,7 @@ export default {
   "setup.reasoningAdaptive": "Adaptive",
   "setup.finishAndEnter": "保存并进入系统",
   "setup.enterApiKey": "请输入 API Key",
+  "setup.checkFailed": "无法检查设置状态：{error}",
   "setup.saveFailed": "保存失败: {error}",
 
   // ── ModelSetupDialog ──
@@ -1077,11 +1003,6 @@ export default {
   "tasks.colLastRun": "上次运行",
   "tasks.enabled": "启用",
   "tasks.disabled": "禁用",
-  "tasks.pausedByMxc": "已由 MXC 暂停",
-  "tasks.mxcPausedTitle": "MXC 已暂停定时任务",
-  "tasks.mxcPausedDesc":
-    "已保存的任务会保留。MXC 开启期间无法修改或立即运行；关闭 MXC 后，原本启用的任务会从下一个未来计划时间恢复，不会补跑错过的任务。",
-
   // ── Common ──
   "common.cancel": "取消",
   "common.close": "关闭",
@@ -1109,7 +1030,6 @@ export default {
   "perm.titleCommand": "你的智能体希望运行以下命令",
   "perm.titleApp": "需要确认外部应用启动",
   "perm.titleMxc": "MXC 沙箱命令授权",
-  "perm.titleMxcLimited": "有限文件系统隔离",
   "perm.deny": "拒绝",
   "perm.allow": "允许",
   "perm.allowOnce": "允许一次",
@@ -1138,9 +1058,7 @@ export default {
   "perm.phoneUnconfirmed": "手机送达状态未确认。请在此决策；不会自动重发。",
   "perm.mxcResolutionUnconfirmed": "无法确认权限决策。不会自动重试；请查看当前请求状态。",
   "perm.mxcDurableNotSaved": "当前一次性决策已接受，但未能保存 Windows Node 允许列表条目。",
-  "perm.mxcLimitedDesc": "AI 助手想使用有限文件系统隔离运行此命令。",
   "perm.mxcAccessLabel": "声明的文件夹用途",
-  "perm.mxcAdditionalAccessLabel": "额外文件系统授权",
   "perm.mxcAccessRo": "只读",
   "perm.mxcAccessRw": "读写",
   "perm.mxcCwdLabel": "规范化工作目录",
@@ -1151,10 +1069,6 @@ export default {
   "perm.mxcScopeNoAccess":
     "批准此命令在 MXC 内使用所示工作目录运行。记住命令使用 Windows Node 的可执行文件和参数允许列表，适用于此智能体的所有对话，不绑定工作目录。",
   "perm.mxcScopeNoAccessOnce": "批准仅授权此命令本身在 MXC 内使用所示规范化工作目录运行。",
-  "perm.mxcLimitedScope":
-    "额外文件夹授权是叠加式授权，并非排他边界。记住命令使用 Windows Node 的可执行文件和参数允许列表，适用于此智能体的所有对话，不绑定工作目录或文件夹。",
-  "perm.mxcLimitedScopeOnce":
-    "此批准仅授权本次命令。额外文件夹授权是叠加式授权，并非排他允许列表。",
   "perm.mxcPowerShellScope":
     "PowerShell 的逻辑 $PWD 为 MicroClawCwd:\\，物理工作目录如上。此命令包含精确初始化，不增加文件访问权限。",
   "perm.riskRead": "低风险：智能体只能查看该文件夹中的文件。",
@@ -1163,7 +1077,6 @@ export default {
   "perm.riskCommandRW": "高风险：该命令可能修改文件或系统状态。",
   "perm.riskApp": "高风险：该应用将在沙箱外运行。",
   "perm.riskMxc": "由 MXC 隔离：允许前请检查命令和声明的文件夹用途。",
-  "perm.riskMxcLimited": "有限文件系统隔离：允许前请检查命令和额外请求的授权。",
   "perm.commandLabel": "命令",
   "perm.allowAlways": "始终允许",
   "perm.mxcAllowAlways": "为此智能体记住",

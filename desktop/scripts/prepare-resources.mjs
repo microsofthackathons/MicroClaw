@@ -98,10 +98,7 @@ if (!coreReady) {
       throw new Error("Staged OpenClaw version mismatch");
     const targets = validatePinnedOpenClawApprovalPackage(packageDir, {
       approval: true,
-      cronPause: true,
       cronResume: true,
-      hooksPause: true,
-      canvasPhase1: true,
     });
     for (const target of targets) {
       const checked = spawnSync(process.execPath, ["--check", "--input-type=module"], {

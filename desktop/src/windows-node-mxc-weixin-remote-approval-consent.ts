@@ -26,12 +26,14 @@ export async function planWeixinRemoteApprovalNativeTransition(params: {
   currentConfiguration: WeixinRemoteApprovalConfiguration;
   readOptions: () => WeixinRemoteApprovalActivationOptions;
 }): Promise<{
-  limitedFilesystemAcknowledged: boolean;
   enrollmentDisabledReason: string | null;
   selection: WeixinRemoteApprovalActivationSelection | undefined;
   plan: WeixinRemoteApprovalTransitionPlan;
 }> {
   assertNativeWeixinRemoteApprovalAuthority(params.request);
+  if (params.currentMode === "limited-dacl" || params.requestedMode === "limited-dacl") {
+    throw new Error("The retired DACL selection must be migrated to Full before use");
+  }
   let options = params.requestedMode !== "off" ? params.readOptions() : undefined;
   const enrollWeixin =
     params.currentMode === "off" &&
@@ -59,7 +61,6 @@ export async function planWeixinRemoteApprovalNativeTransition(params: {
     }
   }
   return {
-    limitedFilesystemAcknowledged: params.requestedMode === "limited-dacl",
     enrollmentDisabledReason,
     selection,
     plan: planWeixinRemoteApprovalTransition({

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { checkWindowsNodeMxcHealth } from "./windows-node-mxc-health-check";
+import { MxcStatusContextChangedError } from "./windows-node-mxc-status-cache";
 import {
   WindowsNodeMxcLifecycleOperationCoordinator,
   type WindowsNodeMxcLifecycleOperationDescriptor,
@@ -8,13 +9,12 @@ import type { WindowsNodeMxcRuntimeStatus } from "./windows-node-mxc-service";
 
 type HealthStatus = Pick<
   WindowsNodeMxcRuntimeStatus,
-  "effectiveEnabled" | "effectiveToolsState" | "gatewayPolicyState" | "blockers"
+  "effectiveEnabled" | "gatewayPolicyState" | "blockers"
 >;
 
 function status(effectiveEnabled = true): HealthStatus {
   return {
     effectiveEnabled,
-    effectiveToolsState: "verified",
     gatewayPolicyState: "active",
     blockers: effectiveEnabled ? [] : ["The bundled node does not hold an active activation lease"],
   };
@@ -164,6 +164,28 @@ describe("MXC health checks across live transitions", () => {
       expect(f.hooks.failClosed).toHaveBeenCalledOnce();
     },
   );
+
+  it("retries a stale MXC inspection against the refreshed state", async () => {
+    const f = fixture();
+    f.hooks.inspect
+      .mockRejectedValueOnce(new MxcStatusContextChangedError())
+      .mockResolvedValueOnce(status());
+    await expect(checkWindowsNodeMxcHealth(f.hooks)).resolves.toBe(true);
+    expect(f.hooks.inspect).toHaveBeenCalledTimes(2);
+    expect(f.hooks.renewLease).toHaveBeenCalledOnce();
+    expect(f.hooks.failClosed).not.toHaveBeenCalled();
+  });
+
+  it("fails closed after bounded retries when MXC status keeps changing", async () => {
+    const f = fixture();
+    f.hooks.inspect.mockRejectedValue(new MxcStatusContextChangedError());
+    await expect(checkWindowsNodeMxcHealth(f.hooks)).resolves.toBe(false);
+    expect(f.hooks.inspect).toHaveBeenCalledTimes(3);
+    expect(f.hooks.failClosed).toHaveBeenCalledExactlyOnceWith(
+      "Health attestation remained unstable after refreshing the current MXC state",
+    );
+    expect(f.hooks.renewLease).not.toHaveBeenCalled();
+  });
 
   it("surfaces recovery failure without attempting a second fail-closed operation", async () => {
     const f = fixture();

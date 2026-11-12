@@ -41,6 +41,7 @@ const LifecycleConsumer = defineComponent({
 describe("App MXC loading gate with the real Gateway store", () => {
   let lifecycle: (state: LifecycleState) => void;
   let serviceReady: () => void;
+  let gatewayStatus: Parameters<OpenClawAPI["gateway"]["onStatus"]>[0];
   let status: MxcStatus;
   let sequence: number;
   let displayStatus: Parameters<OpenClawAPI["windowsNodeMxc"]["onDisplayStatus"]>[0];
@@ -114,6 +115,10 @@ describe("App MXC loading gate with the real Gateway store", () => {
       serviceReady = callback;
       return vi.fn();
     });
+    vi.spyOn(window.openclaw.gateway, "onStatus").mockImplementation((callback) => {
+      gatewayStatus = callback;
+      return vi.fn();
+    });
     vi.spyOn(window.openclaw.windowsNodeMxc, "onApprovalRequest").mockImplementation((callback) => {
       approvalRequest = callback;
       return vi.fn();
@@ -146,6 +151,33 @@ describe("App MXC loading gate with the real Gateway store", () => {
     activityWrapper?.unmount();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("opens initial setup instead of waiting for a Gateway when no configuration exists", async () => {
+    vi.spyOn(window.openclaw.config, "initialSetupRequired").mockResolvedValue(true);
+    vi.spyOn(window.openclaw.gateway, "isServiceReady").mockResolvedValue(false);
+    const SetupFixture = defineComponent({
+      name: "SetupFixture",
+      render: () => h("div", { "data-testid": "initial-setup" }, "Initial setup"),
+    });
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/chat", component: defineComponent({ render: () => h("div") }) },
+        { path: "/setup", component: SetupFixture },
+      ],
+    });
+    await router.push("/chat");
+    wrapper = shallowMount(App, {
+      global: {
+        plugins: [createPinia(), router],
+        stubs: { RouterView: false, SetupFixture: false, GatewayLoading: false },
+      },
+    });
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/setup");
+    expect(wrapper.find('[data-testid="initial-setup"]').exists()).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
   });
 
   async function mountReadyApp(realPermissionDialog = false) {
@@ -230,6 +262,113 @@ describe("App MXC loading gate with the real Gateway store", () => {
     expect(wrapper.find(".app-layout").exists()).toBe(true);
   });
 
+  it("shows loading only while enabling MXC and invalidates stale approvals", async () => {
+    const { gateway, chat } = await mountReadyApp();
+    const epoch = gateway.readinessEpoch;
+    const settingsInstance = wrapper.findComponent(SettingsView).vm.$.uid;
+    status = { ...status, requestedMode: "full", desiredEnabled: true };
+    emitPhase("active");
+    await approvalRequest(permission("before-switch"));
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe(
+      "before-switch",
+    );
+
+    for (const phase of ["disabling", "starting-standard"] as const) {
+      emitPhase(phase);
+      await flushPromises();
+      expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+      expect(wrapper.find(".app-layout").attributes("style") ?? "").not.toContain("display: none");
+      expect(gateway.ready).toBe(true);
+      expect(chat.wsConnected).toBe(true);
+    }
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+    await approvalRequest(permission("late-old-approval"));
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+
+    status = { ...status, requestedMode: "off", desiredEnabled: false };
+    emitPhase("idle");
+    await approvalRequest(permission("off-approval"));
+    await flushPromises();
+    expect(wrapper.findComponent(PermissionDialog).props("request")?.requestId).toBe(
+      "off-approval",
+    );
+    for (const phase of ["validating", "locking", "starting-locked", "promoting-active"] as const) {
+      emitPhase(phase);
+      await flushPromises();
+      expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
+      expect(wrapper.findComponent(SettingsView).vm.$.uid).toBe(settingsInstance);
+      expect(wrapper.findComponent(GatewayLoading).exists()).toBe(true);
+      expect(wrapper.find(".app-layout").attributes("style")).toContain("display: none");
+      expect(gateway.ready).toBe(true);
+      expect(chat.wsConnected).toBe(true);
+    }
+    expect(wrapper.findComponent(PermissionDialog).props("request")).toBeNull();
+    status = { ...status, requestedMode: "full", desiredEnabled: true };
+    emitPhase("active");
+    await flushPromises();
+    expect(gateway.readinessEpoch).toBe(epoch);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    expect(wrapper.find(".app-layout").attributes("style") ?? "").not.toContain("display: none");
+    expect(wrapper.findComponent(SettingsView).vm.$.uid).toBe(settingsInstance);
+  });
+
+  it("does not reopen loading for a stale activation event after returning to Off", async () => {
+    const { gateway } = await mountReadyApp();
+    emitPhase("validating");
+    await flushPromises();
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(true);
+    emitPhase("idle");
+    await flushPromises();
+    lifecycle({
+      phase: "validating",
+      detail: null,
+      updatedAt: new Date(500).toISOString(),
+    });
+    await flushPromises();
+    expect(gateway.ready).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    expect(wrapper.find(".app-layout").attributes("style") ?? "").not.toContain("display: none");
+  });
+
+  it("still shows the startup page for a genuine Gateway restart", async () => {
+    const { gateway, chat } = await mountReadyApp();
+    gateway.status = "running";
+    gatewayStatus("restarting");
+    await flushPromises();
+    expect(gateway.ready).toBe(false);
+    expect(chat.wsConnected).toBe(false);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(true);
+  });
+
+  it("finishes initial startup when service readiness arrived during a mode transition", async () => {
+    status.lifecycleState = {
+      phase: "starting-locked",
+      detail: null,
+      updatedAt: new Date(0).toISOString(),
+    };
+    vi.spyOn(window.openclaw.gateway, "isServiceReady").mockResolvedValue(true);
+    const pinia = createPinia();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/chat", component: defineComponent({ render: () => h("div") }) }],
+    });
+    await router.push("/chat");
+    wrapper = shallowMount(App, {
+      global: { plugins: [pinia, router], stubs: { GatewayLoading: false } },
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(650);
+    expect(useGatewayStore(pinia).ready).toBe(false);
+
+    emitPhase("active");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(650);
+    await flushPromises();
+    expect(useGatewayStore(pinia).ready).toBe(true);
+  });
+
   it("provides lifecycle events to descendants without accepting stale status snapshots", async () => {
     await mountReadyApp();
     lifecycle({
@@ -258,32 +397,21 @@ describe("App MXC loading gate with the real Gateway store", () => {
     expect(window.openclaw.windowsNodeMxc.getStatus).toHaveBeenCalledTimes(calls);
   });
 
-  it("keeps the Off transition separate from pending or failed status display", async () => {
-    const { gateway } = await mountReadyApp();
+  it("keeps the current page visible across Off transitions and pending status refreshes", async () => {
+    const { gateway, chat } = await mountReadyApp();
     status = { ...status, requestedMode: "full", desiredEnabled: true };
     emitPhase("active");
     await flushPromises();
     emitPhase("disabling");
     await flushPromises();
-    const setEnabled = vi
-      .spyOn(window.openclaw.windowsNodeMxc, "setEnabled")
-      .mockResolvedValue(null);
-    vi.spyOn(window.openclaw.windowsNodeMxc, "getDisplayStatus").mockResolvedValue({
-      status: null,
-      verifiedAt: null,
-      refreshing: true,
-      error: null,
-    });
-    wrapper.findComponent(GatewayLoading).vm.$emit("disable-mxc");
-    await flushPromises();
-    expect(setEnabled).toHaveBeenCalledExactlyOnceWith({ enabled: false });
-    expect(gateway.ready).toBe(false);
-    expect(wrapper.findComponent(GatewayLoading).props("mxcDesired")).toBe(false);
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
+    expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
 
     displayStatus({ status: null, verifiedAt: null, refreshing: false, error: "Status failed" });
     await flushPromises();
     expect(gateway.lastError).toContain("MXC status: Status failed");
-    expect(gateway.ready).toBe(false);
+    expect(gateway.ready).toBe(true);
 
     status = { ...status, requestedMode: "off", desiredEnabled: false };
     emitPhase("idle");
@@ -514,6 +642,8 @@ describe("App MXC loading gate with the real Gateway store", () => {
     "does not optimistically change readiness after a loading-screen %s request",
     async (action) => {
       const { gateway, chat } = await mountReadyApp();
+      gateway.resetReady();
+      chat.wsConnected = false;
       status = { ...status, requestedMode: "full", desiredEnabled: true };
       emitPhase("locking");
       await flushPromises();
@@ -569,17 +699,13 @@ describe("App MXC loading gate with the real Gateway store", () => {
     },
   );
 
-  it("confirms Apply and auto-enrolls the eligible owner without durable consent", async () => {
+  it("applies without a popup and auto-enrolls the eligible owner without durable consent", async () => {
     const confirmation = vi.spyOn(ElMessageBox, "confirm");
     const bridge = useNativeMainBridge();
     await mountReadyApp();
     await requestFullActivation();
     expect(bridge).toHaveBeenCalledExactlyOnceWith({ enabled: true });
-    expect(confirmation).toHaveBeenCalledWith(
-      expect.stringContaining("restart the Gateway"),
-      "Apply changes",
-      expect.any(Object),
-    );
+    expect(confirmation).not.toHaveBeenCalled();
     expect(persist).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         action: "persist",
@@ -653,7 +779,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
     expect(persist).not.toHaveBeenCalled();
   });
 
-  it("tracks Off validation and only recovers after main confirms standard service readiness", async () => {
+  it("restores the page and surfaces an activation failure even while the selected mode is Off", async () => {
     let reject!: (error: Error) => void;
     vi.spyOn(window.openclaw.windowsNodeMxc, "setEnabled").mockImplementation((params) => {
       structuredClone(params);
@@ -664,59 +790,70 @@ describe("App MXC loading gate with the real Gateway store", () => {
     const errorMessage = vi.spyOn(ElMessage, "error");
     const { gateway, chat } = await mountReadyApp();
     await requestFullActivation();
+    emitPhase("validating", "Checking MXC availability");
     emitPhase("locking");
-    emitPhase("validating", "Assessing Limited-mode ambient filesystem access");
     await flushPromises();
     expect(status.requestedMode).toBe("off");
-    expect(gateway.ready).toBe(false);
-    expect(chat.wsConnected).toBe(false);
-    const loading = wrapper.findComponent(GatewayLoading);
-    expect(loading.props("mxcDesired")).toBe(false);
-    expect(loading.find(".loading-status").text()).toContain("Validating policy");
-    expect(loading.find(".loading-mxc-detail").text()).toContain("ambient filesystem access");
-    expect(loading.find(".loading-status").text()).not.toContain("90%");
-    emitPhase("failed", "ambient assessment timed out after 180000ms");
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(true);
+    expect(wrapper.find(".app-layout").attributes("style")).toContain("display: none");
+    expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
+    emitPhase("failed", "MXC activation failed before the mode was saved");
     await flushPromises();
-    expect(gateway.lastError).toContain("ambient assessment timed out");
-    emitPhase("starting-standard");
-    await flushPromises();
-    expect(gateway.ready).toBe(false);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    expect(wrapper.find(".app-layout").attributes("style") ?? "").not.toContain("display: none");
+    expect(gateway.lastError).toContain("MXC activation failed");
+    expect(wrapper.get(".app-security-alert").text()).toContain("MXC activation failed");
     emitPhase("idle");
     await flushPromises();
-    expect(gateway.ready).toBe(false);
+    expect(gateway.ready).toBe(true);
     serviceReady();
     await flushPromises();
     await vi.advanceTimersByTimeAsync(650);
     await flushPromises();
     expect(gateway.ready).toBe(true);
     expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
-    reject(new Error("ambient assessment timed out after 180000ms"));
+    reject(new Error("MXC activation failed before the mode was saved"));
     await flushPromises();
-    expect(errorMessage).toHaveBeenCalledWith("ambient assessment timed out after 180000ms");
+    expect(errorMessage).toHaveBeenCalledWith("MXC activation failed before the mode was saved");
     expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
   });
 
-  it("shows turning Off rather than Full containment starting before the mode snapshot refreshes", async () => {
+  it("returns to the existing page if activation preflight fails before locking", async () => {
+    const { gateway, chat } = await mountReadyApp();
+    const epoch = gateway.readinessEpoch;
+    const settingsInstance = wrapper.findComponent(SettingsView).vm.$.uid;
+    emitPhase("validating");
+    await flushPromises();
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(true);
+    emitPhase("idle");
+    await flushPromises();
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    expect(wrapper.find(".app-layout").attributes("style") ?? "").not.toContain("display: none");
+    expect(wrapper.findComponent(SettingsView).vm.$.uid).toBe(settingsInstance);
+    expect(gateway.readinessEpoch).toBe(epoch);
+    expect(chat.wsConnected).toBe(true);
+  });
+
+  it("keeps the page visible while the Off mode snapshot is still refreshing", async () => {
     const { gateway, chat } = await mountReadyApp();
     status = { ...status, requestedMode: "full", desiredEnabled: true };
     emitPhase("active");
     await flushPromises();
     emitPhase("disabling");
     await flushPromises();
-    expect(gateway.ready).toBe(false);
-    expect(chat.wsConnected).toBe(false);
-    const loading = wrapper.findComponent(GatewayLoading);
-    expect(loading.props("mxcDesired")).toBe(true);
-    expect(loading.find(".loading-status").text()).toContain("Turning off MXC");
-    expect(loading.find(".loading-mxc-strength").exists()).toBe(false);
+    expect(gateway.ready).toBe(true);
+    expect(chat.wsConnected).toBe(true);
+    expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);
+    expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
     emitPhase("starting-standard");
     await flushPromises();
-    expect(loading.find(".loading-status").text()).toContain("Starting normal mode (MXC Off)");
-    expect(loading.find(".loading-mxc-strength").exists()).toBe(false);
+    expect(wrapper.findComponent(SettingsView).exists()).toBe(true);
     status = { ...status, requestedMode: "off", desiredEnabled: false };
     emitPhase("idle");
     await flushPromises();
-    expect(gateway.ready).toBe(false);
+    expect(gateway.ready).toBe(true);
     serviceReady();
     await flushPromises();
     await vi.advanceTimersByTimeAsync(650);
@@ -771,8 +908,7 @@ describe("App MXC loading gate with the real Gateway store", () => {
     },
   );
 
-  it("forwards prepared provider metadata and full command into one ready Limited prompt", async () => {
-    status.requestedMode = "limited-dacl";
+  it("forwards prepared provider metadata and full command into one ready prompt", async () => {
     const { gateway } = await mountReadyApp();
     const command =
       "[void]'microclaw.powershell-filesystem-scope.v1';exact-initialization;Remove-Item";
@@ -794,7 +930,6 @@ describe("App MXC loading gate with the real Gateway store", () => {
     expect(prompts[0].props("request")).toMatchObject({
       command,
       providerInitialization: metadata,
-      containmentStrength: "limited-dacl",
     });
     expect(gateway.ready).toBe(true);
     expect(wrapper.findComponent(GatewayLoading).exists()).toBe(false);

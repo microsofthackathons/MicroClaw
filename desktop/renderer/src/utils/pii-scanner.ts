@@ -109,9 +109,14 @@ export function scanPii(text: string, options: ScanOptions = {}): PiiMatch[] {
     }
   }
 
-  // Sort by position
-  matches.sort((a, b) => a.start - b.start);
-  return matches;
+  // Prefer the longest match at each start, then discard overlaps before redaction.
+  matches.sort((a, b) => a.start - b.start || b.end - a.end);
+  const nonOverlapping: PiiMatch[] = [];
+  for (const match of matches) {
+    const previous = nonOverlapping[nonOverlapping.length - 1];
+    if (!previous || match.start >= previous.end) nonOverlapping.push(match);
+  }
+  return nonOverlapping;
 }
 
 /**

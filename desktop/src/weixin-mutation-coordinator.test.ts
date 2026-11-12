@@ -72,11 +72,15 @@ describe("WeChat account mutation versus MXC activation", () => {
     expect(() => coordinator.requireQr()).not.toThrow();
   });
 
-  it("wires the actual main active/transition guard before every account mutation and activation", () => {
+  it("uses the Off-mode guard and readiness-gated MXC path for account mutations", () => {
     const source = readFileSync(path.join(process.cwd(), "src", "main.ts"), "utf8");
-    expect(source).toContain(
-      "isWindowsNodeMxcDesired() || windowsNodeMxcSecurityTransitionInProgress",
+    const accountChange = source.slice(
+      source.indexOf("async function beginWindowsNodeMxcWeixinAccountChange("),
+      source.indexOf("function getWeixinMutationLock("),
     );
+    expect(accountChange).toContain("if (!isWindowsNodeMxcDesired())");
+    expect(accountChange).toContain("assertWindowsNodeMxcConfigurationMutable()");
+    expect(accountChange).toContain("requireEffectiveWindowsNodeMxc(true)");
     for (const action of ["set-enabled", "login"]) {
       const start = source.indexOf(`"plugin:weixin:${action}"`);
       const block = source.slice(start, start + 800);

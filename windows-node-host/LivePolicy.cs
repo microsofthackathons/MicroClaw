@@ -66,12 +66,17 @@ internal sealed class LivePolicyReader(string filePath, string publicKey, string
         runtimePolicy.Remove("approvedRoots");
         runtimePolicy.Remove("commandConsentMode");
         runtimePolicy.Remove("livePolicyEpoch");
+        runtimePolicy.Remove("requestedStrength");
+        runtimePolicy.Remove("effectiveTier");
         if (_runtimePolicy is not null && !JsonNode.DeepEquals(_runtimePolicy, runtimePolicy))
-            throw new HostPolicyException("live-policy-runtime-change", "Only folder grants and command consent may change in a live policy.");
+            throw new HostPolicyException("live-policy-runtime-change", "Only sandbox mode, folder grants and command consent may change in a live policy.");
         var policy = HostPolicy.Parse(Encoding.UTF8.GetBytes(policyJson));
         if (_current is not null && policy.CommandConsentMode != _current.Policy.CommandConsentMode
             && value["approval"] is not null)
             throw new HostPolicyException("live-policy-consent-approval", "A command consent update cannot bridge a previous approval.");
+        if (_current is not null && policy.RequestedStrength != _current.Policy.RequestedStrength
+            && value["approval"] is not null)
+            throw new HostPolicyException("live-policy-mode-approval", "A sandbox mode update cannot bridge a previous approval.");
         _runtimePolicy ??= runtimePolicy;
         if (epoch.HasValue) _policyEpochs.Add(epoch.Value);
         _current = new LivePolicySnapshot(revision, fingerprint, policy, payload);
@@ -84,7 +89,6 @@ internal sealed class LivePolicyCapabilities : IDisposable
 {
     private readonly HostBootstrap _bootstrap;
     private readonly LivePolicyReader _reader;
-    private readonly Func<JsonObject, Task<bool>> _sendEvent;
     private readonly ProcessTreeJob _processTreeJob;
     private readonly SemaphoreSlim _updateGate = new(1, 1);
     private readonly object _gate = new();
@@ -92,20 +96,16 @@ internal sealed class LivePolicyCapabilities : IDisposable
     private CancellationTokenSource _generationCancellation = new();
     private LivePolicySnapshot? _snapshot;
     private BundledSystemCapability? _system;
-    private BundledCanvasCapability? _canvas;
-    private CanvasHostBroker? _broker;
     private bool _locked = true;
     private ExecApprovalsStore? _consentStore;
     private CommandConsent? _consent;
     private string? _appliedConsentMode;
 
-    public LivePolicyCapabilities(HostBootstrap bootstrap, Func<JsonObject, Task<bool>> sendEvent,
-        ProcessTreeJob processTreeJob)
+    public LivePolicyCapabilities(HostBootstrap bootstrap, ProcessTreeJob processTreeJob)
     {
         _bootstrap = bootstrap;
         _reader = new LivePolicyReader(
             bootstrap.LivePolicyPath, bootstrap.LivePolicyPublicKey, bootstrap.GatewayGeneration);
-        _sendEvent = sendEvent;
         _processTreeJob = processTreeJob;
     }
 
@@ -126,7 +126,6 @@ internal sealed class LivePolicyCapabilities : IDisposable
 
     public INodeCapability System => new Proxy(this, "system",
         ["system.run", ReadinessProbeContract.Command, "system.run.prepare", "system.which", "system.run.cwd-policy"]);
-    public INodeCapability Canvas => new Proxy(this, "canvas", CanvasPhase1Policy.Commands);
 
     private async Task SynchronizeAsync()
     {
@@ -145,8 +144,10 @@ internal sealed class LivePolicyCapabilities : IDisposable
             await _generationCancellation.CancelAsync();
             // A revoked grant must not survive in an already-created container.
             await Task.WhenAll(running).WaitAsync(TimeSpan.FromSeconds(30));
-            _broker?.Dispose();
+            if (_system is not null)
+                await _system.WaitForOwnedOperationsAsync().WaitAsync(TimeSpan.FromSeconds(30));
             await _processTreeJob.EnsureNoChildProcessesAsync();
+            _system?.Dispose();
             _generationCancellation.Dispose();
             _generationCancellation = new CancellationTokenSource();
             if (_appliedConsentMode != next.Policy.CommandConsentMode)
@@ -160,10 +161,6 @@ internal sealed class LivePolicyCapabilities : IDisposable
             var lease = new ActivationLeaseGuard(
                 _bootstrap.ActivationLeasePath, _bootstrap.ActivationLeaseSecret,
                 _bootstrap.GatewayGeneration, next.Fingerprint);
-            _broker = new CanvasHostBroker(
-                next.Policy, _bootstrap.ActivationLeasePath, _bootstrap.ActivationLeaseSecret,
-                _bootstrap.GatewayGeneration, next.Fingerprint, _bootstrap.NodeId,
-                _bootstrap.UiLocale, lease, _sendEvent);
             _system = new BundledSystemCapability(
                 next.Policy, _bootstrap.ApprovalPipeName, _bootstrap.ApprovalsPath, lease,
                 _bootstrap.UiLocale,
@@ -174,7 +171,6 @@ internal sealed class LivePolicyCapabilities : IDisposable
                     _bootstrap.ReadinessTransitionId),
                 policyFingerprint: next.Fingerprint,
                 commandConsent: _consent);
-            _canvas = new BundledCanvasCapability(_broker, lease);
             lock (_gate)
             {
                 _snapshot = next;
@@ -197,7 +193,7 @@ internal sealed class LivePolicyCapabilities : IDisposable
     }
 
     private async Task<NodeInvokeResponse> ExecuteAsync(
-        bool canvas, NodeInvokeRequest request, CancellationToken cancellationToken)
+        NodeInvokeRequest request, CancellationToken cancellationToken)
     {
         try
         {
@@ -219,9 +215,7 @@ internal sealed class LivePolicyCapabilities : IDisposable
                     };
                 linked = CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken, _generationCancellation.Token);
-                task = canvas
-                    ? _canvas!.ExecuteAsync(request, linked.Token)
-                    : _system!.ExecuteAsync(request, linked.Token);
+                task = _system!.ExecuteAsync(request, linked.Token);
                 _running.Add(task);
             }
             try { return await task; }
@@ -241,7 +235,7 @@ internal sealed class LivePolicyCapabilities : IDisposable
     public void Dispose()
     {
         _generationCancellation.Cancel();
-        _broker?.Dispose();
+        _system?.Dispose();
         _consentStore?.Dispose();
     }
 
@@ -254,6 +248,6 @@ internal sealed class LivePolicyCapabilities : IDisposable
         public Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request) =>
             ExecuteAsync(request, CancellationToken.None);
         public Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request, CancellationToken cancellationToken) =>
-            owner.ExecuteAsync(category == "canvas", request, cancellationToken);
+            owner.ExecuteAsync(request, cancellationToken);
     }
 }

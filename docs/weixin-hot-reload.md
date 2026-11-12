@@ -10,6 +10,10 @@ Gateway or override Windows Node + MXC isolation policy.
 Registration does not load the outbound hook runtimes. Those SDK imports are
 deferred until outbound work, while the message monitor remains lazily loaded
 when an authenticated account starts. QR rendering is also loaded on demand.
+The pinned Zod dependency in the packaged WeChat runtime retains its JavaScript
+and CommonJS exports but omits TypeScript sources and declarations. OpenClaw
+still verifies every included file; this avoids capturing development-only
+files during Gateway startup.
 The app window is created before Gateway startup; no new startup network probe
 is added. Best-effort WeChat start/stop notifications have a two-second budget.
 

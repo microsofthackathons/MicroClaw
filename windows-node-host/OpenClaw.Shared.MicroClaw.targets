@@ -1,0 +1,6 @@
+<Project>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'OpenClaw.Shared'">
+    <!-- Bind MicroClaw's signed approval and activation lease to upstream's final-launch check. -->
+    <InternalsVisibleTo Include="microclaw-windows-node-host" />
+  </ItemGroup>
+</Project>

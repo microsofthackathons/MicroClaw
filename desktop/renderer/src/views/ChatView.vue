@@ -124,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from "vue";
 import { ElMessage } from "element-plus";
 import {
   modelAuthRecoveryInitialFamily,
@@ -134,6 +134,10 @@ import {
 } from "@/stores/chat";
 import { useAgentStore } from "@/stores/agents";
 import { t } from "@/i18n";
+import {
+  isWindowsNodeMxcExecutionBlocked,
+  windowsNodeMxcLifecycleStateKey,
+} from "@/windows-node-mxc-lifecycle";
 import {
   clipboardTextToInsert,
   collectClipboardImageFiles,
@@ -150,6 +154,8 @@ import { useRoute } from "vue-router";
 const route = useRoute();
 const chatStore = useChatStore();
 const agentStore = useAgentStore();
+const mxcLifecycleState = inject(windowsNodeMxcLifecycleStateKey, ref(null));
+const executionBlocked = computed(() => isWindowsNodeMxcExecutionBlocked(mxcLifecycleState.value));
 
 const currentDraft = computed(() => chatStore.getDraft());
 const inputText = computed({
@@ -246,13 +252,20 @@ watch(
 const composePlaceholder = computed(() =>
   !chatStore.wsConnected
     ? t("chat.waitingGateway")
-    : chatStore.agentPreparationError
-      ? t("chat.error.agent_initializing.title")
-      : t("chat.inputPlaceholder"),
+    : executionBlocked.value
+      ? t(
+          mxcLifecycleState.value?.phase === "failed" || mxcLifecycleState.value?.phase === "locked"
+            ? "chat.executionLocked"
+            : "chat.securityUpdating",
+        )
+      : chatStore.agentPreparationError
+        ? t("chat.error.agent_initializing.title")
+        : t("chat.inputPlaceholder"),
 );
 const canSend = computed(
   () =>
     chatStore.wsConnected &&
+    !executionBlocked.value &&
     !chatStore.activityStatus &&
     !chatStore.agentPreparationError &&
     !submittingMessage.value &&
@@ -375,6 +388,7 @@ async function handleSend() {
   if (
     (!text && pendingAttachments.value.length === 0) ||
     !chatStore.wsConnected ||
+    executionBlocked.value ||
     chatStore.agentPreparationError ||
     submittingMessage.value ||
     pickingFiles.value ||
@@ -386,7 +400,14 @@ async function handleSend() {
   draft.submittingMessage = true;
   try {
     const needsSetup = await needsModelSetupBeforeSend(draft.sessionKey);
-    if (disposed || currentDraft.value !== draft || revision !== draft.revision) return;
+    if (
+      disposed ||
+      currentDraft.value !== draft ||
+      revision !== draft.revision ||
+      !chatStore.wsConnected ||
+      executionBlocked.value
+    )
+      return;
     if (needsSetup) {
       pendingModelSetup.value = { draft, revision, text, attachments };
       modelSetupInitialFamily.value = undefined;
@@ -427,7 +448,12 @@ async function handleModelConfigured() {
   if (!pending || pending.draft !== currentDraft.value) return;
   const { text, attachments, draft, revision } = pending;
   if (revision !== draft.revision) return;
-  if ((!text && attachments.length === 0) || !chatStore.wsConnected || submittingMessage.value) {
+  if (
+    (!text && attachments.length === 0) ||
+    !chatStore.wsConnected ||
+    executionBlocked.value ||
+    submittingMessage.value
+  ) {
     return;
   }
   draft.submittingMessage = true;

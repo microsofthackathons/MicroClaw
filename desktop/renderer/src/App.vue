@@ -1,96 +1,103 @@
 <template>
-  <!-- Setup wizard route is no longer auto-shown on launch. -->
-  <router-view v-if="showSetup" />
+  <router-view v-if="setupActive" />
 
-  <!-- Gateway loading screen — blocks UI until WS is connected -->
-  <GatewayLoading
-    v-else-if="!gatewayReady"
-    :status="gateway.status"
-    :connected="chatStore.wsConnected"
-    :warming="gateway.warming"
-    :error-message="gateway.lastError"
-    :mxc-desired="windowsNodeMxcStatus?.desiredEnabled ?? lastKnownWindowsNodeMxcDesired ?? false"
-    :mxc-phase="windowsNodeMxcLifecycleState?.phase"
-    :mxc-detail="windowsNodeMxcLifecycleState?.detail"
-    :mxc-requested-mode="windowsNodeMxcStatus?.requestedMode"
-    :mxc-effective-strength="windowsNodeMxcStatus?.effectiveStrength"
-    :mxc-effective-tier="windowsNodeMxcStatus?.effectiveTier"
-    @retry="handleRetry"
-    @disable-mxc="disableWindowsNodeMxc"
-  />
+  <template v-else>
+    <GatewayLoading
+      v-if="!gatewayReady || windowsNodeMxcActivationLoading"
+      :status="gateway.status"
+      :connected="chatStore.wsConnected"
+      :warming="gateway.warming"
+      :error-message="gateway.lastError"
+      :mxc-desired="windowsNodeMxcStatus?.desiredEnabled ?? lastKnownWindowsNodeMxcDesired ?? false"
+      :mxc-phase="windowsNodeMxcLifecycleState?.phase"
+      :mxc-detail="windowsNodeMxcLifecycleState?.detail"
+      @retry="handleRetry"
+      @disable-mxc="disableWindowsNodeMxc"
+    />
 
-  <!-- Main app (shown after first successful WS connection) -->
-  <div v-else class="app-layout" :class="{ 'app-layout--maximized': isMaximized }">
-    <SidePanel />
-    <main class="main-content">
-      <div class="app-header">
-        <h1 class="app-header-title">{{ headerTitle }}</h1>
-        <div class="app-header-controls">
-          <button class="win-ctrl" @click="minimizeWindow">
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </button>
-          <button class="win-ctrl" @click="maximizeWindow">
-            <svg
-              v-if="isMaximized"
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="2" y="8" width="14" height="14" rx="2.5" />
-              <path
-                d="M8 8V4.5A2.5 2.5 0 0 1 10.5 2H19.5A2.5 2.5 0 0 1 22 4.5V13.5A2.5 2.5 0 0 1 19.5 16H16"
-              />
-            </svg>
-            <svg
-              v-else
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-            </svg>
-          </button>
-          <button class="win-ctrl win-ctrl--close" @click="closeWindow">
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+    <div
+      v-if="gatewayReady"
+      v-show="!windowsNodeMxcActivationLoading"
+      class="app-layout"
+      :class="{ 'app-layout--maximized': isMaximized }"
+    >
+      <SidePanel />
+      <main class="main-content">
+        <div class="app-header">
+          <h1 class="app-header-title">{{ headerTitle }}</h1>
+          <div class="app-header-controls">
+            <button class="win-ctrl" @click="minimizeWindow">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+            <button class="win-ctrl" @click="maximizeWindow">
+              <svg
+                v-if="isMaximized"
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="2" y="8" width="14" height="14" rx="2.5" />
+                <path
+                  d="M8 8V4.5A2.5 2.5 0 0 1 10.5 2H19.5A2.5 2.5 0 0 1 22 4.5V13.5A2.5 2.5 0 0 1 19.5 16H16"
+                />
+              </svg>
+              <svg
+                v-else
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+              </svg>
+            </button>
+            <button class="win-ctrl win-ctrl--close" @click="closeWindow">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div v-if="windowsNodeMxcFailureDetail" class="app-security-alert" role="alert">
+          <span>{{ t("gateway.mxcFailed") }} {{ windowsNodeMxcFailureDetail }}</span>
+          <button @click="router.push({ name: 'settings', params: { section: 'security' } })">
+            {{ t("settings.security") }}
           </button>
         </div>
-      </div>
-      <router-view />
-    </main>
-  </div>
+        <router-view />
+      </main>
+    </div>
+  </template>
 
   <!-- Integrity Alert Dialog (shown immediately on launch or mid-session) -->
   <el-dialog
@@ -173,6 +180,9 @@ import { watchStartupServiceReadiness } from "@/startup-service-readiness";
 import { planGatewayStatusTransition } from "@/gateway-status-transition";
 import { resolveWindowsNodeMxcAllowedDecisions } from "@/windows-node-mxc-approval";
 import {
+  isWindowsNodeMxcExecutionBlocked,
+  windowsNodeMxcIngressLockedPhases,
+  windowsNodeMxcModeTransitionPhases,
   windowsNodeMxcLifecycleStateKey,
   type WindowsNodeMxcLifecycleState,
 } from "@/windows-node-mxc-lifecycle";
@@ -189,6 +199,12 @@ const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const lastKnownWindowsNodeMxcDesired = ref<boolean | null>(null);
 const windowsNodeMxcGatewayGeneration = ref<string | undefined>();
 const windowsNodeMxcLifecycleState = ref<WindowsNodeMxcLifecycleState | null>(null);
+const windowsNodeMxcActivationLoading = ref(false);
+const windowsNodeMxcFailureDetail = computed(() =>
+  ["failed", "locked"].includes(windowsNodeMxcLifecycleState.value?.phase ?? "")
+    ? windowsNodeMxcLifecycleState.value?.detail
+    : null,
+);
 let windowsNodeMxcDisplayRevision = 0;
 let lastWindowsNodeMxcDisplayError = "";
 // Readiness changes already invalidate approvals; don't invalidate newer ones twice.
@@ -201,6 +217,11 @@ provide(
 function applyWindowsNodeMxcLifecycleState(state: WindowsNodeMxcLifecycleState): boolean {
   const currentUpdatedAt = windowsNodeMxcLifecycleState.value?.updatedAt;
   if (currentUpdatedAt && Date.parse(state.updatedAt) < Date.parse(currentUpdatedAt)) return false;
+  if (state.phase === "validating") windowsNodeMxcActivationLoading.value = true;
+  else if (
+    ["active", "idle", "disabling", "starting-standard", "failed", "locked"].includes(state.phase)
+  )
+    windowsNodeMxcActivationLoading.value = false;
   windowsNodeMxcLifecycleState.value = state;
   return true;
 }
@@ -221,21 +242,6 @@ function applyWindowsNodeMxcDisplayStatus(
 ) {
   if (snapshot.status) {
     if (!applyWindowsNodeMxcStatus(snapshot.status)) return;
-    if (
-      snapshot.status.desiredEnabled &&
-      ![
-        "active",
-        "updating-folders",
-        "updating-consent",
-        "updating-model",
-        "connecting-weixin",
-        "disconnecting-weixin",
-      ].includes(snapshot.status.lifecycleState.phase) &&
-      (gateway.ready || chatStore.wsConnected)
-    ) {
-      gateway.resetReady();
-      chatStore.wsConnected = false;
-    }
   } else {
     windowsNodeMxcStatus.value = null;
   }
@@ -256,8 +262,7 @@ async function refreshWindowsNodeMxcDisplayStatus() {
 }
 
 // ── Setup wizard gate ──
-const showSetup = ref(false);
-const setupActive = computed(() => showSetup.value || route.path === "/setup");
+const setupActive = computed(() => route.path === "/setup");
 
 // ── Gateway loading gate ──
 // Once the first WS connection succeeds and the progress bar finishes,
@@ -283,10 +288,11 @@ const headerTitle = computed(() => {
 
 // Delay hiding the loading screen so the progress bar can animate to 100%
 function markConnected(readinessEpoch = gateway.readinessEpoch) {
-  if (gateway.ready) return;
+  if (gateway.ready || isWindowsNodeMxcExecutionBlocked(windowsNodeMxcLifecycleState.value)) return;
   window.openclaw.window.expandToFull();
   setTimeout(() => {
-    gateway.markReady(readinessEpoch);
+    if (!isWindowsNodeMxcExecutionBlocked(windowsNodeMxcLifecycleState.value))
+      gateway.markReady(readinessEpoch);
   }, 600);
 }
 
@@ -356,8 +362,6 @@ interface PermissionRequestData {
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
   folderChanges?: Array<{ access: "ro" | "rw"; path: string }>;
   providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
-  containmentStrength?: "off" | "full" | "limited-dacl";
-  ambientAccess?: NonNullable<WindowsNodeMxcStatus["ambientAccess"]>["entries"];
   expiresAtUnixMs?: number;
   remoteDelivery?:
     | import("../../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState
@@ -390,6 +394,7 @@ const currentPermissionResponding = computed(() => {
       [
         "updating-folders",
         "updating-consent",
+        "updating-canvas-media",
         "updating-model",
         "connecting-weixin",
         "disconnecting-weixin",
@@ -421,6 +426,41 @@ function invalidateApprovals() {
 }
 watch(() => gateway.readinessEpoch, invalidateApprovals, { flush: "sync" });
 watch(
+  () => windowsNodeMxcLifecycleState.value?.phase,
+  (phase, previous) => {
+    const blocked = !!phase && windowsNodeMxcIngressLockedPhases.has(phase);
+    const previouslyBlocked = !!previous && windowsNodeMxcIngressLockedPhases.has(previous);
+    const invalidatesApprovals =
+      !!phase &&
+      (windowsNodeMxcModeTransitionPhases.has(phase) || phase === "failed" || phase === "locked");
+    const previouslyInvalidatedApprovals =
+      !!previous &&
+      (windowsNodeMxcModeTransitionPhases.has(previous) ||
+        previous === "failed" ||
+        previous === "locked");
+    if (invalidatesApprovals && !previouslyInvalidatedApprovals) {
+      invalidateApprovals();
+    }
+    if (blocked && !gateway.ready) gateway.resetReady();
+    if (!blocked && previouslyBlocked && !gateway.ready) {
+      const readinessEpoch = gateway.readinessEpoch;
+      void window.openclaw.gateway
+        .isServiceReady()
+        .then((ready) => {
+          if (
+            ready &&
+            !gateway.ready &&
+            readinessEpoch === gateway.readinessEpoch &&
+            !isWindowsNodeMxcExecutionBlocked(windowsNodeMxcLifecycleState.value)
+          )
+            void warmThenMarkConnected();
+        })
+        .catch((error) => console.warn("[renderer] service readiness unavailable:", error));
+    }
+  },
+  { flush: "sync" },
+);
+watch(
   () => windowsNodeMxcGatewayGeneration.value,
   (generation, previous) => {
     chatStore.setGatewayGeneration(generation ?? null);
@@ -447,6 +487,7 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     epoch === approvalEpoch &&
     sequence >= closedApprovalFloor &&
     !closedApprovals.has(key) &&
+    !isWindowsNodeMxcExecutionBlocked(windowsNodeMxcLifecycleState.value) &&
     (request.expiresAtUnixMs === undefined || request.expiresAtUnixMs > Date.now());
   if (!isCurrent()) return;
   const updateExisting = () => {
@@ -476,15 +517,6 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     if (!isCurrent()) return;
   }
   if (updateExisting()) return;
-  const containmentStrength =
-    request.containmentStrength ??
-    (windowsNodeMxcStatus.value?.requestedMode === "off"
-      ? "off"
-      : windowsNodeMxcStatus.value &&
-          windowsNodeMxcStatus.value.effectiveStrength !== "limited-dacl" &&
-          windowsNodeMxcStatus.value.requestedMode !== "limited-dacl"
-        ? "full"
-        : "limited-dacl");
   const allowedDecisions = resolveWindowsNodeMxcAllowedDecisions(request);
   const command = request.commandText ?? [request.executable, ...request.arguments].join(" ");
   permissionQueue.value.push({
@@ -498,11 +530,6 @@ async function enqueueWindowsNodeMxcApproval(request: WindowsNodeMxcApproval | n
     providerInitialization: request.providerInitialization,
     source: "windows-node-mxc",
     approvalLayer: request.approvalLayer,
-    containmentStrength,
-    ambientAccess:
-      containmentStrength === "limited-dacl"
-        ? (windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [])
-        : undefined,
     allowedDecisions,
     expiresAtUnixMs: request.expiresAtUnixMs,
     remoteDelivery: request.remoteDelivery,
@@ -688,9 +715,16 @@ onMounted(async () => {
     }
   } catch {}
 
-  // Redirect away from /setup if still on it (e.g. after reload)
-  if (router.currentRoute.value.path === "/setup") {
-    router.replace("/chat");
+  try {
+    if (await window.openclaw.config.initialSetupRequired()) {
+      await router.replace("/setup");
+    } else if (router.currentRoute.value.path === "/setup") {
+      await router.replace("/chat");
+    }
+  } catch (error) {
+    gateway.addLog(
+      `[error] Initial setup check: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   // ── Integrity check (runs before anything else) ──
@@ -838,24 +872,6 @@ onMounted(async () => {
     if (windowsNodeMxcStatus.value) {
       windowsNodeMxcStatus.value = { ...windowsNodeMxcStatus.value, lifecycleState: state };
     }
-    if (
-      ![
-        "active",
-        "idle",
-        "updating-folders",
-        "updating-consent",
-        "updating-model",
-        "connecting-weixin",
-        "disconnecting-weixin",
-      ].includes(state.phase) &&
-      (!["failed", "locked"].includes(state.phase) ||
-        (windowsNodeMxcStatus.value?.desiredEnabled ??
-          lastKnownWindowsNodeMxcDesired.value ??
-          true))
-    ) {
-      gateway.resetReady();
-      chatStore.wsConnected = false;
-    }
     if (["failed", "locked"].includes(state.phase) && state.detail) {
       gateway.addLog(`[error] ${state.detail}`);
     }
@@ -997,6 +1013,18 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--ux-surface-secondary);
+}
+
+.app-security-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  color: var(--danger);
+}
+
+.app-security-alert button {
+  flex: none;
 }
 
 .app-header {

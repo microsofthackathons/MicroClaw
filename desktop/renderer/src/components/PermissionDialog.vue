@@ -21,11 +21,6 @@ interface PermissionRequest {
   declaredAccess?: Array<{ access: "ro" | "rw"; path: string }>;
   folderChanges?: Array<{ access: "ro" | "rw"; path: string }>;
   providerInitialization?: { contract: "microclaw.powershell-filesystem-scope.v1" };
-  containmentStrength?: "off" | "full" | "limited-dacl";
-  ambientAccess?: Array<{
-    category: WindowsNodeMxcAmbientAccessCategory;
-    status: "denied" | "read" | "read-write";
-  }>;
   expiresAtUnixMs?: number;
   remoteDelivery?:
     | import("../../../src/windows-node-mxc-weixin-remote-approval-delivery").WeixinRemoteDeliveryState

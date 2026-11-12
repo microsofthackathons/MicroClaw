@@ -1,6 +1,8 @@
+using System.Text;
 using System.Text.Json;
 using OpenClaw.Shared;
 using OpenClaw.Shared.ExecApprovals;
+using OpenClaw.Shared.Mxc;
 
 namespace MicroClaw.WindowsNodeHost;
 
@@ -51,35 +53,22 @@ internal static class Program
             return 0;
         }
 
-        if (args is ["--ambient-assess", var requestPath])
+        if (args is ["--mxc-probe"])
         {
-            try
+            var probe = MxcAvailability.Probe(new StderrLogger());
+            Console.WriteLine(JsonSerializer.Serialize(new
             {
-                var request = JsonSerializer.Deserialize<AmbientAccessAssessmentRequest>(
-                    await File.ReadAllTextAsync(requestPath),
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                    ?? throw new HostPolicyException(
-                        "ambient-assessment-request-invalid",
-                        "The ambient-access assessment request is empty.");
-                var result = await AmbientAccessAssessment.RunAsync(request);
-                Console.WriteLine(JsonSerializer.Serialize(new
-                {
-                    contract = result.Contract,
-                    hash = result.Hash,
-                    checkedAt = result.CheckedAt,
-                    entries = result.Entries.Select(entry => new
-                    {
-                        category = entry.Category,
-                        status = entry.Status,
-                    }),
-                }));
-                return 0;
-            }
-            catch (HostPolicyException ex)
-            {
-                Console.Error.WriteLine($"{ex.Code}: {ex.Message}");
-                return 2;
-            }
+                contract = "microclaw.mxc-sdk-probe.v1",
+                supported = probe.CanRunSystemRunSandbox,
+                windowsUnsupported = probe.IsWindowsUnsupported,
+                probeErrored = probe.ProbeErrored,
+                tier = probe.IsolationTier,
+                needsDaclAugmentation = probe.NeedsDaclAugmentation,
+                supportsProtectedPathDenies = probe.SupportsProtectedPathDenies,
+                warnings = probe.Warnings,
+                reasons = probe.SystemRunSandboxUnsupportedReasons,
+            }));
+            return 0;
         }
 
         if (args is ["--validate-config", var path])
@@ -97,6 +86,30 @@ internal static class Program
             }
         }
 
+        if (args is ["--validate-folders", var approvalsPath])
+        {
+            try
+            {
+                Console.OutputEncoding = Encoding.UTF8;
+                using var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false, true));
+                var json = await input.ReadToEndAsync();
+                if (string.IsNullOrWhiteSpace(json))
+                    throw new HostPolicyException("malformed-policy", "Policy input is missing.");
+                var policy = HostPolicy.Parse(Encoding.UTF8.GetBytes(json));
+                if (policy.RequestedStrength != "full")
+                    throw new HostPolicyException("containment-strength-invalid", "Folder validation requires MXC.");
+                MxcSdkRunner.ValidatePolicy(policy, approvalsPath);
+                Console.WriteLine("validated");
+                return 0;
+            }
+            catch (Exception ex) when (ex is HostPolicyException or NotSupportedException
+                or IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 2;
+            }
+        }
+
         if (args is ["--identity", var identityDirectory])
         {
             SecureStateDirectory.Ensure(identityDirectory);
@@ -109,7 +122,7 @@ internal static class Program
         if (args.Length != 0)
         {
             Console.Error.WriteLine(
-                "This helper is managed by MicroClaw. Supported diagnostics: --attestation, --validate-config <path>, --ambient-assess <request-path>.");
+                "This helper is managed by MicroClaw. Supported diagnostics: --attestation, --validate-config <path>, --validate-folders <approvals-path>, --mxc-probe.");
             return 2;
         }
 
@@ -142,10 +155,8 @@ internal static class Program
             if (policy.RequestedStrength != "off")
             {
                 await MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
-                    policy.WxcExecPath,
                     policy.RequestedStrength,
                     policy.EffectiveTier);
-                await AmbientAccessAssessment.RevalidateAsync(policy);
             }
             SecureStateDirectory.Ensure(bootstrap.IdentityDirectory);
             var approvalDirectory = Path.GetDirectoryName(bootstrap.ApprovalsPath)
@@ -170,11 +181,8 @@ internal static class Program
                     "The persisted bundled node identity does not match the configured MicroClaw node.");
 
             var recovery = new NodeDeviceTokenRecovery();
-            WindowsNodeClient? activeConnection = null;
             using var liveCapabilities = new LivePolicyCapabilities(
                 bootstrap,
-                payload => activeConnection?.SendNodeEventAsync("agent.request", payload)
-                    ?? Task.FromResult(false),
                 processTreeJob);
             await liveCapabilities.InitializeAsync();
             while (true)
@@ -188,7 +196,6 @@ internal static class Program
                         token: bootstrap.GatewayToken,
                         dataPath: bootstrap.IdentityDirectory,
                         logger: logger);
-                    activeConnection = connection;
                     connection.HandshakeAuthorizationAsync = AuthorizeGatewayAsync;
                     connection.ReconnectAuthorizationAsync = AuthorizeGatewayAsync;
                     connection.ConnectionFailure += (_, kind) =>
@@ -198,7 +205,6 @@ internal static class Program
                             tokenMismatch.TrySetResult(kind);
                     };
                     connection.RegisterCapability(liveCapabilities.System);
-                    connection.RegisterCapability(liveCapabilities.Canvas);
 
                     var connect = connection.ConnectAsync();
                     if (await Task.WhenAny(connect, ownerLifetime) == ownerLifetime)

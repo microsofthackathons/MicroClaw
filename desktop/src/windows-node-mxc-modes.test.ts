@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
   createWindowsNodeMxcSelection,
-  describeWindowsNodeMxcLimitedAvailability,
   migrateWindowsNodeMxcSelection,
   selectWindowsNodeMxcAutomaticMode,
-  summarizeWindowsNodeMxcAmbientAccess,
-  validateWindowsNodeMxcAmbientAccessAssessment,
 } from "./windows-node-mxc-modes";
 import { classifyMxcProbe } from "./windows-node-mxc";
+
+const probeFor = (tier: string, extra: Record<string, unknown> = {}) =>
+  classifyMxcProbe(
+    0,
+    JSON.stringify({
+      contract: "microclaw.mxc-sdk-probe.v1",
+      supported: tier === "base-container",
+      windowsUnsupported: false,
+      probeErrored: false,
+      needsDaclAugmentation: false,
+      supportsProtectedPathDenies: tier === "base-container",
+      tier,
+      warnings: [],
+      reasons: [],
+      ...extra,
+    }),
+    "",
+  );
 
 describe("Windows Node MXC containment modes", () => {
   it("migrates a remembered enabled legacy setting conservatively to Full", () => {
@@ -18,7 +33,7 @@ describe("Windows Node MXC containment modes", () => {
     });
   });
 
-  it("preserves only explicit persisted Limited selection evidence", () => {
+  it("migrates the retired Limited selection to Full containment", () => {
     expect(
       migrateWindowsNodeMxcSelection(
         {
@@ -30,75 +45,29 @@ describe("Windows Node MXC containment modes", () => {
       ),
     ).toEqual({
       version: 1,
-      requestedMode: "limited-dacl",
-      limitedFilesystemAcknowledgedAt: "2026-10-09T00:00:00.000Z",
+      requestedMode: "full",
+      limitedFilesystemAcknowledgedAt: null,
     });
   });
 
-  it("requires explicit Limited filesystem acknowledgment", () => {
+  it("rejects creating the retired DACL mode", () => {
     expect(() => createWindowsNodeMxcSelection("limited-dacl", false)).toThrow(
-      "explicit acknowledgment",
+      "Limited DACL containment is retired",
     );
   });
 
-  it("accepts only an attested appcontainer-dacl tier for Limited", () => {
-    const dacl = classifyMxcProbe(
-      0,
-      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
-      "",
-    );
-    const full = classifyMxcProbe(0, JSON.stringify({ tier: "base-container" }), "");
-    expect(describeWindowsNodeMxcLimitedAvailability(dacl).available).toBe(true);
-    expect(describeWindowsNodeMxcLimitedAvailability(full).available).toBe(false);
+  it("selects only the positively attested BaseContainer tier on activation", () => {
+    expect(selectWindowsNodeMxcAutomaticMode(probeFor("base-container"))).toBe("full");
   });
-
-  it.each(["base-container", "appcontainer-bfs", "appcontainer-dacl"])(
-    "selects only the positively attested %s tier on a new activation",
-    (tier) => {
-      const probe = classifyMxcProbe(0, JSON.stringify({ tier }), "");
-      expect(selectWindowsNodeMxcAutomaticMode(probe)).toBe(
-        tier === "appcontainer-dacl" ? "limited-dacl" : "full",
-      );
-    },
-  );
 
   it.each([
     classifyMxcProbe(null, "", "", "probe failed"),
     classifyMxcProbe(0, "not json", ""),
-    classifyMxcProbe(1, JSON.stringify({ tier: "appcontainer-dacl" }), ""),
-    classifyMxcProbe(0, JSON.stringify({ supported: false }), ""),
-    classifyMxcProbe(0, JSON.stringify({ tier: "unknown" }), ""),
-    classifyMxcProbe(
-      0,
-      JSON.stringify({ tier: "base-container", baseContainerApiPresent: false }),
-      "",
-    ),
+    probeFor("appcontainer-dacl"),
+    probeFor("appcontainer-bfs"),
+    probeFor("unknown"),
+    probeFor("base-container", { supported: false }),
   ])("rejects unusable/error probes without falling back to Limited or Off: %j", (probe) => {
     expect(() => selectWindowsNodeMxcAutomaticMode(probe)).toThrow("No supported MXC sandbox");
-  });
-  it("separates sensitive activation blockers from ordinary ambient warnings", () => {
-    const summary = summarizeWindowsNodeMxcAmbientAccess({
-      contract: "microclaw.windows-node-mxc-ambient-access.v1",
-      hash: "a".repeat(64),
-      checkedAt: "2026-10-09T00:00:00.000Z",
-      entries: [
-        { category: "downloads", status: "read-write" },
-        { category: "ssh", status: "read" },
-        { category: "browser-edge", status: "denied" },
-      ],
-    });
-    expect(summary.ordinaryAccessible).toEqual([{ category: "downloads", status: "read-write" }]);
-    expect(summary.sensitiveAccessible).toEqual([{ category: "ssh", status: "read" }]);
-  });
-
-  it("requires every bounded ambient-access category", () => {
-    expect(
-      validateWindowsNodeMxcAmbientAccessAssessment({
-        contract: "microclaw.windows-node-mxc-ambient-access.v1",
-        hash: "a".repeat(64),
-        checkedAt: "2026-10-09T00:00:00.000Z",
-        entries: [{ category: "downloads", status: "read-write" }],
-      }),
-    ).toBe(false);
   });
 });
