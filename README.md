@@ -27,7 +27,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 - **Only the LLM is bring-your-own**: the user supplies the model endpoint, API key, and model name; the rest of the stack is installed and configured by MicroClaw
 - **Fast path on first launch**: if no provider is configured, the app opens a setup wizard that asks only for model credentials; if `MODEL_*` values already exist in `.env`, MicroClaw can auto-configure them
 - **Recommended tasks on day one**: the home screen ships with starter task cards and prompt suggestions so users can begin with concrete tasks instead of a blank chat box
-- **Preloaded capability surface**: 52 bundled skills plus 6 managed skills are available as part of the default Windows experience; specialist agents add their own skills on demand
+- **Preloaded capability surface**: 17 bundled skills plus 6 managed skills are available as part of the default Windows experience; specialist agents add their own skills on demand
 
 ### Built-In Trust
 
@@ -46,9 +46,8 @@ graph TB
 
     Desktop["Desktop App"]
     Gateway["OpenClaw Gateway"]
-    Skills["Skills<br/><i>52 built-in + 6 managed</i>"]
+    Skills["Skills<br/><i>17 built-in + 6 managed</i>"]
     Plugins["Plugins<br/><i>WeChat · Teams</i>"]
-    PermMgr["Permission Manager"]
     Installer["Installer"]
 
     subgraph External["External Services"]
@@ -57,7 +56,6 @@ graph TB
     end
 
     User --> Desktop
-    User --> PermMgr
     Desktop <--> Gateway
     Gateway --> Skills
     Gateway --> Plugins
@@ -75,7 +73,7 @@ graph TB
     class Desktop app
     class Gateway,Skills,Plugins gw
     class LLM,ThirdParty ext
-    class PermMgr,Installer tool
+    class Installer tool
 ```
 
 ### Key Interactions
@@ -84,7 +82,7 @@ graph TB
 |---|---|---|
 | Renderer ↔ Main Process | Electron IPC | `namespace:action` pattern (e.g. `chat:send-message`, `gateway:restart`) |
 | Main Process ↔ Gateway | WebSocket JSON-RPC | Port 18789 loopback, Ed25519 device auth, streaming chat events |
-| Main Process → Gateway | HTTP | `/health` polled every 10s; process spawn with auto-restart |
+| Main Process → Gateway | HTTP | `/health` polled every 30s; process spawn with auto-restart |
 | Gateway → LLM | HTTPS | Streaming API calls to Claude / OpenAI / Gemini |
 | Gateway → Skills | In-process | Agent loop invokes tool calls; results fed back to LLM |
 | WeChat Plugin → WeChat | HTTPS | Long-poll `getUpdates` + `sendMessage` |
@@ -96,7 +94,7 @@ graph TB
 
 | Component | Path | Stack | Description |
 |---|---|---|---|
-| **Desktop App** | `desktop/` | Electron 33 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
+| **Desktop App** | `desktop/` | Electron 44 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
 | **Native MXC host** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | Native Windows tool execution with exact approvals and Full/Limited containment |
 | **Installer** | `deploy.py` + `deployer/` | Python 3 + pywebview | Wizard-style graphical installer (can be packaged as a single exe) |
 | **Skill Packs** | `skills/` | Markdown + JSON + Python/Node | Office, search, browser automation managed skills |
@@ -110,15 +108,15 @@ MicroClaw targets **Windows 10/11**. For most users, the only thing you need to 
 
 ### 1. Install
 
-> **Note on releases:** The MicroClaw GitHub release page does not ship a pre-built installer binary. Users build the installer from source themselves using the steps below. This is intentional — see the [Releases](#releases) section.
+> **Note on releases:** Tagged release builds publish `MicroClawSetup.exe` to the [GitHub Releases page](https://github.com/microsofthackathons/MicroClaw/releases). You can also build from source using the steps below. See [Releases](#releases) for signing and MSIX details.
 
 Build the installer from source, then run it:
 
-> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, and **Python 3.10+**. OpenClaw **2026.10.10** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged `MicroClawInstaller.exe` do **not** need Python.
+> **Build prerequisites** (only needed to run `build.ps1`): **Node.js 26.1+ (recommended)** or **24.16+ on the 24.x line**, **Python 3.10+**, and **.NET 10 SDK**. OpenClaw **2026.10.10** requires `>=24.16.0 <25 || >=26.1.0`; Node 22 and 25 are unsupported. Install the Python build dependencies with `pip install -r requirements.txt` (this includes PyInstaller, used to package the installer exe). End users running the packaged installer do **not** need Python.
 
 ```powershell
-.\build.ps1                                        # produces dist/MicroClawInstaller/MicroClawInstaller.exe
-.\dist\MicroClawInstaller\MicroClawInstaller.exe   # run the installer wizard
+.\build.ps1                   # produces dist\MicroClawSetup.exe
+.\dist\MicroClawSetup.exe      # run the installer wizard
 ```
 
 The installer handles the Windows-side setup in a single run:
@@ -136,7 +134,7 @@ Installation and uninstallation use the same WebView interface. The compatibilit
 
 App shortcuts and the Installed apps entry use the icon embedded in the installed desktop executable, not a separate `~/.openclaw/microclaw.ico` file. Rerunning the updated installer refreshes older icon references. To repair an existing shortcut manually, open **Properties → Change Icon → Browse** and select the executable shown in the shortcut's **Target** field (normally `%USERPROFILE%\.microclaw\MicroClawDesktop.exe`).
 
-To upgrade an existing installation, rerun the MicroClaw installer. It stops the Gateway, creates and verifies a full OpenClaw data/workspace backup, checks the backup's SHA-256, installs the exact target with npm at the existing prefix, and runs the new runtime's `doctor --fix --non-interactive` once. It does not run `openclaw update` or `update repair`, snapshot the old runtime's `node_modules`, or reject a data backup because its `ctime`/`mtime` changed. The installer validates the installed runtime without launching the desktop or Gateway; startup health checks run when the user manually opens MicroClaw. Failed upgrades retain the backup and a resumable record without automatically restoring older user data. The legacy dependency helper refuses in-place upgrades. Old Node 22/23/25 configurations are advanced to a supported line. `stable` is an exact version pin, not npm's moving `latest` tag.
+To upgrade an existing installation, rerun the MicroClaw installer. It stops the Gateway, creates and verifies a lightweight state/workspace backup, checks the backup's SHA-256, and installs the exact target with npm at the existing prefix. This is not a full backup: model weights, browser profiles and old runtime files are excluded. It does not run `openclaw update` or `update repair`, or snapshot the old runtime's `node_modules`. The installer validates the installed runtime without launching the desktop or Gateway; startup health checks run when the user manually opens MicroClaw. Failed package upgrades retain the backup and a resumable record without automatically restoring older user data. The legacy dependency helper refuses in-place upgrades. Old Node 22/23/25 configurations are advanced to a supported line. `stable` is an exact version pin, not npm's moving `latest` tag.
 
 Desktop updates extract the archive into a staging directory and replace bundled directories as complete trees, rather than overlaying files. This removes obsolete native runtime files that would otherwise fail integrity checks, while preserving the installer's upgrade records, backups, and install state. Extraction or publication failures leave or restore the previous desktop payload; recovery files are retained if restoration fails.
 
@@ -197,7 +195,7 @@ The installer does not install or enable the official llama.cpp provider. In **S
 
 Local component installation, enabling, download completion and model selection never restart the Gateway. Installation first checks the live runtime application receipt and plugin state; an incomplete application, including an installation durably saved before loading failed, uses targeted `plugins.reload` without downloading the component again. Explicit loading also verifies setup availability for an on-demand provider. Failed hot loads retain downloaded files and offer **Retry loading component** rather than a restart fallback. A Gateway without plugin hot-reload support refuses component installation/enabling instead of restarting; an unconfirmed runtime application is never reported as successful. Model preparation/selection also refuses to write configuration when `gateway.reload.mode` is `off`, preventing an implicit configuration restart.
 
-When the pinned OpenClaw version is unchanged, a desktop update refreshes managed files without rerunning database migrations outside its lightweight rollback snapshot. Runtime upgrades still run the full migration flow; both paths require the installed desktop and Gateway to become ready before committing.
+When the pinned OpenClaw version is unchanged, a desktop update refreshes managed files without rerunning database migrations outside its lightweight rollback snapshot. Installation validates the installed runtime before committing; it does not launch the desktop or Gateway or wait for startup health checks.
 
 - Opening model settings reads saved configuration, small router presets and metadata of the four pinned cache files. Plugin status reads never call ClawHub search, full hardware discovery, inference or downloads. Online component lookup occurs only during an explicit component review/install action.
 - Opening the managed local-model chooser also takes one read-only CPU/memory snapshot and a bounded NVIDIA utility query, without a shell, elevation, network calls or periodic polling. One suggested model is highlighted using the catalog's existing memory budgets, system/GPU headroom and currently available memory. CPU-only estimates prefer a lightweight starting point; separate GPUs' VRAM is never added together. Unknown hardware is not labeled as a personalized recommendation, and tight resources do not silently disable manual choices. This estimate does not certify GPU support, disk capacity or inference speed; the provider still checks the exact model during preparation, and downloads still require confirmation.
@@ -314,19 +312,18 @@ See [native Windows Node + MXC](docs/experimental-windows-node-mxc.md) for the c
 
 ## Skill System
 
-### Built-in Skills (52)
+### Built-in Skills (17)
 
 Installed alongside OpenClaw and controlled via the `skills.allowBundled` allowlist. Categories include:
 
 | Category | Example Skills |
 |---|---|
-| Productivity | obsidian, notion, trello, slack, discord, things-mac |
-| AI / Coding | coding-agent, gh-issues, oracle, skill-creator |
-| Communication | bluebubbles, wacli, voice-call |
-| Smart Home | openhue, blucli, sonoscli, eightctl |
-| Media | spotify-player, songsee, video-frames |
-| Utilities | weather, healthcheck, session-logs |
-| Voice | openai-whisper, sherpa-onnx-tts, sag |
+| Productivity | obsidian, nano-pdf |
+| AI / Coding | coding-agent, oracle, skill-creator |
+| Smart Home | openhue, blucli, sonoscli |
+| Media | songsee, video-frames |
+| Utilities | 1password, canvas, healthcheck, mcporter, session-logs |
+| Voice | openai-whisper, sherpa-onnx-tts |
 
 ### Managed Skills (6)
 
@@ -469,8 +466,7 @@ download-update path.
 
 - Node.js 26.1+ (recommended), or 24.16+ on the 24.x line
 - Python 3.10+ — install build deps with `pip install -r requirements.txt` (includes PyInstaller)
-- .NET SDK (for the native Windows Node + MXC host; follow the pinned project targets)
-- .NET 10 SDK (for the bundled Windows Node host)
+- .NET 10 SDK (for the native Windows Node + MXC host)
 - npm dependencies installed (`cd desktop && npm install`)
 
 ---
@@ -484,7 +480,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── deployer/
 │   ├── config.py                # Configuration management (.env + YAML)
 │   ├── logger.py                # Thread-safe logger + in-memory ring buffer
-│   ├── skill_catalog.py         # 52 built-in + 6 managed skill catalog
+│   ├── skill_catalog.py         # 17 built-in + 6 managed skill catalog
 │   ├── skill_manager_ui.py      # Skill selector dialog
 │   └── windows_setup.py         # Windows install logic (Node/npm/OpenClaw)
 ├── desktop/                     # Electron desktop app
@@ -528,15 +524,15 @@ For developers / unattended installs, the installer also accepts a `.env` file (
 ## System Requirements
 
 - Windows 10/11
-- Python 3.10+ (only required to run the installer)
+- Python 3.10+ (only required when running the installer from source; not needed for packaged installers)
 - Network connection (mainland China mirror support included)
 - Optional: Microsoft Edge (browser skills)
 
 ## Releases
 
-The MicroClaw GitHub release page is intentionally **source-only**: it does **not** publish prebuilt installer binaries (`MicroClawInstaller.exe`, portable zips, or any other packaged artifacts). Users obtain MicroClaw by cloning this repository and running `build.ps1` themselves. This keeps the distribution channel transparent and auditable — you only ever run binaries you produced from source you can inspect.
+Tagged release builds publish **`MicroClawSetup.exe`** to [GitHub Releases](https://github.com/microsofthackathons/MicroClaw/releases). Main-branch and manual builds also upload the setup EXE and MSIX as GitHub Actions artifacts. Release builds attach the MSIX only when all four production identity secrets are configured.
 
-If you fork this project, please honor the same policy unless you intend to take on responsibility for code signing, malware scanning, and supply-chain attestation of any binaries you publish.
+Installer signing depends on the configured Azure Trusted Signing credentials; a build without signing credentials is unsigned and may trigger Windows SmartScreen. You can still build from source with `build.ps1`. See [MSIX package](#msix-package) for package identity and signing requirements.
 
 ## Contributing
 
