@@ -14,14 +14,13 @@
 # are not re-evaluated.
 #
 # Triggers:
-#   - push to main                 -> builds + signs, uploads as a run artifact
 #   - push of a version tag (v*)   -> publishes a release for that tag
-#   - manual workflow_dispatch      -> builds + signs, uploads as a run artifact
+#   - manual workflow_dispatch    -> builds artifacts; signing/publishing are explicit inputs
+# Main pushes get unsigned packaging validation from pr-build.yml.
 name: "Release"
 
 on:
   push:
-    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -201,7 +200,7 @@ jobs:
 
       # Publish a GitHub Release with the signed exe when built from a tag.
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist\MicroClawSetup.exe
@@ -209,7 +208,7 @@ jobs:
           generate_release_notes: true
 
       - name: Publish production-identity MSIX
-        if: startsWith(github.ref, 'refs/tags/v') && env.MSIX_PRODUCTION_IDENTITY_CONFIGURED == 'true'
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'workflow_dispatch' || inputs.publish_release) && env.MSIX_PRODUCTION_IDENTITY_CONFIGURED == 'true'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: desktop\release\MicroClawDesktop-*-x64.msix
