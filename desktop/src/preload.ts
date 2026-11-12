@@ -337,6 +337,7 @@ contextBridge.exposeInMainWorld("openclaw", {
     applyConfig: (input: ModelConfigUpdate) => ipcRenderer.invoke("model:apply-config", input),
     prepareGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:prepare"),
     startGitHubCopilotLogin: () => ipcRenderer.invoke("model:github-copilot:start-login"),
+    getGitHubCopilotLoginSession: () => ipcRenderer.invoke("model:github-copilot:login-session"),
     cancelGitHubCopilotLogin: (sessionId?: string) =>
       ipcRenderer.invoke("model:github-copilot:cancel-login", sessionId),
     disconnectGitHubCopilot: () => ipcRenderer.invoke("model:github-copilot:disconnect"),

@@ -72,6 +72,12 @@ interface ActiveLogin {
   timeout: ReturnType<typeof setTimeout>;
   terminal: boolean;
   stdoutBuffer: string;
+  code: Extract<GitHubCopilotAuthEvent, { status: "code" }> | null;
+  codeExpiresAt: number;
+  cancellationRequested: boolean;
+  failureMessage?: string;
+  outcome?: "success" | "cancelled" | "error";
+  closed: Promise<void>;
 }
 
 function isSafeNodePath(nodePath: string): boolean {
@@ -495,8 +501,31 @@ export class GitHubCopilotAuthManager {
     private readonly openExternal: (url: string) => Promise<void>,
   ) {}
 
+  getLoginSession(): {
+    sessionId: string;
+    cancelling: boolean;
+    code: Extract<GitHubCopilotAuthEvent, { status: "code" }> | null;
+  } | null {
+    const active = this.active;
+    if (!active || active.terminal) return null;
+    return {
+      sessionId: active.sessionId,
+      cancelling: active.cancellationRequested,
+      code: active.code
+        ? {
+            ...active.code,
+            expiresInMs: Math.max(0, active.codeExpiresAt - Date.now()),
+          }
+        : null,
+    };
+  }
+
   start(runtime: GitHubCopilotAuthRuntime): string {
-    if (this.active) throw new Error("GitHub Copilot sign-in is already in progress");
+    if (this.active) {
+      if (this.active.cancellationRequested)
+        throw new Error("GitHub Copilot sign-in is still finishing cancellation");
+      return this.active.sessionId;
+    }
     const authRuntimePath = path.join(
       runtime.openClawPackageDir,
       "dist",
@@ -522,16 +551,23 @@ export class GitHubCopilotAuthManager {
 
     fs.mkdirSync(runtime.compileCacheDir, { recursive: true });
     const sessionId = randomUUID();
-    const child = spawn(
-      runtime.nodePath,
-      [runtime.workerPath, authRuntimePath],
-      spawnOptions(runtime),
-    );
+    const child = spawn(runtime.nodePath, [runtime.workerPath, authRuntimePath], {
+      ...spawnOptions(runtime),
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
     const active: ActiveLogin = {
       sessionId,
       child,
       terminal: false,
       stdoutBuffer: "",
+      code: null,
+      codeExpiresAt: 0,
+      cancellationRequested: false,
+      closed,
       timeout: setTimeout(() => {
         this.fail(active, "GitHub Copilot sign-in timed out");
       }, AUTH_TIMEOUT_MS),
@@ -544,37 +580,47 @@ export class GitHubCopilotAuthManager {
       const message = chunk.toString("utf8").trim();
       if (message) console.warn(`[github-copilot-auth] ${message}`);
     });
-    child.on("error", (error) => this.fail(active, error.message));
+    child.on("error", (error) => this.fail(active, error.message, false));
     child.on("close", (code) => {
       if (this.active === active && !active.terminal) {
         this.fail(
           active,
-          `GitHub Copilot sign-in exited unexpectedly (${code ?? "unknown"})`,
+          active.failureMessage ??
+            `GitHub Copilot sign-in exited unexpectedly (${code ?? "unknown"})`,
           false,
         );
       }
+      resolveClosed();
     });
     return sessionId;
   }
 
-  cancel(sessionId?: string): boolean {
+  async cancel(sessionId?: string): Promise<boolean> {
     const active = this.active;
     if (!active || (sessionId && active.sessionId !== sessionId)) return false;
-    active.terminal = true;
-    clearTimeout(active.timeout);
-    active.child.kill();
-    this.active = null;
-    this.emit({ sessionId: active.sessionId, status: "cancelled" });
-    return true;
+    this.requestCancellation(active);
+    await active.closed;
+    if (active.outcome === "error")
+      throw new Error(active.failureMessage ?? "GitHub Copilot sign-in did not finish cleanly");
+    return active.outcome === "cancelled";
   }
 
-  stop(): void {
-    const active = this.active;
-    if (!active) return;
-    active.terminal = true;
+  async stop(): Promise<void> {
+    await this.cancel();
+  }
+
+  private requestCancellation(active: ActiveLogin): void {
+    if (active.cancellationRequested) return;
+    active.cancellationRequested = true;
     clearTimeout(active.timeout);
-    active.child.kill();
-    this.active = null;
+    // Let the SDK unwind credential persistence and release its locks. Hiding a
+    // renderer panel never calls this; explicit cancellation does not kill it.
+    if (active.child.connected) {
+      active.child.send({ type: "microclaw-copilot-cancel" }, (error) => {
+        if (error)
+          console.warn("[github-copilot-auth] Cancellation channel closed:", error.message);
+      });
+    }
   }
 
   private handleOutput(active: ActiveLogin, chunk: Buffer): void {
@@ -602,13 +648,15 @@ export class GitHubCopilotAuthManager {
   private handleMessage(active: ActiveLogin, message: WorkerMessage): void {
     if (this.active !== active || active.terminal) return;
     if (message.type === "device-code") {
-      this.emit({
+      active.codeExpiresAt = Date.now() + message.expiresInMs;
+      active.code = {
         sessionId: active.sessionId,
         status: "code",
         verificationUrl: message.verificationUrl,
         userCode: message.userCode,
         expiresInMs: message.expiresInMs,
-      });
+      };
+      this.emit(active.code);
       return;
     }
     if (message.type === "open-url") {
@@ -618,13 +666,20 @@ export class GitHubCopilotAuthManager {
       return;
     }
     if (message.type === "failure") {
-      this.fail(active, message.message);
+      // The worker reports failure after the SDK's cleanup has finished.
+      this.fail(active, message.message, false);
       return;
     }
     if (message.type === "cancelled") {
+      if (active.failureMessage) {
+        this.fail(active, active.failureMessage, false);
+        return;
+      }
       active.terminal = true;
+      active.outcome = "cancelled";
       clearTimeout(active.timeout);
       this.active = null;
+      invalidateGitHubCopilotAuthStatusCache();
       this.emit({ sessionId: active.sessionId, status: "cancelled" });
       return;
     }
@@ -634,6 +689,7 @@ export class GitHubCopilotAuthManager {
     }
 
     active.terminal = true;
+    active.outcome = "success";
     clearTimeout(active.timeout);
     this.active = null;
     invalidateGitHubCopilotAuthStatusCache();
@@ -644,12 +700,19 @@ export class GitHubCopilotAuthManager {
     });
   }
 
-  private fail(active: ActiveLogin, message: string, kill = true): void {
+  private fail(active: ActiveLogin, message: string, cancelWorker = true): void {
     if (this.active !== active || active.terminal) return;
+    if (cancelWorker && active.child.connected) {
+      active.failureMessage = message;
+      this.requestCancellation(active);
+      return;
+    }
     active.terminal = true;
+    active.outcome = "error";
+    active.failureMessage = message;
     clearTimeout(active.timeout);
-    if (kill) active.child.kill();
     this.active = null;
+    invalidateGitHubCopilotAuthStatusCache();
     this.emit({ sessionId: active.sessionId, status: "error", message: message.slice(0, 500) });
   }
 }

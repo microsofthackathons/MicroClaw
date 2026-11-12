@@ -312,6 +312,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       testConnection: async () => ({ ok: true, message: "Connection successful" }),
       prepareGitHubCopilot: async () => ({ restartRequired: false }),
       startGitHubCopilotLogin: async () => ({ sessionId: "browser-dev" }),
+      getGitHubCopilotLoginSession: async () => null,
       cancelGitHubCopilotLogin: async () => ({ cancelled: true }),
       disconnectGitHubCopilot: async () => ({ disconnected: true, removedProfiles: 0 }),
       getGitHubCopilotStatus: async () => ({ authenticated: false }),
