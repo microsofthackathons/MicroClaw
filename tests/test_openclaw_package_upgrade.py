@@ -145,7 +145,9 @@ class PackageManagerUpgradeTests(unittest.TestCase):
             )
             self.assertEqual(record["sourceVersion"], "2026.10.5")
             self.assertEqual(record["targetVersion"], "2026.10.10")
-            archive = self.microclaw / "backups" / "openclaw-package" / record["id"] / "state.tar.gz"
+            archive = (
+                self.microclaw / "backups" / "openclaw-package" / record["id"] / "state.tar.gz"
+            )
             self.assertEqual(verify_lightweight_archive(archive)["scope"], BACKUP_SCOPE)
             self.assertEqual(self.config.read_bytes(), original_config)
             self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))

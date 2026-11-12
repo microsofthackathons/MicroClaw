@@ -8,8 +8,8 @@
 #   - dist\microclaw-portable.zip
 #   - dist\MicroClawInstaller\ + dist\MicroClawInstaller.zip (PyInstaller)
 #
-# Complements pr-security-check.yml (per-stack audit + unit tests)
-# by catching cross-stack integration breakages before merge.
+# Runs the language checks and Windows packaging independently on GitHub-hosted
+# runners so one failed check does not hide the other results.
 #
 name: "PR Build"
 
@@ -33,8 +33,8 @@ jobs:
   # the source mirrored from the vendored Weixin release.
   lint-js:
     name: Lint, Format & Test (JS/TS)
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
@@ -43,10 +43,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Toolchain (Node 26.1+) is pre-installed on the self-hosted runner.
-      # actions/setup-node is unreliable under the NetworkService account
-      # (HKLM/tool-cache permission issues), so just verify the version.
-      - name: Verify pre-installed Node.js
+      - name: Normalize temporary directory
+        run: |
+          # Avoid runneradmin 8.3 aliases in temporary test and build paths.
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TEMP=$env:RUNNER_TEMP",
+            "TMP=$env:RUNNER_TEMP"
+          )
+
+      - name: Setup Node.js 26
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+
+      - name: Verify Node.js
         run: |
           $ErrorActionPreference = 'Stop'
           . .\scripts\windows\node-runtime.ps1
@@ -57,6 +67,7 @@ jobs:
           Write-Host "node $node"
 
       - name: Install dependencies (all packages)
+        id: dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -72,23 +83,24 @@ jobs:
           }
 
       - name: Lint all packages
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: npm run lint
 
       - name: Check formatting (Prettier)
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: npm run format:check
 
       - name: Run unit tests (Vitest)
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: npm test
 
   # ── Ruff lint + format on Python sources ────────────────────────
   # Runs `ruff check` and `ruff format --check`. Config lives in
-  # pyproject.toml. Serialised after `lint-js` because the self-hosted
-  # runner pool is small.
+  # pyproject.toml. This job is independent of the JS/TS and packaging jobs.
   lint-python:
     name: Lint & Format (Ruff)
-    runs-on: [self-hosted, Windows, X64]
-    needs: lint-js
-    timeout-minutes: 10
+    runs-on: windows-latest
+    timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
@@ -97,34 +109,42 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Python 3.12+
-        uses: ./.github/actions/setup-python-windows
+      - name: Normalize temporary directory
+        run: |
+          # Avoid runneradmin 8.3 aliases in temporary test and build paths.
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TEMP=$env:RUNNER_TEMP",
+            "TMP=$env:RUNNER_TEMP"
+          )
 
-      - name: Install Ruff
+      - name: Setup Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies and Ruff
+        id: dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "ruff>=0.14.0"
+          python -m pip install -r requirements.txt "ruff==0.16.3"
 
-      # Invoke via `python -m ruff` rather than the bare `ruff` command:
-      # the Microsoft Store / system Python on the runner installs scripts
-      # to %APPDATA%\Python\PythonXY\Scripts, which is not the same path
-      # as the interpreter's own Scripts directory and is not on PATH.
       - name: Run ruff check
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: python -m ruff check .
 
       - name: Run ruff format --check
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: python -m ruff format --check .
 
       - name: Run Python unit tests
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: python -m unittest discover -s tests -v
 
   # ── Run build.ps1 end-to-end on Windows ─────────────────────────
-  # Serialised after `lint-python` so lint failures short-circuit the build
-  # and we never hold two self-hosted runners at once.
+  # Packaging gets its own runner and reports a result even when a lint/test job fails.
   full-build:
     name: build.ps1 (Windows)
-    runs-on: [self-hosted, Windows, X64]
-    needs: lint-python
+    runs-on: windows-latest
     timeout-minutes: 45
     defaults:
       run:
@@ -136,11 +156,25 @@ jobs:
         with:
           submodules: recursive
 
-      # Toolchain (Node 26.1+, .NET 10 SDK, Python 3.12+) is pre-installed on
-      # the self-hosted runner. We only verify versions here; installing
-      # via actions/setup-* is unreliable under the NetworkService account
-      # (HKLM/tool-cache permission issues).
-      - name: Verify pre-installed toolchain
+      - name: Normalize temporary directory
+        run: |
+          # Avoid runneradmin 8.3 aliases in temporary test and build paths.
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TEMP=$env:RUNNER_TEMP",
+            "TMP=$env:RUNNER_TEMP"
+          )
+
+      - name: Setup Node.js 26
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Verify toolchain
         run: |
           $ErrorActionPreference = 'Stop'
           . .\scripts\windows\node-runtime.ps1
@@ -153,16 +187,27 @@ jobs:
           if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK is required" }
           Write-Host $sdks
 
-      # Resolve a Python 3.12+ interpreter for the NetworkService account.
-      - name: Setup Python 3.12+
-        uses: ./.github/actions/setup-python-windows
+      - name: Setup Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
 
       - name: Install Python build dependencies
         run: |
-          # Use `python -m pip` — the Store distribution writes upgraded
-          # pip.exe to a --user Scripts dir not on NetworkService's PATH.
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+
+      - name: Ensure NSIS is available
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $have = Get-Command makensis -ErrorAction SilentlyContinue
+          $sys = Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not $have -and -not $sys) {
+            Write-Host "Installing NSIS via choco..."
+            choco install nsis -y --no-progress
+          } else {
+            Write-Host "NSIS already present."
+          }
 
       - name: Run build.ps1
         run: .\build.ps1 -IncludeInstallerZip

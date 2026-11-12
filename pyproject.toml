@@ -2,8 +2,8 @@
 #
 # Build/runtime dependencies live in requirements.txt. Ruff (the only dev
 # tool needed today) is installed ad-hoc:
-#   python -m pip install "ruff>=0.14.0"
-# CI does the same install inline. This file only configures Ruff (linter +
+#   python -m pip install "ruff==0.16.3"
+# CI pins the same version inline. This file only configures Ruff (linter +
 # formatter) and is read automatically by `ruff check` / `ruff format`.
 
 [tool.ruff]

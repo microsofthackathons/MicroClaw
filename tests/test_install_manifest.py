@@ -77,9 +77,7 @@ class InstallManifestTests(unittest.TestCase):
         internal = executable.parent / "_internal"
         internal.mkdir(parents=True)
         bundled = _manifest(installerBundleId="frozen")
-        (internal / "install-manifest.json").write_text(
-            json.dumps(bundled), encoding="utf-8"
-        )
+        (internal / "install-manifest.json").write_text(json.dumps(bundled), encoding="utf-8")
         app_dir = self.root / "app"
         (app_dir / "dist").mkdir(parents=True)
         (app_dir / "dist" / "install-manifest.json").write_text(

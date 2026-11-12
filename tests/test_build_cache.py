@@ -348,6 +348,51 @@ class BuildCacheTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(os.name == "nt" and shutil.which("subst"), "Requires Windows drive aliases")
+class BuildCacheCrossDriveTests(unittest.TestCase):
+    write = BuildCacheTests.write
+
+    def setUp(self):
+        BuildCacheTests.setUp(self)
+        drive = next(
+            (f"{letter}:" for letter in "ZYXWVUTSRQPONMLKJIHG" if not Path(f"{letter}:/").exists()),
+            None,
+        )
+        if drive is None:
+            self.skipTest("No unused drive letter")
+        result = subprocess.run(["subst", drive, str(self.root)], capture_output=True, timeout=10)
+        if result.returncode:
+            self.skipTest(f"Cannot create a temporary drive alias: {result.stderr!r}")
+        self.addCleanup(
+            lambda: subprocess.run(
+                ["subst", drive, "/d"], capture_output=True, timeout=10, check=True
+            )
+        )
+        self.workspace = Path(drive + "/")
+
+    def test_external_tool_content_invalidates_the_cache_across_drives(self):
+        tool = self.write("external-tools/node.exe", "before")
+        metadata = tool.stat()
+        self.assertNotEqual(tool.drive.casefold(), self.workspace.drive.casefold())
+        before = build_cache.input_key(self.workspace, "native", extra_inputs=[tool])
+        self.assertEqual(
+            build_cache.input_key(self.workspace, "native", extra_inputs=[tool]), before
+        )
+        tool.write_text("after!", encoding="utf-8")
+        os.utime(tool, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        self.assertNotEqual(
+            build_cache.input_key(self.workspace, "native", extra_inputs=[tool]), before
+        )
+
+    def test_external_inputs_with_the_same_name_keep_distinct_identity(self):
+        first = self.write("toolchain-one/node.exe", "identical")
+        second = self.write("toolchain-two/node.exe", "identical")
+        self.assertNotEqual(
+            build_cache.fingerprint(self.workspace, [first]),
+            build_cache.fingerprint(self.workspace, [second]),
+        )
+
+
 @unittest.skipUnless(shutil.which("powershell") or shutil.which("pwsh"), "Requires PowerShell")
 class BuildCachePowerShellTests(unittest.TestCase):
     def setUp(self):

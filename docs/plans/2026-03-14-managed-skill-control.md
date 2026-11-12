@@ -25,7 +25,7 @@ After the existing `SKILL_CATALOG` dict (line 78), add:
 # Skills NOT in this catalog are treated as uncertified and disabled by default.
 MANAGED_SKILL_CATALOG: dict[str, SkillInfo] = {
     "microsoft-speedbird": {"description": "Microsoft Speedbird 认证技能", "certified": True},
-    "unknown-slowbird":    {"description": "未认证的 Slowbird 技能",       "certified": False},
+    "unknown-slowbird": {"description": "未认证的 Slowbird 技能", "certified": False},
 }
 ```
 
@@ -84,8 +84,10 @@ In `deployer/skill_manager_ui.py`, update the import (line 12):
 
 ```python
 from deployer.skill_catalog import (
-    SKILL_CATALOG, get_certified_skills,
-    MANAGED_SKILL_CATALOG, get_certified_managed_skills,
+    SKILL_CATALOG,
+    get_certified_skills,
+    MANAGED_SKILL_CATALOG,
+    get_certified_managed_skills,
 )
 ```
 
@@ -94,9 +96,12 @@ from deployer.skill_catalog import (
 Change `__init__` to accept a second preselection list:
 
 ```python
-def __init__(self, parent: tk.Tk,
-             preselected: list[str] | None = None,
-             preselected_managed: list[str] | None = None):
+def __init__(
+    self,
+    parent: tk.Tk,
+    preselected: list[str] | None = None,
+    preselected_managed: list[str] | None = None,
+):
     super().__init__(parent)
     self.title("技能管理器 — 选择允许的技能")
     self.configure(bg=BG)
@@ -183,11 +188,19 @@ def _build_ui(self, preselected: list[str], preselected_managed: list[str]):
 **Step 4: Update _add_section to accept catalog and vars dict**
 
 ```python
-def _add_section(self, parent: tk.Frame, title: str, color: str,
-                 skills: list[str], preselected: set[str],
-                 catalog: dict[str, SkillInfo], vars_dict: dict[str, tk.BooleanVar]):
-    tk.Label(parent, text=title, font=("Segoe UI", 10, "bold"),
-             bg=BG, fg=color, anchor="w").pack(fill="x", pady=(8, 4))
+def _add_section(
+    self,
+    parent: tk.Frame,
+    title: str,
+    color: str,
+    skills: list[str],
+    preselected: set[str],
+    catalog: dict[str, SkillInfo],
+    vars_dict: dict[str, tk.BooleanVar],
+):
+    tk.Label(parent, text=title, font=("Segoe UI", 10, "bold"), bg=BG, fg=color, anchor="w").pack(
+        fill="x", pady=(8, 4)
+    )
     for name in skills:
         info = catalog[name]
         var = tk.BooleanVar(value=name in preselected)
@@ -229,11 +242,13 @@ def _select_certified(self):
     for name, var in self._managed_vars.items():
         var.set(name in managed_certified)
 
+
 def _select_all(self):
     for var in self._vars.values():
         var.set(True)
     for var in self._managed_vars.values():
         var.set(True)
+
 
 def _select_none(self):
     for var in self._vars.values():
@@ -261,9 +276,17 @@ Update `_on_skill_manager` (line 213):
 
 ```python
 def _on_skill_manager(self):
-    preselected = self._selected_skills if self._selected_skills is not None else get_certified_skills()
-    preselected_managed = self._selected_managed_skills if self._selected_managed_skills is not None else get_certified_managed_skills()
-    dialog = SkillManagerDialog(self, preselected=preselected, preselected_managed=preselected_managed)
+    preselected = (
+        self._selected_skills if self._selected_skills is not None else get_certified_skills()
+    )
+    preselected_managed = (
+        self._selected_managed_skills
+        if self._selected_managed_skills is not None
+        else get_certified_managed_skills()
+    )
+    dialog = SkillManagerDialog(
+        self, preselected=preselected, preselected_managed=preselected_managed
+    )
     self.wait_window(dialog)
     if dialog.result is not None:
         self._selected_skills = dialog.result
@@ -277,7 +300,11 @@ Update `_on_install` (line 242):
 
 ```python
 skills = self._selected_skills if self._selected_skills is not None else get_certified_skills()
-managed_skills = self._selected_managed_skills if self._selected_managed_skills is not None else get_certified_managed_skills()
+managed_skills = (
+    self._selected_managed_skills
+    if self._selected_managed_skills is not None
+    else get_certified_managed_skills()
+)
 self.config.set("skills.enable", True)
 self.config.set("skills.allowBundled", skills)
 self.config.set("skills.allowManaged", managed_skills)

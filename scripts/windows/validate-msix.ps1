@@ -35,9 +35,6 @@ try {
         'resources\openclaw.asar',
         'resources\windows-node\RUNTIME.json',
         'resources\windows-node\host\microclaw-windows-node-host.exe',
-        'resources\windows-node\host-prep\microclaw-mxc-host-prep.exe',
-        'resources\windows-node\mxc\wxc-exec.exe',
-        'resources\windows-node\mxc\wxc-host-prep.exe',
         'resources\openclaw-weixin\microclaw-runtime.json'
     )
     $packageFiles = $archive.Entries.FullName |
@@ -52,6 +49,22 @@ try {
             Where-Object { $_.EndsWith($relativePath, [StringComparison]::OrdinalIgnoreCase) } |
             Select-Object -First 1
         if (-not $found) { throw "MSIX is missing required file: $relativePath" }
+    }
+
+    # The SDK is bundled in the single-file host. Its fixed file worker is
+    # installed alongside the host under a manifest-derived payload ID.
+    $workerManifests = @($packageFiles | Where-Object {
+        $_ -match '(?i)(^|\\)resources\\windows-node\\host\\Workers\\FileWorker\\win-x64\\[a-f0-9]{32}\\payload-manifest\.json$'
+    })
+    if ($workerManifests.Count -ne 1) {
+        throw 'MSIX must contain exactly one x64 FileWorker payload manifest'
+    }
+    $workerDirectory = [IO.Path]::GetDirectoryName($workerManifests[0])
+    foreach ($workerFile in 'OpenClaw.FileWorker.exe', 'coreclr.dll', 'OpenClaw.FileWorker.runtimeconfig.json') {
+        $workerPath = Join-Path $workerDirectory $workerFile
+        if ($workerPath -notin $packageFiles) {
+            throw "MSIX is missing required file: $workerPath"
+        }
     }
 
     Write-Host "Validated $package"

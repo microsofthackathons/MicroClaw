@@ -171,10 +171,7 @@ def bundle_manifest(root: Path) -> dict[str, int]:
     validate_uninstaller_bundle(root)
     files = [root / INSTALLER_EXE]
     files.extend(path for path in (root / INTERNAL_DIR).rglob("*") if path.is_file())
-    return {
-        path.relative_to(root).as_posix(): path.stat().st_size
-        for path in sorted(files)
-    }
+    return {path.relative_to(root).as_posix(): path.stat().st_size for path in sorted(files)}
 ```
 
 - [ ] **Step 4: Run resolver tests and confirm they pass**
@@ -192,72 +189,77 @@ Expected: 4 tests PASS.
 Append these tests to `UninstallerBundleTests`:
 
 ```python
-    def test_publishes_verified_bundle_and_runs_startup_check(self):
-        source = self._write_bundle(self.root / "source")
-        state = self.root / "state"
-        checked = []
+def test_publishes_verified_bundle_and_runs_startup_check(self):
+    source = self._write_bundle(self.root / "source")
+    state = self.root / "state"
+    checked = []
 
-        published = publish_uninstaller_bundle(source, state, checked.append)
+    published = publish_uninstaller_bundle(source, state, checked.append)
 
-        self.assertEqual(published, state / "MicroClawInstaller.exe")
-        self.assertEqual(bundle_manifest(state), bundle_manifest(source))
-        self.assertEqual(checked, [state / "MicroClawInstaller.exe"])
-        self.assertFalse(any(path.name.startswith(".microclaw-uninstaller-") for path in state.iterdir()))
+    self.assertEqual(published, state / "MicroClawInstaller.exe")
+    self.assertEqual(bundle_manifest(state), bundle_manifest(source))
+    self.assertEqual(checked, [state / "MicroClawInstaller.exe"])
+    self.assertFalse(
+        any(path.name.startswith(".microclaw-uninstaller-") for path in state.iterdir())
+    )
 
-    def test_manifest_mismatch_does_not_replace_existing_bundle(self):
-        source = self._write_bundle(self.root / "source", "new")
-        state = self._write_bundle(self.root / "state", "old")
-        original = bundle_manifest(state)
-        real_copytree = __import__("shutil").copytree
 
-        def incomplete_copytree(src, dst):
-            copied = real_copytree(src, dst)
-            (copied / "deployer.pyc").unlink()
-            return copied
+def test_manifest_mismatch_does_not_replace_existing_bundle(self):
+    source = self._write_bundle(self.root / "source", "new")
+    state = self._write_bundle(self.root / "state", "old")
+    original = bundle_manifest(state)
+    real_copytree = __import__("shutil").copytree
 
-        with (
-            unittest.mock.patch(
-                "deployer.uninstaller_bundle.shutil.copytree",
-                side_effect=incomplete_copytree,
-            ),
-            self.assertRaisesRegex(UninstallerBundleError, "manifest"),
-        ):
-            publish_uninstaller_bundle(source, state, lambda _exe: None)
+    def incomplete_copytree(src, dst):
+        copied = real_copytree(src, dst)
+        (copied / "deployer.pyc").unlink()
+        return copied
 
-        self.assertEqual(bundle_manifest(state), original)
+    with (
+        unittest.mock.patch(
+            "deployer.uninstaller_bundle.shutil.copytree",
+            side_effect=incomplete_copytree,
+        ),
+        self.assertRaisesRegex(UninstallerBundleError, "manifest"),
+    ):
+        publish_uninstaller_bundle(source, state, lambda _exe: None)
 
-    def test_failed_startup_check_restores_existing_bundle(self):
-        source = self._write_bundle(self.root / "source", "new")
-        state = self._write_bundle(self.root / "state", "old")
+    self.assertEqual(bundle_manifest(state), original)
 
-        def fail_check(_exe):
-            raise UninstallerBundleError("startup check failed")
 
-        with self.assertRaisesRegex(UninstallerBundleError, "startup check failed"):
-            publish_uninstaller_bundle(source, state, fail_check)
+def test_failed_startup_check_restores_existing_bundle(self):
+    source = self._write_bundle(self.root / "source", "new")
+    state = self._write_bundle(self.root / "state", "old")
 
-        self.assertEqual(
-            (state / "MicroClawInstaller.exe").read_text(encoding="utf-8"),
-            "old",
+    def fail_check(_exe):
+        raise UninstallerBundleError("startup check failed")
+
+    with self.assertRaisesRegex(UninstallerBundleError, "startup check failed"):
+        publish_uninstaller_bundle(source, state, fail_check)
+
+    self.assertEqual(
+        (state / "MicroClawInstaller.exe").read_text(encoding="utf-8"),
+        "old",
+    )
+    self.assertEqual(
+        (state / "_internal" / "python.dll").read_text(encoding="utf-8"),
+        "old-runtime",
+    )
+
+
+def test_fresh_install_failure_removes_partial_bundle(self):
+    source = self._write_bundle(self.root / "source")
+    state = self.root / "state"
+
+    with self.assertRaisesRegex(UninstallerBundleError, "check"):
+        publish_uninstaller_bundle(
+            source,
+            state,
+            lambda _exe: (_ for _ in ()).throw(UninstallerBundleError("check failed")),
         )
-        self.assertEqual(
-            (state / "_internal" / "python.dll").read_text(encoding="utf-8"),
-            "old-runtime",
-        )
 
-    def test_fresh_install_failure_removes_partial_bundle(self):
-        source = self._write_bundle(self.root / "source")
-        state = self.root / "state"
-
-        with self.assertRaisesRegex(UninstallerBundleError, "check"):
-            publish_uninstaller_bundle(
-                source,
-                state,
-                lambda _exe: (_ for _ in ()).throw(UninstallerBundleError("check failed")),
-            )
-
-        self.assertFalse((state / "MicroClawInstaller.exe").exists())
-        self.assertFalse((state / "_internal").exists())
+    self.assertFalse((state / "MicroClawInstaller.exe").exists())
+    self.assertFalse((state / "_internal").exists())
 ```
 
 - [ ] **Step 6: Run publication tests and confirm the undefined-function failure**
@@ -434,55 +436,57 @@ from deployer.uninstaller_bundle import UninstallerBundleError
 Add these tests to `WindowsSetupUpgradeTests`:
 
 ```python
-    def test_install_uninstaller_bundle_publishes_source_and_checks_persisted_exe(self):
-        source = self.root / "dist" / "MicroClawInstaller"
-        destination = self.home / ".openclaw"
-        persisted = destination / "MicroClawInstaller.exe"
-        self.ws._check_persisted_uninstaller = unittest.mock.Mock()
+def test_install_uninstaller_bundle_publishes_source_and_checks_persisted_exe(self):
+    source = self.root / "dist" / "MicroClawInstaller"
+    destination = self.home / ".openclaw"
+    persisted = destination / "MicroClawInstaller.exe"
+    self.ws._check_persisted_uninstaller = unittest.mock.Mock()
 
-        with (
-            unittest.mock.patch(
-                "deployer.windows_setup.resolve_uninstaller_bundle",
-                return_value=source,
-            ) as resolve,
-            unittest.mock.patch(
-                "deployer.windows_setup.publish_uninstaller_bundle",
-                return_value=persisted,
-            ) as publish,
-        ):
-            self.assertTrue(self.ws.install_uninstaller_bundle())
-
-        resolve.assert_called_once()
-        publish.assert_called_once_with(
-            source,
-            destination,
-            self.ws._check_persisted_uninstaller,
-        )
-
-    def test_install_uninstaller_bundle_reports_failure(self):
-        with unittest.mock.patch(
+    with (
+        unittest.mock.patch(
             "deployer.windows_setup.resolve_uninstaller_bundle",
-            side_effect=UninstallerBundleError("build installer first"),
-        ):
-            self.assertFalse(self.ws.install_uninstaller_bundle())
+            return_value=source,
+        ) as resolve,
+        unittest.mock.patch(
+            "deployer.windows_setup.publish_uninstaller_bundle",
+            return_value=persisted,
+        ) as publish,
+    ):
+        self.assertTrue(self.ws.install_uninstaller_bundle())
 
-    def test_persisted_uninstaller_check_rejects_nonzero_exit(self):
-        exe = self.root / "MicroClawInstaller.exe"
-        self.ws._run = unittest.mock.Mock(
-            return_value=SimpleNamespace(returncode=3, stdout="", stderr="runtime failed")
-        )
+    resolve.assert_called_once()
+    publish.assert_called_once_with(
+        source,
+        destination,
+        self.ws._check_persisted_uninstaller,
+    )
 
-        with self.assertRaisesRegex(UninstallerBundleError, "runtime failed"):
-            self.ws._check_persisted_uninstaller(exe)
 
-        self.ws._run.assert_called_once_with(
-            [str(exe), "--check-uninstaller"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
+def test_install_uninstaller_bundle_reports_failure(self):
+    with unittest.mock.patch(
+        "deployer.windows_setup.resolve_uninstaller_bundle",
+        side_effect=UninstallerBundleError("build installer first"),
+    ):
+        self.assertFalse(self.ws.install_uninstaller_bundle())
+
+
+def test_persisted_uninstaller_check_rejects_nonzero_exit(self):
+    exe = self.root / "MicroClawInstaller.exe"
+    self.ws._run = unittest.mock.Mock(
+        return_value=SimpleNamespace(returncode=3, stdout="", stderr="runtime failed")
+    )
+
+    with self.assertRaisesRegex(UninstallerBundleError, "runtime failed"):
+        self.ws._check_persisted_uninstaller(exe)
+
+    self.ws._run.assert_called_once_with(
+        [str(exe), "--check-uninstaller"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
 ```
 
 - [ ] **Step 2: Write a failing no-side-effect argument-routing test**
@@ -537,46 +541,45 @@ from deployer.uninstaller_bundle import (
 Add these methods immediately before `create_desktop_shortcut()`:
 
 ```python
-    def install_uninstaller_bundle(self) -> bool:
-        """Persist a verified uninstaller before exposing Windows entry points."""
-        try:
-            app_dir = Path(__file__).resolve().parent.parent
-            source = resolve_uninstaller_bundle(
-                frozen=getattr(sys, "frozen", False),
-                executable=Path(sys.executable),
-                app_dir=app_dir,
-            )
-            destination = Path.home() / ".openclaw"
-            persisted = publish_uninstaller_bundle(
-                source,
-                destination,
-                self._check_persisted_uninstaller,
-            )
-            self.log.success(f"卸载程序已安装: {persisted}")
-            return True
-        except UninstallerBundleError as error:
-            self.log.error(f"安装卸载程序失败: {error}")
-            return False
+def install_uninstaller_bundle(self) -> bool:
+    """Persist a verified uninstaller before exposing Windows entry points."""
+    try:
+        app_dir = Path(__file__).resolve().parent.parent
+        source = resolve_uninstaller_bundle(
+            frozen=getattr(sys, "frozen", False),
+            executable=Path(sys.executable),
+            app_dir=app_dir,
+        )
+        destination = Path.home() / ".openclaw"
+        persisted = publish_uninstaller_bundle(
+            source,
+            destination,
+            self._check_persisted_uninstaller,
+        )
+        self.log.success(f"卸载程序已安装: {persisted}")
+        return True
+    except UninstallerBundleError as error:
+        self.log.error(f"安装卸载程序失败: {error}")
+        return False
 
-    def _check_persisted_uninstaller(self, executable: Path) -> None:
-        try:
-            result = self._run(
-                [str(executable), "--check-uninstaller"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise UninstallerBundleError(
-                "Persisted uninstaller startup check timed out"
-            ) from error
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "unknown runtime error").strip()
-            raise UninstallerBundleError(
-                f"Persisted uninstaller startup check failed ({result.returncode}): {detail}"
-            )
+
+def _check_persisted_uninstaller(self, executable: Path) -> None:
+    try:
+        result = self._run(
+            [str(executable), "--check-uninstaller"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise UninstallerBundleError("Persisted uninstaller startup check timed out") from error
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown runtime error").strip()
+        raise UninstallerBundleError(
+            f"Persisted uninstaller startup check failed ({result.returncode}): {detail}"
+        )
 ```
 
 - [ ] **Step 5: Add a side-effect-free deploy entry point**
@@ -633,37 +636,40 @@ git commit -m "Persist and check the installed uninstaller" -m "Co-authored-by: 
 Add:
 
 ```python
-    def _write_persisted_uninstaller(self):
-        state = self.home / ".openclaw"
-        state.mkdir(parents=True, exist_ok=True)
-        (state / "MicroClawInstaller.exe").write_text("exe", encoding="utf-8")
-        (state / "_internal").mkdir()
-        (state / "_internal" / "runtime.dll").write_text("runtime", encoding="utf-8")
-        return state / "MicroClawInstaller.exe"
+def _write_persisted_uninstaller(self):
+    state = self.home / ".openclaw"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "MicroClawInstaller.exe").write_text("exe", encoding="utf-8")
+    (state / "_internal").mkdir()
+    (state / "_internal" / "runtime.dll").write_text("runtime", encoding="utf-8")
+    return state / "MicroClawInstaller.exe"
 
-    def test_register_installed_app_refuses_missing_uninstaller(self):
-        fake_winreg = unittest.mock.MagicMock()
-        with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
-            self.assertFalse(self.ws._register_installed_app(None))
-        fake_winreg.CreateKeyEx.assert_not_called()
 
-    def test_uninstall_shortcut_refuses_missing_uninstaller(self):
-        desktop = self.root / "Desktop"
-        desktop.mkdir()
-        self.ws._run = unittest.mock.Mock()
-        self.assertFalse(self.ws._create_uninstall_shortcut(desktop))
-        self.ws._run.assert_not_called()
+def test_register_installed_app_refuses_missing_uninstaller(self):
+    fake_winreg = unittest.mock.MagicMock()
+    with unittest.mock.patch.dict("sys.modules", {"winreg": fake_winreg}):
+        self.assertFalse(self.ws._register_installed_app(None))
+    fake_winreg.CreateKeyEx.assert_not_called()
 
-    def test_create_desktop_shortcut_propagates_uninstall_shortcut_failure(self):
-        desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
-        self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
-        self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
-        self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
-        self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=False)
-        self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
 
-        self.assertFalse(self.ws.create_desktop_shortcut())
+def test_uninstall_shortcut_refuses_missing_uninstaller(self):
+    desktop = self.root / "Desktop"
+    desktop.mkdir()
+    self.ws._run = unittest.mock.Mock()
+    self.assertFalse(self.ws._create_uninstall_shortcut(desktop))
+    self.ws._run.assert_not_called()
+
+
+def test_create_desktop_shortcut_propagates_uninstall_shortcut_failure(self):
+    desktop_exe = self.root / ".microclaw" / "MicroClawDesktop.exe"
+    self.ws._get_desktop_path = unittest.mock.Mock(return_value=self.root / "Desktop")
+    self.ws._find_desktop_exe = unittest.mock.Mock(return_value=desktop_exe)
+    self.ws._create_lnk_shortcut = unittest.mock.Mock(return_value=True)
+    self.ws._create_start_menu_shortcut = unittest.mock.Mock(return_value=True)
+    self.ws._create_uninstall_shortcut = unittest.mock.Mock(return_value=False)
+    self.ws._register_installed_app = unittest.mock.Mock(return_value=True)
+
+    self.assertFalse(self.ws.create_desktop_shortcut())
 ```
 
 Update `test_register_installed_app_writes_hkcu_uninstall_key` to call
@@ -801,39 +807,40 @@ Add a helper to `tests\test_webview_bridge.py`:
 Add:
 
 ```python
-    def test_legacy_pipeline_installs_uninstaller_before_shortcuts(self):
-        app = object.__new__(DeployerApp)
-        app._prepare_upgrade = unittest.mock.Mock()
-        app._ensure_node = unittest.mock.Mock()
-        app._ensure_openclaw = unittest.mock.Mock()
-        app._copy_bundled_assets = unittest.mock.Mock()
-        app._write_env_file = unittest.mock.Mock()
-        setup = unittest.mock.Mock()
+def test_legacy_pipeline_installs_uninstaller_before_shortcuts(self):
+    app = object.__new__(DeployerApp)
+    app._prepare_upgrade = unittest.mock.Mock()
+    app._ensure_node = unittest.mock.Mock()
+    app._ensure_openclaw = unittest.mock.Mock()
+    app._copy_bundled_assets = unittest.mock.Mock()
+    app._write_env_file = unittest.mock.Mock()
+    setup = unittest.mock.Mock()
 
-        labels = self._step_labels(app._build_install_steps(setup))
+    labels = self._step_labels(app._build_install_steps(setup))
 
-        self.assertLess(
-            labels.index("Installing uninstaller..."),
-            labels.index("Creating desktop shortcut..."),
-        )
-        self.assertEqual(
-            app._build_install_steps(setup)[labels.index("Installing uninstaller...")][2],
-            setup.install_uninstaller_bundle,
-        )
+    self.assertLess(
+        labels.index("Installing uninstaller..."),
+        labels.index("Creating desktop shortcut..."),
+    )
+    self.assertEqual(
+        app._build_install_steps(setup)[labels.index("Installing uninstaller...")][2],
+        setup.install_uninstaller_bundle,
+    )
 
-    def test_web_pipeline_installs_uninstaller_before_shortcuts(self):
-        setup = unittest.mock.Mock()
 
-        steps = self.bridge._build_install_steps(setup)
-        labels = self._step_labels(steps)
+def test_web_pipeline_installs_uninstaller_before_shortcuts(self):
+    setup = unittest.mock.Mock()
 
-        self.assertLess(
-            labels.index("Installing uninstaller..."),
-            labels.index("Creating desktop shortcut..."),
-        )
-        uninstaller_step = steps[labels.index("Installing uninstaller...")]
-        self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
-        self.assertEqual(uninstaller_step[3], 1)
+    steps = self.bridge._build_install_steps(setup)
+    labels = self._step_labels(steps)
+
+    self.assertLess(
+        labels.index("Installing uninstaller..."),
+        labels.index("Creating desktop shortcut..."),
+    )
+    uninstaller_step = steps[labels.index("Installing uninstaller...")]
+    self.assertEqual(uninstaller_step[2], setup.install_uninstaller_bundle)
+    self.assertEqual(uninstaller_step[3], 1)
 ```
 
 - [ ] **Step 2: Run pipeline tests and confirm missing-builder failures**

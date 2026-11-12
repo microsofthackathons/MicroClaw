@@ -80,7 +80,15 @@ def fingerprint(root, paths, excludes=()):
             path = Path(name)
             if not path.is_absolute():
                 path = root / path
-            label = os.path.relpath(path, root).replace("\\", "/")
+            try:
+                label = os.path.relpath(path, root).replace("\\", "/")
+            except ValueError:
+                # Hosted Windows runners keep the checkout and toolchains on
+                # different drives. Preserve the external path's identity and
+                # still hash its contents instead of dropping the input.
+                if path.anchor.casefold() == root.anchor.casefold():
+                    raise
+                label = path.as_posix()
             visit(filesystem_path(path), label, set(), executor)
         for entry in entries:
             values = (*entry[:2], *entry[2].result()) if entry[1] == "file" else entry
