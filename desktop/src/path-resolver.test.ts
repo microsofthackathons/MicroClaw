@@ -7,6 +7,7 @@ vi.mock("electron", () => ({
     getPath: vi.fn((name: string) => {
       if (name === "home") return "C:\\Users\\testuser";
       if (name === "appData") return "C:\\Users\\testuser\\AppData\\Roaming";
+      if (name === "userData") return "C:\\Users\\testuser\\AppData\\Roaming\\microclaw";
       return "";
     }),
     get isPackaged() {
@@ -42,6 +43,7 @@ import {
   resolveNodePath,
   resolveOpenClawEntry,
   resolveOpenClawPackageDir,
+  resolveBuiltinSkillsDir,
 } from "./path-resolver";
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -305,14 +307,51 @@ describe("resolveOpenClawEntry", () => {
     expect(resolveOpenClawEntry()).toBe(expected);
   });
 
-  it("returns fallback candidate when nothing exists", () => {
+  it("reports a missing runtime instead of returning a nonexistent legacy entry", () => {
     process.env.USERPROFILE = "C:\\Users\\testuser";
     process.env.APPDATA = "";
     mockExistsSync.mockReturnValue(false);
-    // Should return the first non-empty candidate
-    const result = resolveOpenClawEntry();
-    expect(result).toContain(".openclaw-node");
-    expect(result).toContain("openclaw.mjs");
+    expect(() => resolveOpenClawEntry()).toThrow("No OpenClaw runtime was found");
+  });
+
+  it("uses the installer's prepared ASAR runtime and skills in development", () => {
+    const runtime = path.join(
+      "C:\\Users\\testuser\\AppData\\Roaming\\microclaw",
+      "runtime",
+      "openclaw",
+    );
+    const packageRoot = path.join(runtime, "node_modules", "openclaw");
+    const entry = path.join(packageRoot, "openclaw.mjs");
+    const metadata = path.join(packageRoot, "package.json");
+    const marker = path.join(runtime, ".microclaw-version");
+    mockExistsSync.mockImplementation((p) => [entry, metadata, marker].includes(String(p)));
+    mockReadFileSync.mockImplementation((p) =>
+      String(p) === metadata
+        ? JSON.stringify({ name: "openclaw", version: "2026.10.10" })
+        : "1.0.1:openclaw@2026.10.10:prepared-archive-hash\n",
+    );
+    expect(resolveOpenClawEntry()).toBe(entry);
+    expect(resolveBuiltinSkillsDir()).toBe(path.join(packageRoot, "skills"));
+  });
+
+  it("does not reuse a prepared runtime with inconsistent package metadata", () => {
+    const runtime = path.join(
+      "C:\\Users\\testuser\\AppData\\Roaming\\microclaw",
+      "runtime",
+      "openclaw",
+    );
+    const packageRoot = path.join(runtime, "node_modules", "openclaw");
+    const metadata = path.join(packageRoot, "package.json");
+    const marker = path.join(runtime, ".microclaw-version");
+    mockExistsSync.mockImplementation((p) =>
+      [path.join(packageRoot, "openclaw.mjs"), metadata, marker].includes(String(p)),
+    );
+    mockReadFileSync.mockImplementation((p) =>
+      String(p) === metadata
+        ? JSON.stringify({ name: "openclaw", version: "2026.10.5" })
+        : "1.0.1:openclaw@2026.10.10:prepared-archive-hash\n",
+    );
+    expect(() => resolveOpenClawEntry()).toThrow("installed OpenClaw runtime is incomplete");
   });
 
   it("checks lib/ npm layout as second candidate", () => {
