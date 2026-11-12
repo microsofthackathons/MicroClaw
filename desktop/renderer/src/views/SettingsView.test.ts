@@ -2382,7 +2382,65 @@ describe("SettingsView", () => {
     wrapper.unmount();
   });
 
-  it("opens the English legal documents from About", async () => {
+  it.each([
+    ["en-US", "Usage", "Refresh", "Retry"],
+    ["zh-CN", "用量", "刷新", "重试"],
+  ] as const)(
+    "keeps the Usage icon accessible, disables duplicate refresh and recovers after failure in %s",
+    async (locale, usageLabel, refreshLabel, retryLabel) => {
+      const stats = {
+        totalSpend: 0,
+        totalTokens: 0,
+        maxBudget: null,
+        modelSpend: {},
+        modelBreakdown: {},
+        hasDetailedLogs: false,
+      };
+      const getStats = vi.fn().mockResolvedValue(stats);
+      window.openclaw.usage = { ...createBrowserOpenClawMock().usage, getStats };
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      setLocale(locale);
+      await wrapper.vm.$nextTick();
+      await wrapper
+        .findAll(".settings-menu-item")
+        .find((item) => item.text() === usageLabel)!
+        .trigger("click");
+      await flushPromises();
+
+      const refresh = wrapper.get<HTMLButtonElement>(".usage-refresh-btn");
+      expect(refresh.attributes("type")).toBe("button");
+      expect(refresh.attributes("aria-label")).toBe(refreshLabel);
+      expect(refresh.attributes("title")).toBe(refreshLabel);
+      expect(refresh.get("svg").attributes("aria-hidden")).toBe("true");
+      let rejectRefresh!: (reason: Error) => void;
+      getStats.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectRefresh = reject;
+          }),
+      );
+      await refresh.trigger("click");
+      expect(refresh.element.disabled).toBe(true);
+      refresh.element.click();
+      expect(getStats).toHaveBeenCalledTimes(2);
+
+      rejectRefresh(new Error("Preview usage unavailable"));
+      await flushPromises();
+      expect(wrapper.find(".settings-content").text()).toContain("Preview usage unavailable");
+      expect(wrapper.find(".usage-refresh-btn").exists()).toBe(false);
+      await wrapper
+        .findAll("el-button")
+        .find((button) => button.text() === retryLabel)!
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get<HTMLButtonElement>(".usage-refresh-btn").element.disabled).toBe(false);
+      expect(getStats).toHaveBeenCalledTimes(3);
+      wrapper.unmount();
+    },
+  );
+
+  it("localizes About copyright and opens the legal documents", async () => {
     const wrapper = shallowMount(SettingsView, {
       global: {
         plugins: [createPinia()],
@@ -2395,6 +2453,7 @@ describe("SettingsView", () => {
       .find((item) => item.text() === "About")!
       .trigger("click");
 
+    expect(wrapper.get(".copyright-notice").text()).toBe("Copyright © 2026 MicroClaw");
     const links = wrapper.findAll(".legal-link");
     expect(links.map((link) => link.text())).toEqual([
       "MicroClaw End User License Agreement",
@@ -2416,6 +2475,8 @@ describe("SettingsView", () => {
 
     expect(links[0].text()).toBe("MicroClaw 最终用户许可协议");
     expect(links[0].attributes("href")).toBe("https://microclaw.microsoft.com/eula.html");
+    expect(wrapper.get(".copyright-notice").text()).toBe("版权 © 2026 阿虾");
+    wrapper.unmount();
   });
 });
 
