@@ -26,6 +26,7 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
   let requestGeneration = 0;
   let pendingEvent: GitHubCopilotLoginEvent | null = null;
   let removeListener: (() => void) | undefined;
+  let startRequest: Promise<{ sessionId: string }> | null = null;
 
   const loginInProgress = computed(() => state.value === "signing-in" || state.value === "code");
   const codeExpiryMinutes = computed(() => Math.max(1, Math.ceil(codeExpiresInMs.value / 60_000)));
@@ -47,6 +48,7 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
   }
 
   async function loadModels(generation: number, preferredModel?: string): Promise<void> {
+    if (generation !== requestGeneration || !options.isActive()) return;
     const preparation = await window.openclaw.model.prepareGitHubCopilot();
     if (generation !== requestGeneration || !options.isActive()) return;
     if (preparation.restartRequired)
@@ -57,12 +59,24 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
   }
 
   async function loadStatus(startLoginWhenDisconnected = false): Promise<void> {
+    if (loginInProgress.value && sessionId.value) return;
     const generation = ++requestGeneration;
     state.value = "checking";
     models.value = [];
     selectedModel.value = "";
+    pendingEvent = null;
     options.clearError();
     try {
+      const login = await window.openclaw.model.getGitHubCopilotLoginSession?.();
+      if (generation !== requestGeneration || !options.isActive()) return;
+      if (login) {
+        sessionId.value = login.sessionId;
+        state.value = login.cancelling ? "checking" : "signing-in";
+        if (login.code && !login.cancelling) applyLoginEvent(login.code);
+        const event = takePendingEvent();
+        if (event?.sessionId === login.sessionId) applyLoginEvent(event);
+        return;
+      }
       const status = await window.openclaw.model.getGitHubCopilotStatus();
       if (generation !== requestGeneration || !options.isActive()) return;
       if (!status.authenticated) {
@@ -72,7 +86,7 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
       }
       await loadModels(generation);
     } catch (error) {
-      if (generation !== requestGeneration) return;
+      if (generation !== requestGeneration || !options.isActive()) return;
       state.value = "error";
       options.setError(
         t("modelSetup.copilotStatusFailed", {
@@ -119,8 +133,9 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
   }
 
   function handleLoginEvent(event: GitHubCopilotLoginEvent): void {
+    if (!options.isActive()) return;
     if (!sessionId.value) {
-      if (state.value === "signing-in") pendingEvent = event;
+      if (state.value === "signing-in" || state.value === "checking") pendingEvent = event;
       return;
     }
     if (event.sessionId === sessionId.value) applyLoginEvent(event);
@@ -140,37 +155,53 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
     codeExpiresInMs.value = 0;
     pendingEvent = null;
     options.clearError();
+    let request: Promise<{ sessionId: string }> | null = null;
     try {
-      const result = await window.openclaw.model.startGitHubCopilotLogin();
-      if (generation !== requestGeneration || !options.isActive()) {
-        await window.openclaw.model.cancelGitHubCopilotLogin(result.sessionId);
-        return;
-      }
+      request = window.openclaw.model.startGitHubCopilotLogin();
+      startRequest = request;
+      const result = await request;
+      // The main process owns the login. Closing or switching a panel only
+      // detaches this view; the next view restores the active session.
+      if (generation !== requestGeneration || !options.isActive()) return;
       sessionId.value = result.sessionId;
       const event = takePendingEvent();
       if (event?.sessionId === result.sessionId) applyLoginEvent(event);
+      if (generation !== requestGeneration || !options.isActive()) return;
+      const login = await window.openclaw.model.getGitHubCopilotLoginSession?.();
+      if (generation !== requestGeneration || !options.isActive()) return;
+      if (login?.sessionId === result.sessionId && login.code) applyLoginEvent(login.code);
     } catch (error) {
-      if (generation !== requestGeneration) return;
+      if (generation !== requestGeneration || !options.isActive()) return;
       state.value = "error";
       options.setError(
         t("modelSetup.copilotLoginFailed", {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
+    } finally {
+      if (startRequest === request) startRequest = null;
     }
   }
 
   async function cancelLogin(): Promise<void> {
-    requestGeneration += 1;
+    const generation = ++requestGeneration;
     const activeSessionId = sessionId.value;
+    const pendingStart = startRequest;
     sessionId.value = null;
     pendingEvent = null;
     userCode.value = "";
     codeExpiresInMs.value = 0;
-    state.value = models.value.length ? "authenticated" : "idle";
+    state.value = "checking";
     try {
-      await window.openclaw.model.cancelGitHubCopilotLogin(activeSessionId ?? undefined);
+      const target = activeSessionId ?? (pendingStart ? (await pendingStart).sessionId : null);
+      if (target) await window.openclaw.model.cancelGitHubCopilotLogin(target);
+      if (generation !== requestGeneration || !options.isActive()) return;
+      // Credentials may already have committed before explicit cancellation.
+      // Ask the backend for the final state instead of assuming sign-out.
+      await loadStatus();
     } catch (error) {
+      if (generation !== requestGeneration || !options.isActive()) return;
+      state.value = "error";
       options.setError(
         t("modelSetup.copilotCancelFailed", {
           error: error instanceof Error ? error.message : String(error),
@@ -181,7 +212,6 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
 
   async function reset(): Promise<void> {
     requestGeneration += 1;
-    const activeSessionId = sessionId.value;
     sessionId.value = null;
     pendingEvent = null;
     state.value = "idle";
@@ -189,12 +219,8 @@ export function useGitHubCopilotAuth(options: GitHubCopilotAuthOptions) {
     codeExpiresInMs.value = 0;
     models.value = [];
     selectedModel.value = "";
-    if (!activeSessionId) return;
-    try {
-      await window.openclaw.model.cancelGitHubCopilotLogin(activeSessionId);
-    } catch (error) {
-      console.warn("[github-copilot-auth] Failed to stop completed login worker:", error);
-    }
+    // Reset only view state. The login continues while another provider card
+    // or settings page is open; only the Cancel action cancels authentication.
   }
 
   function openVerificationPage(): void {

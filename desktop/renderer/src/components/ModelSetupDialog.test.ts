@@ -69,6 +69,7 @@ describe("ModelSetupDialog", () => {
   const openExternal = vi.fn();
   const prepareGitHubCopilot = vi.fn();
   const startGitHubCopilotLogin = vi.fn();
+  const getGitHubCopilotLoginSession = vi.fn();
   const cancelGitHubCopilotLogin = vi.fn();
   const getGitHubCopilotStatus = vi.fn();
   const listGitHubCopilotModels = vi.fn();
@@ -92,6 +93,7 @@ describe("ModelSetupDialog", () => {
     registerCatalogModel.mockResolvedValue(undefined);
     prepareGitHubCopilot.mockResolvedValue({ restartRequired: false });
     startGitHubCopilotLogin.mockResolvedValue({ sessionId: "copilot-session" });
+    getGitHubCopilotLoginSession.mockResolvedValue(null);
     cancelGitHubCopilotLogin.mockResolvedValue({ cancelled: true });
     getGitHubCopilotStatus.mockResolvedValue({ authenticated: false });
     listGitHubCopilotModels.mockResolvedValue([]);
@@ -109,6 +111,7 @@ describe("ModelSetupDialog", () => {
         testConnection,
         prepareGitHubCopilot,
         startGitHubCopilotLogin,
+        getGitHubCopilotLoginSession,
         cancelGitHubCopilotLogin,
         getGitHubCopilotStatus,
         listGitHubCopilotModels,
@@ -1019,7 +1022,7 @@ describe("ModelSetupDialog", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it("cancels an in-progress GitHub device login when the dialog closes", async () => {
+  it("keeps an in-progress GitHub device login when the dialog closes", async () => {
     const wrapper = mountDialog();
     await openGitHubCopilotForm(wrapper);
     await wrapper.find(".primary-action").trigger("click");
@@ -1028,8 +1031,60 @@ describe("ModelSetupDialog", () => {
     await wrapper.find(".model-setup-close").trigger("click");
     await flushPromises();
 
-    expect(cancelGitHubCopilotLogin).toHaveBeenCalledWith("copilot-session");
+    expect(cancelGitHubCopilotLogin).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
+    wrapper.unmount();
+    expect(cancelGitHubCopilotLogin).not.toHaveBeenCalled();
+  });
+
+  it("restores the same GitHub login after switching away and reopening the provider", async () => {
+    const first = mountDialog();
+    await openGitHubCopilotForm(first);
+    await first.find(".primary-action").trigger("click");
+    await flushPromises();
+    const code = {
+      sessionId: "copilot-session",
+      status: "code" as const,
+      verificationUrl: "https://github.com/login/device",
+      userCode: "ABCD-1234",
+      expiresInMs: 600_000,
+    };
+    githubCopilotLoginListener?.(code);
+    first.unmount();
+    expect(cancelGitHubCopilotLogin).not.toHaveBeenCalled();
+
+    getGitHubCopilotLoginSession.mockResolvedValue({
+      sessionId: "copilot-session",
+      cancelling: false,
+      code,
+    });
+    const second = mountDialog({ initialFamily: "github-copilot" });
+    await flushPromises();
+    expect(second.text()).toContain("ABCD-1234");
+    expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
+    second.unmount();
+
+    getGitHubCopilotLoginSession.mockResolvedValue(null);
+    getGitHubCopilotStatus.mockResolvedValue({ authenticated: true });
+    listGitHubCopilotModels.mockResolvedValue([{ id: "github-copilot/gpt-5.4", name: "GPT 5.4" }]);
+    const third = mountDialog({ initialFamily: "github-copilot" });
+    await flushPromises();
+    expect(third.text()).toContain("GitHub Copilot connected");
+    expect(startGitHubCopilotLogin).toHaveBeenCalledOnce();
+    expect(cancelGitHubCopilotLogin).not.toHaveBeenCalled();
+    third.unmount();
+  });
+
+  it("does not cancel a login whose start reply arrives after the provider was unmounted", async () => {
+    const started = deferred<{ sessionId: string }>();
+    startGitHubCopilotLogin.mockReturnValueOnce(started.promise);
+    const wrapper = mountDialog();
+    await openGitHubCopilotForm(wrapper);
+    await wrapper.find(".primary-action").trigger("click");
+    wrapper.unmount();
+    started.resolve({ sessionId: "copilot-session" });
+    await flushPromises();
+    expect(cancelGitHubCopilotLogin).not.toHaveBeenCalled();
   });
 
   it("validates and saves a keyless local provider using the tested Base URL", async () => {

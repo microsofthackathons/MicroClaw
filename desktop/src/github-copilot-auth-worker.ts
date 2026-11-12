@@ -110,6 +110,7 @@ export function buildGitHubCopilotLoginOptions(params: {
   prompter: Record<string, unknown>;
   openUrl: (url: string) => Promise<void>;
   runtime: Record<string, unknown>;
+  signal?: AbortSignal;
 }): Record<string, unknown> {
   return {
     config: params.config,
@@ -120,10 +121,16 @@ export function buildGitHubCopilotLoginOptions(params: {
     prompter: params.prompter,
     openUrl: params.openUrl,
     runtime: params.runtime,
+    ...(params.signal
+      ? {
+          signal: params.signal,
+          assertCurrent: () => params.signal!.throwIfAborted(),
+        }
+      : {}),
   };
 }
 
-async function main(): Promise<void> {
+async function main(signal: AbortSignal): Promise<void> {
   const runtimePath = process.argv[2];
   const operation = process.argv[3] ?? "login";
   if (!runtimePath) throw new Error("OpenClaw provider authentication runtime was not provided");
@@ -141,6 +148,7 @@ async function main(): Promise<void> {
     dynamicImport<ProviderCatalogRuntimeModule>(pathToFileURL(providerCatalogPath).href),
     dynamicImport<ConfigRuntimeModule>(pathToFileURL(configRuntimePath).href),
   ]);
+  signal.throwIfAborted();
   if (typeof authRuntime.runModelsAuthLoginFlow !== "function") {
     throw new Error("OpenClaw provider authentication runtime is incompatible");
   }
@@ -187,6 +195,7 @@ async function main(): Promise<void> {
 
   const result = await authRuntime.runModelsAuthLoginFlow(
     buildGitHubCopilotLoginOptions({
+      signal,
       config,
       prompter,
       openUrl: async (url: string) => send({ type: "open-url", url }),
@@ -216,9 +225,38 @@ async function main(): Promise<void> {
 }
 
 if (require.main === module) {
-  void main().catch((error) => {
-    process.stderr.write(`[github-copilot-auth] ${safeErrorMessage(error)}\n`);
-    send({ type: "failure", message: safeErrorMessage(error) });
-    process.exitCode = 1;
-  });
+  const cancellation = new AbortController();
+  const cancel = () => cancellation.abort(new Error("GitHub Copilot sign-in was cancelled"));
+  const onMessage = (message: unknown) => {
+    if (
+      message &&
+      typeof message === "object" &&
+      (message as { type?: unknown }).type === "microclaw-copilot-cancel"
+    )
+      cancel();
+  };
+  process.on("message", onMessage);
+  process.once("disconnect", cancel);
+  void main(cancellation.signal)
+    .catch((error) => {
+      if (
+        cancellation.signal.aborted &&
+        (error === cancellation.signal.reason ||
+          (error instanceof Error && error.name === "AbortError"))
+      )
+        send({ type: "cancelled" });
+      else {
+        process.stderr.write(`[github-copilot-auth] ${safeErrorMessage(error)}\n`);
+        send({ type: "failure", message: safeErrorMessage(error) });
+        process.exitCode = 1;
+      }
+    })
+    .finally(() => {
+      process.off("message", onMessage);
+      process.off("disconnect", cancel);
+      if (process.connected) process.disconnect();
+      // The SDK flow has committed or unwound and released its credential locks.
+      // Flush the terminal reply before exiting any remaining idle SDK workers.
+      process.stdout.write("", () => process.exit(process.exitCode ?? 0));
+    });
 }

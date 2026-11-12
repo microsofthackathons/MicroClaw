@@ -8969,13 +8969,19 @@ function registerIpcHandlers(): void {
     return { sessionId };
   });
 
-  ipcMain.handle("model:github-copilot:cancel-login", (_event, sessionId?: string) => ({
-    cancelled: githubCopilotAuthManager.cancel(sessionId),
+  ipcMain.handle("model:github-copilot:login-session", (event) => {
+    assertTrustedRendererIpc(event);
+    assertGitHubCopilotEnabled(internalFeatures.githubCopilot);
+    return githubCopilotAuthManager.getLoginSession();
+  });
+
+  ipcMain.handle("model:github-copilot:cancel-login", async (_event, sessionId?: string) => ({
+    cancelled: await githubCopilotAuthManager.cancel(sessionId),
   }));
 
   ipcMain.handle("model:github-copilot:disconnect", async () => {
     sessionModelService.assertIdle();
-    githubCopilotAuthManager.stop();
+    await githubCopilotAuthManager.stop();
     githubCopilotLoginInProgress = false;
     return withModelConfigurationMutation(async () => {
       const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
@@ -9795,7 +9801,9 @@ app.on("before-quit", (event) => {
   }
   destroyTray();
   backgroundSearchProvider.stop();
-  githubCopilotAuthManager.stop();
+  void githubCopilotAuthManager.stop().catch((error) => {
+    console.warn("[github-copilot-auth] Login shutdown did not finish:", error);
+  });
   gwClient?.stop();
   stopBundledWindowsNodeHost();
   const gatewayShutdown = windowsNodeMxcSecurityTransitionInProgress

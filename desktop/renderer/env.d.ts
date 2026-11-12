@@ -393,6 +393,11 @@ interface OpenClawAPI {
     }): Promise<{ ok: boolean; message: string; baseUrl?: string }>;
     prepareGitHubCopilot(): Promise<{ restartRequired: boolean }>;
     startGitHubCopilotLogin(): Promise<{ sessionId: string }>;
+    getGitHubCopilotLoginSession(): Promise<{
+      sessionId: string;
+      cancelling: boolean;
+      code: Extract<GitHubCopilotLoginEvent, { status: "code" }> | null;
+    } | null>;
     cancelGitHubCopilotLogin(sessionId?: string): Promise<{ cancelled: boolean }>;
     disconnectGitHubCopilot(): Promise<{ disconnected: true; removedProfiles: number }>;
     getGitHubCopilotStatus(): Promise<{ authenticated: boolean }>;
