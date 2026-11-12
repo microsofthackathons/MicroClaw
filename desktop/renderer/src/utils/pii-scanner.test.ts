@@ -30,11 +30,11 @@ describe("scanPii — phone (CN mainland)", () => {
 
 // ── International phone ────────────────────────────────────────────────
 describe("scanPii — phone (international)", () => {
-  it("detects +86 prefix numbers", () => {
+  it("detects +86 prefix numbers as a single international match", () => {
     const matches = scanPii("Call +86 13812345678 now");
-    // Both international and CN mobile rules will match — both are fine
     const phones = matches.filter((m) => m.type === "phone");
-    expect(phones.length).toBeGreaterThanOrEqual(1);
+    expect(phones).toHaveLength(1);
+    expect(phones[0].value).toBe("+86 13812345678");
   });
 
   it("detects +1 US-style numbers", () => {
@@ -192,6 +192,20 @@ describe("redactPii", () => {
   it("replaces all matches with their redacted forms", () => {
     const out = redactPii("phone 13812345678 and email alice@example.com.");
     expect(out).toBe("phone 138****5678 and email al***@example.com.");
+  });
+
+  it("redacts overlapping international and mainland phone matches only once", () => {
+    expect(redactPii("Call +86 13812345678 now")).toBe("Call +86 ****678 now");
+  });
+
+  it("redacts repeated occurrences of the same overlapping phone number", () => {
+    expect(redactPii("Call +86 13812345678 or +86 13812345678 now")).toBe(
+      "Call +86 ****678 or +86 ****678 now",
+    );
+  });
+
+  it("preserves adjacent non-overlapping matches from different categories", () => {
+    expect(redactPii("alice@example.com+86 13812345678")).toBe("al***@example.com+86 ****678");
   });
 
   it("handles empty input", () => {
