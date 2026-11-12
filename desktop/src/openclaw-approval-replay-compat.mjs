@@ -7,6 +7,10 @@ import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
+// Keep real-path checks on every load. Windows' native implementation avoids
+// repeatedly walking each path component in JavaScript without caching identity.
+const canonicalPath = process.platform === "win32" ? realpathSync.native : realpathSync;
+
 const EXPECTED_VERSION = "2026.10.10";
 const EXPECTED_NODE_GATEWAY_MODULE = "nodes-Cl-Air2F.mjs";
 const EXPECTED_NODE_GATEWAY_SHA256 =
@@ -2161,7 +2165,7 @@ export function validatePinnedOpenClawApprovalPackage(
     throw new Error("MICROCLAW_OPENCLAW_PACKAGE_DIR must be an absolute path");
   }
 
-  const canonicalPackageDir = realpathSync(packageDir);
+  const canonicalPackageDir = canonicalPath(packageDir);
   const packageJson = JSON.parse(readFileSync(join(canonicalPackageDir, "package.json"), "utf8"));
   const modules = Object.hasOwn(PINNED_RELEASE_MODULES, packageJson.version)
     ? PINNED_RELEASE_MODULES[packageJson.version]
@@ -2210,7 +2214,7 @@ export function validatePinnedOpenClawApprovalPackage(
 
   return requestedTargets.map((target) => {
     const modulePath = join(canonicalPackageDir, "dist", target.module);
-    const targetPath = realpathSync(modulePath);
+    const targetPath = canonicalPath(modulePath);
     const targetRelative = relative(canonicalPackageDir, targetPath);
     if (targetRelative.startsWith("..") || isAbsolute(targetRelative)) {
       throw new Error("Pinned OpenClaw approval module escaped its package directory");
@@ -2223,6 +2227,28 @@ export function validatePinnedOpenClawApprovalPackage(
     target.patch(original.toString("utf8"));
     return { ...target, modulePath, targetPath, original };
   });
+}
+
+export function createPinnedApprovalLoadHook(targets) {
+  const lexicalTargets = new Map();
+  const canonicalTargets = new Map();
+  for (const target of targets) {
+    const lexical = resolve(target.modulePath);
+    if (!lexicalTargets.has(lexical)) lexicalTargets.set(lexical, target);
+    if (!canonicalTargets.has(target.targetPath)) canonicalTargets.set(target.targetPath, target);
+  }
+  return function load(url, context, nextLoad) {
+    const result = nextLoad(url, context);
+    if (!url.startsWith("file:")) return result;
+    const requestedPath = resolve(fileURLToPath(url));
+    const lexicalTarget = lexicalTargets.get(requestedPath);
+    const loadedPath = canonicalPath(requestedPath);
+    if (lexicalTarget && lexicalTarget.targetPath !== loadedPath) {
+      throw new Error(`Pinned OpenClaw module changed after validation (${lexicalTarget.module})`);
+    }
+    const target = lexicalTarget ?? canonicalTargets.get(loadedPath);
+    return target ? { ...result, source: target.patch(target.original.toString("utf8")) } : result;
+  };
 }
 
 function initialize() {
@@ -2260,27 +2286,7 @@ function initialize() {
   if (approvalEnabled) installApprovalProofMinter();
   if (hooksPauseEnabled) installWindowsNodeMxcHooksGate();
 
-  registerHooks({
-    load(url, context, nextLoad) {
-      const result = nextLoad(url, context);
-      const requestedPath = url.startsWith("file:") ? resolve(fileURLToPath(url)) : null;
-      const lexicalTarget = targets.find(
-        (candidate) => resolve(candidate.modulePath) === requestedPath,
-      );
-      const loadedPath = requestedPath ? realpathSync(requestedPath) : null;
-      if (lexicalTarget && lexicalTarget.targetPath !== loadedPath) {
-        throw new Error(
-          `Pinned OpenClaw module changed after validation (${lexicalTarget.module})`,
-        );
-      }
-      const target =
-        lexicalTarget ?? targets.find((candidate) => candidate.targetPath === loadedPath);
-      if (target) {
-        return { ...result, source: target.patch(target.original.toString("utf8")) };
-      }
-      return result;
-    },
-  });
+  registerHooks({ load: createPinnedApprovalLoadHook(targets) });
   globalThis.console.log(
     `[microclaw-openclaw-compat] enabled ${[
       approvalEnabled ? "one-use node proof and prepared-plan backports" : null,

@@ -987,6 +987,54 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
         )
         self.assertEqual((self.package / "old.txt").read_text(), "changed-package")
 
+    def test_managed_backup_filters_legacy_uninstaller_payload_and_restores_runtime(self) -> None:
+        internal = self.state / "_internal"
+        internal.mkdir()
+        (self.state / "MicroClawInstaller.exe").write_bytes(b"old-installer")
+        for name in ("runtime.dll", "base_library.zip", "microclaw-portable.zip"):
+            (internal / name).write_bytes(name.encode())
+        (internal / "skills").mkdir()
+        (internal / "skills" / "install-data.txt").write_bytes(b"installation data")
+        tx = self._create(backup_mode=UpgradeBackupMode.MANAGED_STATE)
+        tx.backup()
+        backup = tx.backup_dir / "state" / "_internal"
+        self.assertTrue((backup / "base_library.zip").is_file())
+        self.assertFalse((backup / "microclaw-portable.zip").exists())
+        self.assertFalse((backup / "skills").exists())
+        self.assertTrue((internal / "microclaw-portable.zip").is_file())
+        inventory = json.loads((tx.backup_dir / "backup-files.json").read_text(encoding="utf-8"))
+        self.assertNotIn("state/_internal/microclaw-portable.zip", inventory)
+        self.assertIn("state/_internal/base_library.zip", inventory)
+
+        (internal / "runtime.dll").write_bytes(b"new-runtime")
+        tx.rollback()
+        self.assertEqual((internal / "runtime.dll").read_bytes(), b"runtime.dll")
+        self.assertTrue((internal / "base_library.zip").is_file())
+        self.assertFalse((internal / "microclaw-portable.zip").exists())
+        self.assertEqual((self.state / "MicroClawInstaller.exe").read_bytes(), b"old-installer")
+
+    def test_recovering_old_managed_backup_does_not_restore_installation_zip(self) -> None:
+        internal = self.state / "_internal"
+        internal.mkdir()
+        (internal / "runtime.dll").write_bytes(b"old-runtime")
+        tx = self._create(backup_mode=UpgradeBackupMode.MANAGED_STATE)
+        tx.backup()
+        # Reproduce an older backup and its intact inventory without changing the schema.
+        old_zip = tx.backup_dir / "state" / "_internal" / "microclaw-portable.zip"
+        old_zip.write_bytes(b"old-desktop-payload")
+        inventory_path = tx.backup_dir / "backup-files.json"
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory["state/_internal/microclaw-portable.zip"] = old_zip.stat().st_size
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        tx.close()
+        (internal / "runtime.dll").write_bytes(b"new-runtime")
+        loaded = self._load()
+        self.assertIsNotNone(loaded)
+        loaded.rollback()
+        self.assertEqual((internal / "runtime.dll").read_bytes(), b"old-runtime")
+        self.assertFalse((internal / "microclaw-portable.zip").exists())
+        self.assertTrue(old_zip.is_file())
+
     def test_local_provider_addition_rolls_back_without_touching_other_extensions(self) -> None:
         other = self.state / "extensions" / "other-plugin"
         other.mkdir(parents=True)
