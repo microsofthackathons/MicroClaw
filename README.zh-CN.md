@@ -288,6 +288,13 @@ Gateway 原生工具、插件、频道、Cron、Hooks 和 Canvas 在两种模式
 .\build.ps1
 ```
 
+`build.ps1` 准备内置 OpenClaw 资源时默认使用华为 npm 源
+（`https://repo.huaweicloud.com/repository/npm/`），不受机器普通 npm 源配置影响。
+如需覆盖，优先使用显式设置的 `MICROCLAW_NPM_REGISTRY`，其次为 `MSIX_NPM_REGISTRY`。
+该设置仅作用于资源准备，成功或失败后均恢复；普通依赖安装与用户 npm 配置不变。
+构建日志只显示源的协议、主机和端口，不输出凭据、路径或查询参数。
+固定版本、Node 引擎和资源完整性校验仍会执行。
+
 该脚本依次执行：
 
 1. 构建桌面应用（`desktop/` → Electron Builder）

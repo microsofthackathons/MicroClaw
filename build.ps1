@@ -205,7 +205,22 @@ $nativeCache = Get-BuildCache -Stage native -Context $nativeContext `
 Start-BuildStage 'Step 1/7: prepare packaged resources'
 if (-not $nativeCache.hit) {
     Push-Location "$root\desktop"
+    $previousResourceRegistry = $env:MICROCLAW_NPM_REGISTRY
     try {
+        if (-not $env:MICROCLAW_NPM_REGISTRY) {
+            $env:MICROCLAW_NPM_REGISTRY = if ($env:MSIX_NPM_REGISTRY) {
+                $env:MSIX_NPM_REGISTRY
+            } else {
+                'https://repo.huaweicloud.com/repository/npm/'
+            }
+        }
+        $resourceRegistryUri = $null
+        if (-not [Uri]::TryCreate($env:MICROCLAW_NPM_REGISTRY, [UriKind]::Absolute, [ref]$resourceRegistryUri) -or
+            $resourceRegistryUri.Scheme -notin @('http', 'https') -or -not $resourceRegistryUri.Host) {
+            throw 'OpenClaw resource npm registry must be an absolute HTTP(S) URL'
+        }
+        Write-Host ("  OpenClaw resource npm registry: {0}://{1}" -f `
+            $resourceRegistryUri.Scheme, $resourceRegistryUri.Authority)
         npm run prepare-packaged-resources
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  ERROR: packaged runtime resource preparation failed" -ForegroundColor Red
@@ -213,6 +228,7 @@ if (-not $nativeCache.hit) {
             exit 1
         }
     } finally {
+        $env:MICROCLAW_NPM_REGISTRY = $previousResourceRegistry
         Pop-Location
     }
     Start-BuildStage 'Step 1/7: save native cache'

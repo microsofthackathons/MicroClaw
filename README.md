@@ -379,6 +379,15 @@ Full build pipeline (PowerShell):
 .\build.ps1
 ```
 
+For packaged OpenClaw resource acquisition, `build.ps1` defaults to the Huawei npm
+registry (`https://repo.huaweicloud.com/repository/npm/`), independently of the
+machine's ordinary npm registry. Explicit `MICROCLAW_NPM_REGISTRY` overrides take
+precedence, followed by `MSIX_NPM_REGISTRY`. This setting is scoped to resource
+preparation and restored on success or failure; ordinary dependency installs and
+user npm configuration are unchanged. The build logs only the registry origin,
+without credentials, paths, or query parameters. Pinned version, engine, and resource
+validation remain required.
+
 This script sequentially:
 
 1. Builds the desktop app (`desktop/` → Electron Builder)
