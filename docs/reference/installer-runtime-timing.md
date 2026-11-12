@@ -14,6 +14,7 @@
 - `kind`：普通阶段为 `phase`，包含子阶段的总等待为 `summary`。
 - `cache`：缓存检查结束时明确记录 `hit` 或 `miss`。
 - `attempt`、`errorCode`：发布重试的次数和文件系统错误码；失败阶段可带错误码。
+- `concurrency`、`fileCount`、`byteCount`：并行写入阶段使用的文件任务数上限、文件数和内容字节数。
 
 ## 阶段
 
@@ -35,9 +36,13 @@
 | worker | staging-cleanup | 删除本次暂存目录 |
 | worker | staging-parent-create | 创建运行时父目录 |
 | worker | archive-extract | 将 ASAR 全量展开到暂存目录 |
+| worker | archive-write-files | 有界并行读写文件，复用归档读取句柄；属于 archive-extract 的内部明细 |
+| worker | archive-extract-compatibility | 包含链接或外置 unpacked 文件时使用上游兼容提取逻辑；属于 archive-extract 的内部明细 |
 | worker | entry-validation | 检查展开后的运行时入口 |
 | worker | version-marker-write | 写入缓存版本标记 |
-| worker | old-runtime-remove | 递归删除旧运行时目录 |
+| worker | old-runtime-remove | 旧安装包的旧运行时删除计时；新流程由升级事务在提交后清理 |
+| worker | previous-runtime-retain | 将旧运行时改名保留，等待安装器验证提交 |
+| worker | previous-runtime-restore | 新运行时发布失败时恢复旧目录 |
 | worker | runtime-publish | 发布暂存目录，包含已有重试等待 |
 | worker | publish-retry-wait | 单次发布重试等待，是 runtime-publish 的内部明细，不应重复相加 |
 | worker | failed-staging-cleanup | 失败时清理暂存目录 |
@@ -45,6 +50,10 @@
 | installer | result-validation | 校验回执、预期路径、入口、版本标记及包信息 |
 
 ## 读取方式与边界
+
+- 安装器和普通桌面的异步准备 Worker 最多同时处理 8 个文件，每个任务复用 1 MiB 缓冲区。
+  大文件按块复制，不一次加载整个归档。失败时先等待已经开始的写入结束，再关闭句柄和清理暂存目录。
+  同步兼容入口仍保留上游提取方式。此并行实现尚未运行测试或测量提速，须重新构建安装包后人工验证。
 
 - 每个阶段先记录开始，再记录结束或失败；缓存命中时不会出现不曾执行的展开、删旧或发布阶段。
 - 子进程仍按原方式捕获输出。安装器在子进程结束后将上述计时记录写入安装日志；不是实时流式显示。
@@ -81,6 +90,8 @@ Web 安装器另外输出 `MICROCLAW_INSTALL_TIMING ` JSON（`schemaVersion: 2`�
 本地结构化日志从安装线程进入开始，两者之间的调度开销不应被误当成某个安装步骤。
 
 ## 实测记录
+
+当前核心安装已统一为内置运行时，跨版本数据迁移与恢复顺序见[统一安装与升级](bundled-runtime-upgrade.md)。历史 npm 安装步骤的日志保留原始口径。
 
 - [2026-11-11 老用户覆盖安装：62.410 秒](installation-timing-2026-11-11.md)：记录已有依赖、
   运行时缓存命中条件下的安装耗时，并解释桌面客户端安装、更新前置检查与管理状态备份的实际范围。

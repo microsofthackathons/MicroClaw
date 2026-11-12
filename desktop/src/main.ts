@@ -21,6 +21,7 @@ import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing"
 import { RuntimePreparationTiming, parseRuntimeTiming } from "./runtime-preparation-timing";
 import { prepareBundledOpenClawDir } from "./bundled-runtime";
 import { INSTALLER_RUNTIME_ARGUMENT, prepareInstallerRuntime } from "./installer-runtime";
+import { assertBundledUpgradeComplete } from "./bundled-upgrade-guard";
 import {
   BackgroundSearchProvider,
   searchSetupUpgradeCommitted,
@@ -434,7 +435,9 @@ if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release(
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-const performanceFixture = configurePerformanceFixture(app, process.env);
+const performanceFixture = configurePerformanceFixture(app, process.env, {
+  runtimePreparationOnly: process.argv.includes(INSTALLER_RUNTIME_ARGUMENT),
+});
 const internalFeatures = readInternalFeatures(process.env);
 const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
   defaults: { windowBounds: null },
@@ -9630,6 +9633,7 @@ const applicationStartup = app.whenReady().then(async () => {
   try {
     const home = app.getPath("home");
     const microclawRoot = path.join(home, ".microclaw");
+    assertBundledUpgradeComplete(microclawRoot);
     const expectedStateDir = path.join(home, ".openclaw");
     const installerOwnsUpgrade =
       typeof postInstallTransactionId === "string" &&

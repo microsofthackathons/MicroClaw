@@ -84,6 +84,19 @@ describe("performance fixture isolation", () => {
     expect(app.setPath).not.toHaveBeenCalled();
   });
 
+  it("isolates installer runtime preparation without pre-creating user configuration", () => {
+    const value = fixture();
+    const config = path.join(value.root, "state", "openclaw.json");
+    fs.unlinkSync(config);
+    const app = { setPath: vi.fn() };
+    expect(
+      configurePerformanceFixture(app, value.environment, { runtimePreparationOnly: true }),
+    ).toBe(true);
+    expect(app.setPath).toHaveBeenCalledTimes(5);
+    expect(fs.existsSync(config)).toBe(false);
+    expect(() => configurePerformanceFixture(app, value.environment)).toThrow();
+  });
+
   it("rejects a mismatched Gateway port before changing paths", () => {
     const value = fixture();
     fs.writeFileSync(

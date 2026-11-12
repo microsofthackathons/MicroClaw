@@ -42,7 +42,6 @@ describe("materializeRuntimeArchive", () => {
       "archive-extract",
       "entry-validation",
       "version-marker-write",
-      "old-runtime-remove",
       "runtime-publish",
     ]);
     expect(events[1]).toMatchObject({ cache: "miss" });
@@ -127,13 +126,21 @@ describe("materializeRuntimeArchive", () => {
       fs.writeFileSync(path.join(destination, "node_modules", "openclaw", "openclaw.mjs"), "");
     };
     const cacheVersion = (version: string) =>
-      runtimeArchiveCacheVersion("openclaw.asar", "1.0.0", (_archive, filename) => {
-        expect(filename).toBe(path.join("node_modules", "openclaw", "package.json"));
-        return Buffer.from(JSON.stringify({ name: "openclaw", version }));
-      });
+      runtimeArchiveCacheVersion(
+        "openclaw.asar",
+        "1.0.0",
+        (_archive, filename) => {
+          expect(filename).toBe(path.join("node_modules", "openclaw", "package.json"));
+          return Buffer.from(JSON.stringify({ name: "openclaw", version }));
+        },
+        () => "test-header",
+      );
 
     materializeRuntimeArchive("openclaw.asar", runtimeRoot, "1.0.0", extract);
     materializeRuntimeArchive("openclaw.asar", runtimeRoot, cacheVersion("2026.10.2"), extract);
+    expect(fs.existsSync(`${runtimeRoot}.previous`)).toBe(true);
+    // The installer retires the previous generation only after validation.
+    fs.rmSync(`${runtimeRoot}.previous`, { recursive: true });
     materializeRuntimeArchive("openclaw.asar", runtimeRoot, cacheVersion("2026.10.5"), extract);
     materializeRuntimeArchive("openclaw.asar", runtimeRoot, cacheVersion("2026.10.5"), extract);
     expect(extractions).toBe(3);
@@ -163,10 +170,35 @@ describe("materializeRuntimeArchive", () => {
     const archive = path.join(root, "openclaw.asar");
     await createPackage(source, archive);
     const version = runtimeArchiveCacheVersion(archive, "1.0.0");
-    expect(version).toBe("1.0.0:openclaw@2026.10.5");
+    expect(version).toMatch(/^1\.0\.0:openclaw@2026\.10\.5:[a-f0-9]{64}$/);
     const runtime = materializeRuntimeArchive(archive, path.join(root, "runtime"), version);
     expect(
       fs.readFileSync(path.join(runtime, "node_modules", "openclaw", "openclaw.mjs"), "utf8"),
     ).toBe("export {};");
+  });
+
+  it("invalidates a same-version cache when archive contents change", () => {
+    const metadata = () => Buffer.from(JSON.stringify({ name: "openclaw", version: "2026.10.10" }));
+    expect(runtimeArchiveCacheVersion("archive", "1.0", metadata, () => "old header")).not.toBe(
+      runtimeArchiveCacheVersion("archive", "1.0", metadata, () => "new header"),
+    );
+  });
+
+  it("restores the previous runtime when publishing the staged generation fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-runtime-rollback-"));
+    roots.push(root);
+    const runtime = path.join(root, "openclaw");
+    const extract = (_archive: string, destination: string) => {
+      fs.mkdirSync(path.join(destination, "node_modules", "openclaw"), { recursive: true });
+      fs.writeFileSync(path.join(destination, "node_modules", "openclaw", "openclaw.mjs"), "entry");
+    };
+    materializeRuntimeArchive("archive", runtime, "old", extract);
+    expect(() =>
+      materializeRuntimeArchive("archive", runtime, "new", extract, undefined, () => {
+        throw new Error("publication failed");
+      }),
+    ).toThrow("Failed to prepare");
+    expect(fs.readFileSync(path.join(runtime, ".microclaw-version"), "utf8").trim()).toBe("old");
+    expect(fs.existsSync(`${runtime}.previous`)).toBe(false);
   });
 });

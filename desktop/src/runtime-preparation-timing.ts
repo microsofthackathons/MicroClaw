@@ -6,6 +6,9 @@ interface RuntimeTimingDetails {
   cache?: "hit" | "miss";
   attempt?: number;
   errorCode?: string;
+  concurrency?: number;
+  fileCount?: number;
+  byteCount?: number;
 }
 
 export interface RuntimePreparationTimingEvent extends RuntimeTimingDetails {
@@ -47,6 +50,15 @@ export function parseRuntimeTiming(message: unknown): RuntimePreparationTimingEv
         ? { attempt: value.attempt }
         : {}),
       ...(typeof value.errorCode === "string" ? { errorCode: value.errorCode } : {}),
+      ...(Number.isSafeInteger(value.concurrency) && value.concurrency >= 0
+        ? { concurrency: value.concurrency }
+        : {}),
+      ...(Number.isSafeInteger(value.fileCount) && value.fileCount >= 0
+        ? { fileCount: value.fileCount }
+        : {}),
+      ...(Number.isSafeInteger(value.byteCount) && value.byteCount >= 0
+        ? { byteCount: value.byteCount }
+        : {}),
     };
   } catch {
     return null;

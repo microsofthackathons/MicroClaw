@@ -705,16 +705,15 @@ class WebInstallerBridge:
             (18, steps["prepareUpgrade"], lambda: self._prepare_upgrade(ws), 0),
             (25, steps["node"], lambda: self._ensure_node(ws), NETWORK_RETRIES),
             (35, steps["npmRegistry"], ws.setup_npm_mirror, NETWORK_RETRIES),
-            (
-                50,
-                steps["openclaw"],
-                lambda: self._ensure_openclaw(ws),
-                0,
-            ),
             (52, steps["prepareUpgrade"], ws.prepare_openclaw_upgrade, 0),
             (55, steps["path"], ws.add_to_path, LOCAL_RETRIES),
-            (60, steps["desktop"], ws.install_desktop_client, NETWORK_RETRIES),
-            (62, steps["assets"], lambda: self._copy_bundled_assets(), LOCAL_RETRIES),
+            (60, steps["desktop"], ws.install_desktop_client, 0),
+            (
+                62,
+                steps["assets"],
+                lambda: ws.prepare_bundled_assets() and self._copy_bundled_assets(),
+                LOCAL_RETRIES,
+            ),
             (65, steps["apiKeys"], lambda: self._write_env_file(), LOCAL_RETRIES),
             (70, steps["config"], ws.write_config, LOCAL_RETRIES),
             (
@@ -739,6 +738,7 @@ class WebInstallerBridge:
 
     def _execute_installation(self, timing):
         ws = WindowsSetup(self._config, self._logger)
+        ws.use_bundled_runtime = True
         ws.install_timing = timing
         ws.progress_callback = self._set_progress_detail
         steps = self._build_install_steps(ws)
@@ -795,8 +795,8 @@ class WebInstallerBridge:
 
     def _build_final_steps(self, ws):
         return [
-            (99, "verifyUpgrade", ws.begin_openclaw_upgrade_validation, LOCAL_RETRIES),
-            (100, "commitUpgrade", ws.commit_openclaw_upgrade, LOCAL_RETRIES),
+            (99, "verifyUpgrade", ws.begin_openclaw_upgrade_validation, 0),
+            (100, "commitUpgrade", ws.commit_openclaw_upgrade, 0),
         ]
 
     def _run_step_with_retry(self, pct, label, fn, retries, progress_key=""):

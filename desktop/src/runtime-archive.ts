@@ -1,7 +1,9 @@
-import { extractAll, extractFile } from "@electron/asar";
+import { extractAll, extractFile, getRawHeader } from "@electron/asar";
+import { createHash } from "node:crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { Worker } from "node:worker_threads";
+import { extractRuntimeArchiveParallel } from "./runtime-archive-extract";
 import { measureRuntimePhase, type RuntimePreparationTiming } from "./runtime-preparation-timing";
 
 const RUNTIME_ENTRY = path.join("node_modules", "openclaw", "openclaw.mjs");
@@ -37,6 +39,7 @@ export function runtimeArchiveCacheVersion(
   archivePath: string,
   desktopVersion: string,
   readArchiveFile: (archive: string, filename: string) => Buffer = extractFile,
+  readHeader: (archive: string) => string = (archive) => getRawHeader(archive).headerString,
 ): string {
   const metadata: unknown = JSON.parse(
     readArchiveFile(archivePath, path.join("node_modules", "openclaw", "package.json")).toString(
@@ -54,7 +57,10 @@ export function runtimeArchiveCacheVersion(
   ) {
     throw new Error("Bundled OpenClaw archive has invalid package metadata");
   }
-  return `${desktopVersion}:openclaw@${metadata.version}`;
+  // The header contains each archived file's integrity hash, including dependencies.
+  // Repacking the same version must not silently reuse a different dependency tree.
+  const identity = createHash("sha256").update(readHeader(archivePath)).digest("hex");
+  return `${desktopVersion}:openclaw@${metadata.version}:${identity}`;
 }
 
 export function isRuntimeArchiveCurrent(runtimeRoot: string, version: string): boolean {
@@ -67,20 +73,23 @@ export function isRuntimeArchiveCurrent(runtimeRoot: string, version: string): b
   );
 }
 
-export function materializeRuntimeArchive(
-  archivePath: string,
+function prepareRuntimeStaging(
   runtimeRoot: string,
   version: string,
-  extractArchive: (archive: string, destination: string) => void = extractAll,
   timing?: RuntimePreparationTiming,
-): string {
+): string | null {
+  const previousRoot = `${runtimeRoot}.previous`;
+  // Recover a publication interrupted after moving the old tree aside.
+  if (!fs.existsSync(runtimeRoot) && fs.existsSync(previousRoot)) {
+    fs.renameSync(previousRoot, runtimeRoot);
+  }
   const current = measureRuntimePhase(
     timing,
     "cache-check",
     () => isRuntimeArchiveCurrent(runtimeRoot, version),
     (hit) => ({ cache: hit ? "hit" : "miss" }),
   );
-  if (current) return runtimeRoot;
+  if (current) return null;
 
   const stagingRoot = `${runtimeRoot}.staging-${process.pid}`;
   measureRuntimePhase(timing, "staging-cleanup", () =>
@@ -89,27 +98,96 @@ export function materializeRuntimeArchive(
   measureRuntimePhase(timing, "staging-parent-create", () =>
     fs.mkdirSync(path.dirname(runtimeRoot), { recursive: true }),
   );
+  return stagingRoot;
+}
+
+function publishPreparedRuntime(
+  stagingRoot: string,
+  runtimeRoot: string,
+  version: string,
+  timing: RuntimePreparationTiming | undefined,
+  publish: typeof commitRuntimeArchive,
+): void {
+  const previousRoot = `${runtimeRoot}.previous`;
+  measureRuntimePhase(timing, "entry-validation", () => {
+    if (!fs.existsSync(path.join(stagingRoot, RUNTIME_ENTRY))) {
+      throw new Error("Bundled OpenClaw archive is missing openclaw.mjs");
+    }
+  });
+  measureRuntimePhase(timing, "version-marker-write", () =>
+    fs.writeFileSync(path.join(stagingRoot, VERSION_MARKER), `${version}\n`, "utf8"),
+  );
+  if (fs.existsSync(previousRoot)) {
+    throw new Error("An earlier runtime replacement still requires installer recovery");
+  }
+  const hadPrevious = fs.existsSync(runtimeRoot);
+  if (hadPrevious)
+    measureRuntimePhase(timing, "previous-runtime-retain", () =>
+      fs.renameSync(runtimeRoot, previousRoot),
+    );
   try {
-    measureRuntimePhase(timing, "archive-extract", () => extractArchive(archivePath, stagingRoot));
-    measureRuntimePhase(timing, "entry-validation", () => {
-      if (!fs.existsSync(path.join(stagingRoot, RUNTIME_ENTRY))) {
-        throw new Error("Bundled OpenClaw archive is missing openclaw.mjs");
-      }
-    });
-    measureRuntimePhase(timing, "version-marker-write", () =>
-      fs.writeFileSync(path.join(stagingRoot, VERSION_MARKER), `${version}\n`, "utf8"),
-    );
-    measureRuntimePhase(timing, "old-runtime-remove", () =>
-      fs.rmSync(runtimeRoot, { recursive: true, force: true }),
-    );
     measureRuntimePhase(timing, "runtime-publish", () =>
-      commitRuntimeArchive(stagingRoot, runtimeRoot, undefined, undefined, timing),
+      publish(stagingRoot, runtimeRoot, undefined, undefined, timing),
     );
   } catch (error) {
-    measureRuntimePhase(timing, "failed-staging-cleanup", () =>
-      fs.rmSync(stagingRoot, { recursive: true, force: true }),
-    );
-    throw new Error("Failed to prepare the bundled OpenClaw runtime", { cause: error });
+    if (hadPrevious && !fs.existsSync(runtimeRoot))
+      measureRuntimePhase(timing, "previous-runtime-restore", () =>
+        fs.renameSync(previousRoot, runtimeRoot),
+      );
+    throw error;
+  }
+  // Keep the previous runtime until the installer has validated the upgrade.
+}
+
+function discardRuntimeStaging(
+  stagingRoot: string,
+  error: unknown,
+  timing?: RuntimePreparationTiming,
+): never {
+  measureRuntimePhase(timing, "failed-staging-cleanup", () =>
+    fs.rmSync(stagingRoot, { recursive: true, force: true }),
+  );
+  throw new Error("Failed to prepare the bundled OpenClaw runtime", { cause: error });
+}
+
+export function materializeRuntimeArchive(
+  archivePath: string,
+  runtimeRoot: string,
+  version: string,
+  extractArchive: (archive: string, destination: string) => void = extractAll,
+  timing?: RuntimePreparationTiming,
+  publish: typeof commitRuntimeArchive = commitRuntimeArchive,
+): string {
+  const stagingRoot = prepareRuntimeStaging(runtimeRoot, version, timing);
+  if (stagingRoot === null) return runtimeRoot;
+  try {
+    measureRuntimePhase(timing, "archive-extract", () => extractArchive(archivePath, stagingRoot));
+    publishPreparedRuntime(stagingRoot, runtimeRoot, version, timing, publish);
+  } catch (error) {
+    discardRuntimeStaging(stagingRoot, error, timing);
+  }
+  return runtimeRoot;
+}
+
+/** Worker preparation awaits every write before marking or publishing the runtime. */
+export async function materializeRuntimeArchiveParallel(
+  archivePath: string,
+  runtimeRoot: string,
+  version: string,
+  extractArchive: typeof extractRuntimeArchiveParallel = extractRuntimeArchiveParallel,
+  timing?: RuntimePreparationTiming,
+  publish: typeof commitRuntimeArchive = commitRuntimeArchive,
+): Promise<string> {
+  const stagingRoot = prepareRuntimeStaging(runtimeRoot, version, timing);
+  if (stagingRoot === null) return runtimeRoot;
+  const finish = timing?.start("archive-extract");
+  try {
+    await extractArchive(archivePath, stagingRoot, timing);
+    finish?.("success");
+    publishPreparedRuntime(stagingRoot, runtimeRoot, version, timing, publish);
+  } catch (error) {
+    finish?.("failed");
+    discardRuntimeStaging(stagingRoot, error, timing);
   }
   return runtimeRoot;
 }
