@@ -417,6 +417,11 @@ stages; missing or changed outputs also invalidate their cache. Final EXE extrac
 verification and the signing gate still run on every build. Signing-configured builds
 always repack the desktop and setup EXE. Installer caching requires the local `.venv`
 PyInstaller environment; other Python build strategies continue to work without reuse.
+`uv` is optional and is used only when its version probe succeeds. An unavailable
+or blocked executable is reported explicitly, then the existing Python/pip strategies
+are used; a project-local `.venv` is preferred when present.
+The final setup EXE requires NSIS 3.x on PATH, in a standard install location, or
+in electron-builder's already-downloaded legacy/versioned NSIS cache.
 The first build populates `build/package-cache/`; use `.\build.ps1 -Rebuild` to force
 all stages to run again. The optional installer ZIP is recreated when requested.
 

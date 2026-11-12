@@ -18,7 +18,7 @@
     "prepare-windows-node-resources": "node scripts/prepare-windows-node-resources.mjs --arch=x64",
     "prepare-windows-node-resources:arm64": "node scripts/prepare-windows-node-resources.mjs --arch=arm64",
     "test": "npm run test:weixin-runtime && npm run test:prepared-resources && vitest run",
-    "test:prepared-resources": "node --test scripts/publish-prepared-resource.test.mjs scripts/local-model-packaging.test.mjs scripts/openclaw-resource.test.mjs scripts/update-signed-windows-node-manifest.test.mjs",
+    "test:prepared-resources": "node --test scripts/prepare-windows-node-resources.test.mjs scripts/publish-prepared-resource.test.mjs scripts/local-model-packaging.test.mjs scripts/openclaw-resource.test.mjs scripts/update-signed-windows-node-manifest.test.mjs",
     "test:weixin-runtime": "node --test scripts/stage-weixin-runtime.test.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

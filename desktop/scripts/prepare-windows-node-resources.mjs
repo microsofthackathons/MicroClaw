@@ -79,9 +79,11 @@ const destination = process.env.MICROCLAW_WINDOWS_NODE_OUTPUT
 const resourceRoot = `${destination}.staging-${randomUUID()}`;
 const hostOutput = path.join(resourceRoot, "host");
 const fileWorkerOutput = path.join(resourceRoot, "file-worker-payload");
+const nugetConfig = path.join(repositoryDir, "windows-node-host", "NuGet.Config");
 mkdirSync(resourceRoot, { recursive: true });
 process.on("exit", () => rmSync(resourceRoot, { recursive: true, force: true }));
 
+console.log(`[windows-node] NuGet config: ${nugetConfig}`);
 const workerPublish = spawnSync(
   "dotnet",
   [
@@ -95,6 +97,7 @@ const workerPublish = spawnSync(
     "true",
     "--output",
     fileWorkerOutput,
+    `-p:RestoreConfigFile=${nugetConfig}`,
     "-p:DebugType=None",
     "-p:ImportDirectoryBuildProps=false",
     "-p:ImportDirectoryBuildTargets=false",
@@ -150,6 +153,7 @@ const publish = spawnSync(
     "true",
     "--output",
     hostOutput,
+    `-p:RestoreConfigFile=${nugetConfig}`,
     "-p:PublishSingleFile=true",
     "-p:DebugType=None",
     "-p:ImportDirectoryBuildProps=false",
