@@ -55,6 +55,15 @@ onMounted(() => {
 .channels-view.embedded .view-header {
   margin-bottom: 8px;
 }
+.channels-view.embedded :deep(.weixin-header) {
+  padding: 12px 16px;
+}
+
+.channels-view.embedded :deep(.weixin-header img) {
+  width: 24px;
+  height: 24px;
+}
+
 .view-header h2 {
   font-size: 20px;
   font-weight: 600;

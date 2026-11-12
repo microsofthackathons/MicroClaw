@@ -61,20 +61,22 @@
           </div>
         </div>
 
-        <div class="sub-label">{{ t("settings.gateway") }}</div>
+        <div class="sub-label-row">
+          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.gateway") }}</span>
+          <span
+            class="status-indicator"
+            :class="
+              gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
+            "
+          >
+            <span class="status-dot"></span>
+            {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
+          </span>
+        </div>
         <div class="card-group">
           <div class="card-row no-border">
-            <span class="row-label">{{ t("settings.connectionStatus") }}</span>
+            <span class="row-label">{{ t("settings.restartGateway") }}</span>
             <div style="display: flex; align-items: center; gap: 8px">
-              <span
-                class="status-indicator"
-                :class="
-                  gateway.status === 'running' ? 'status-indicator--ok' : 'status-indicator--error'
-                "
-              >
-                <span class="status-dot"></span>
-                {{ gateway.status === "running" ? t("settings.connected") : gateway.status }}
-              </span>
               <el-button size="small" @click="restartGateway">{{
                 t("settings.restart")
               }}</el-button>
@@ -3107,6 +3109,10 @@ async function clearChatHistory() {
 
 .sub-label-row .sub-label {
   margin: 0;
+}
+
+.sub-label-row > .status-indicator {
+  margin-right: 12px;
 }
 
 .custom-model-info {

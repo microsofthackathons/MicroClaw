@@ -313,33 +313,42 @@ describe("SettingsView", () => {
     },
   );
 
-  it("shows Gateway status and log export at the end of General", async () => {
-    const pinia = createPinia();
-    useGatewayStore(pinia).addLog("[info] Gateway started");
-    const wrapper = shallowMount(SettingsView, {
-      global: {
-        plugins: [pinia],
-      },
-    });
+  it.each([
+    ["en-US", "General", "Connected", "Restart Gateway", "Export Gateway logs", "Export"],
+    ["zh-CN", "通用", "已连接", "重启网关", "导出网关日志", "导出"],
+  ] as const)(
+    "shows Gateway status in the General heading and preserves log export in %s",
+    async (locale, general, connected, restartLabel, exportLabel, exportAction) => {
+      setLocale(locale);
+      const pinia = createPinia();
+      const gateway = useGatewayStore(pinia);
+      gateway.addLog("[info] Gateway started");
+      gateway.status = "running";
+      const wrapper = shallowMount(SettingsView, { global: { plugins: [pinia] } });
+      await flushPromises();
 
-    await flushPromises();
+      const menuItems = wrapper.findAll(".settings-menu-item");
+      await menuItems.find((item) => item.text() === general)!.trigger("click");
+      expect(wrapper.get(".sub-label-row .status-indicator").text()).toBe(connected);
+      expect(wrapper.find(".sub-label-row .status-indicator--ok").exists()).toBe(true);
+      expect(wrapper.find(".settings-content").text()).toContain(restartLabel);
+      expect(wrapper.find(".settings-content").text()).toContain(exportLabel);
+      expect(menuItems.some((item) => item.text() === "Gateway")).toBe(false);
 
-    const menuItems = wrapper.findAll(".settings-menu-item");
-    await menuItems.find((item) => item.text() === "General")!.trigger("click");
-    expect(wrapper.find(".settings-content").text()).toContain("Gateway");
-    expect(wrapper.find(".settings-content").text()).toContain("Connection status");
-    expect(wrapper.find(".settings-content").text()).toContain("Logs");
-    expect(wrapper.find(".settings-content").text()).toContain("Gateway logs");
-    expect(menuItems.some((item) => item.text() === "Gateway")).toBe(false);
+      gateway.status = "stopped";
+      await wrapper.vm.$nextTick();
+      expect(wrapper.get(".sub-label-row .status-indicator").text()).toBe("stopped");
+      expect(wrapper.find(".sub-label-row .status-indicator--error").exists()).toBe(true);
 
-    await wrapper
-      .findAll("el-button")
-      .find((button) => button.text() === "Export")!
-      .trigger("click");
-    await flushPromises();
-
-    expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
-  });
+      await wrapper
+        .findAll("el-button")
+        .find((button) => button.text() === exportAction)!
+        .trigger("click");
+      await flushPromises();
+      expect(exportGatewayLogs).toHaveBeenCalledWith(["[info] Gateway started"]);
+      wrapper.unmount();
+    },
+  );
 
   it("shows a verified snapshot without waiting for a background refresh", async () => {
     routeState.section = "security";
