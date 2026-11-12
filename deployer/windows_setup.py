@@ -4,6 +4,7 @@ Downloads Node.js from npmmirror (Chinese mirror), installs it,
 configures npm to use the taobao registry, and installs openclaw.
 """
 
+import base64
 import hashlib
 import json
 import ntpath
@@ -25,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from deployer.bundled_upgrade import TERMINAL_PHASES, BundledUpgrade, plain_path
 from deployer.install_manifest import (
     build_identity_matches,
     committed_install_manifest,
@@ -437,6 +439,9 @@ def _search_plugin_disabled(plugins: dict, plugin_id: str) -> bool:
 class WindowsSetup:
     """Handles Node.js + OpenClaw installation on Windows natively."""
 
+    use_bundled_runtime = False
+    _bundled_upgrade: BundledUpgrade | None = None
+
     def __init__(self, config, logger: DeployerLogger):
         self.cfg = config
         self.log = logger
@@ -447,6 +452,8 @@ class WindowsSetup:
         self._desktop_runtime_root: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
+        self.use_bundled_runtime = False
+        self._bundled_upgrade: BundledUpgrade | None = None
         self._openclaw_transaction: OpenClawUpgradeTransaction | None = None
         self._openclaw_upgrade_required = True
         self._weixin_policy_snapshot: WeixinPluginPolicy | None = None
@@ -1724,6 +1731,10 @@ class WindowsSetup:
         return None
 
     def _detect_openclaw_installation(self) -> OpenClawInstallation | None:
+        if self.use_bundled_runtime:
+            bundled = self._openclaw_installation_at_prefix(self._bundled_runtime_path())
+            if bundled is not None:
+                return bundled
         for root in self._openclaw_search_roots():
             installation = self._openclaw_installation_at_prefix(root)
             if installation is not None:
@@ -2173,6 +2184,8 @@ class WindowsSetup:
 
     def prepare_openclaw_upgrade(self) -> bool:
         """Back up MicroClaw-managed files after the official core update finishes."""
+        if self.use_bundled_runtime:
+            return self._begin_bundled_upgrade()
         self._weixin_policy_snapshot = None
         self._weixin_policy_restore_pending = False
         self._weixin_registration_verified = False
@@ -2236,8 +2249,397 @@ class WindowsSetup:
                 self._openclaw_transaction = None
             return False
 
+    def _bundled_runtime_path(self) -> Path:
+        return (
+            Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+            / "microclaw"
+            / "runtime"
+            / "openclaw"
+        )
+
+    def _bundled_transaction_paths(self):
+        runtime = self._bundled_runtime_path()
+        return DEFAULT_DESKTOP_DIR, runtime, Path.home() / ".openclaw", runtime.parent.parent
+
+    def _recover_bundled_upgrade(self) -> bool:
+        try:
+            if not self._package_upgrade_is_idle():
+                return False
+            previous = BundledUpgrade.load(*self._bundled_transaction_paths())
+            if previous and previous.data["phase"] not in TERMINAL_PHASES:
+                self.log.step("Recovering the interrupted bundled runtime upgrade…")
+                previous.rollback()
+            elif previous and previous.data["phase"] == "committed":
+                for failure in previous.cleanup_program_backups():
+                    self.log.warn(f"Previous program cleanup is still pending: {failure}")
+            if not self.recover_interrupted_openclaw_upgrade():
+                return False
+            if PackageManagerUpgrade.pending(DEFAULT_DESKTOP_DIR) is not None:
+                raise ValueError(
+                    "An older npm upgrade needs recovery with its original installer first"
+                )
+            installation = self._detect_openclaw_installation()
+            return installation is None or self._allow_openclaw_update(installation)
+        except Exception as error:
+            self.log.error(f"Cannot prepare bundled upgrade: {error}")
+            return False
+
+    def prepare_bundled_assets(self) -> bool:
+        if self._bundled_upgrade is not None:
+            for name in ("setup-dependencies.ps1", "node-runtime.ps1", "skills"):
+                if not any(
+                    o["kind"] == "desktop" and o["name"] == name
+                    for o in self._bundled_upgrade.data["operations"]
+                ):
+                    self._bundled_upgrade.replace("desktop", name, None)
+        return True
+
+    def _fresh_bundled_snapshot(self, transaction: BundledUpgrade):
+        # A fresh profile has no database to migrate. Preserve any desktop settings
+        # and empty/default state paths without pretending raw SQLite is a snapshot.
+        state = transaction.state
+        if (state / "openclaw.json").exists() or any(state.glob("**/*.sqlite")):
+            raise ValueError("Existing OpenClaw data has no identifiable source runtime for backup")
+        protected = [
+            state / name
+            for name in (
+                "openclaw.json",
+                ".env",
+                "skills",
+                "skill_catalog.json",
+                "managed_skill_catalog.json",
+                "skills_snapshot.json",
+                "skills_snapshot.sig",
+                "skills_signing_key.pem",
+                "skills_signing_key.pub",
+                "microclaw-search-setup.json",
+            )
+        ]
+        protected.extend(transaction.user_data / name for name in ("settings.json", "config.json"))
+        entries = []
+        directories = []
+        for root in protected:
+            plain_path(root)
+            if root.is_dir():
+                directories.append(str(root))
+                for child in root.rglob("*"):
+                    plain_path(child)
+                    if child.is_file():
+                        entries.append(
+                            {"sourcePath": str(child), "stagedPath": str(child), "kind": "state"}
+                        )
+            elif root.is_file():
+                entries.append({"sourcePath": str(root), "stagedPath": str(root), "kind": "state"})
+        plan = transaction.backup_dir / "fresh-plan.json"
+        plan.write_text(
+            json.dumps(
+                {
+                    "scope": BACKUP_SCOPE,
+                    "verifiedSqlite": True,
+                    "sourceVersion": None,
+                    "stateDir": str(state),
+                    "desktopDir": str(transaction.user_data),
+                    "workspaceDirs": [],
+                    "directories": directories,
+                    "protectedRoots": list(map(str, protected)),
+                    "entries": entries,
+                }
+            ),
+            encoding="utf-8",
+        )
+        create_lightweight_archive(
+            plan,
+            transaction.archive,
+            state_dir=state,
+            desktop_dir=transaction.user_data,
+            source_version=None,
+            progress=self.log.info,
+        )
+        transaction.save(
+            "backing-up", archiveSha256=transaction.archive_digest(), backupScope=BACKUP_SCOPE
+        )
+
+    def _begin_bundled_upgrade(self) -> bool:
+        try:
+            if not self._package_upgrade_is_idle():
+                return False
+            source = self._detect_openclaw_installation()
+            if source and not self._allow_openclaw_update(source):
+                return False
+            transaction = BundledUpgrade.create(
+                *self._bundled_transaction_paths(),
+                source_version=source.version
+                if source and (Path.home() / ".openclaw" / "openclaw.json").exists()
+                else None,
+                target_version=OPENCLAW_TARGET_VERSION,
+            )
+            self._bundled_upgrade = transaction
+            if source and (transaction.state / "openclaw.json").exists():
+                bundled_node = DEFAULT_DESKTOP_DIR / "resources" / "node.exe"
+                node = str(
+                    bundled_node if bundled_node.is_file() else self._resolve_validation_node()
+                )
+                env = self._get_env()
+                env.update(self._load_openclaw_state_env(transaction.state))
+                for key, expected in (
+                    ("OPENCLAW_STATE_DIR", transaction.state),
+                    ("OPENCLAW_CONFIG_PATH", transaction.state / "openclaw.json"),
+                    ("OPENCLAW_HOME", Path.home()),
+                ):
+                    if env.get(key) and Path(env[key]).resolve() != expected.resolve():
+                        raise ValueError(f"Custom {key} requires explicit upgrade review")
+                    env[key] = str(expected)
+                env.update(
+                    OPENCLAW_SERVICE_REPAIR_POLICY="external",
+                    OPENCLAW_SUPERVISOR_MODE="external",
+                    OPENCLAW_NO_AUTO_UPDATE="1",
+                    NODE_DISABLE_COMPILE_CACHE="1",
+                )
+                for key in list(env):
+                    if key.upper() in {
+                        "VITEST",
+                        "VITEST_WORKER_ID",
+                        "NODE_OPTIONS",
+                        "NODE_COMPILE_CACHE",
+                    }:
+                        env.pop(key)
+                self._create_lightweight_upgrade_backup(transaction, source, node, env)
+            else:
+                self._fresh_bundled_snapshot(transaction)
+            transaction.ready()
+            # The helper and later configuration/asset steps can write user state.
+            transaction.touch_data()
+            self._invalidate_committed_install_manifest()
+            return True
+        except Exception as error:
+            self.log.error(f"Could not create bundled upgrade recovery point: {error}")
+            return False
+
+    def _validate_bundled_upgrade(self) -> bool:
+        transaction = self._bundled_upgrade
+        try:
+            if transaction is None or self._desktop_runtime_root != transaction.runtime:
+                raise ValueError("No prepared bundled runtime is bound to this installation")
+            installed = self._openclaw_installation_at_prefix(transaction.runtime)
+            if installed is None or installed.version != OPENCLAW_TARGET_VERSION:
+                raise ValueError("The prepared bundled OpenClaw version is incorrect")
+            if not self._gateway_is_stopped_for_upgrade():
+                return False
+            transaction.save("validating", validated=False)
+            # Configuration parsing/compatibility runs against the exact runtime,
+            # without invoking Doctor or launching the desktop UI.
+            command = self._find_openclaw_cmd()
+            env = self._get_env()
+            env.update(self._load_openclaw_state_env(transaction.state))
+            env.update(
+                OPENCLAW_STATE_DIR=str(transaction.state),
+                OPENCLAW_CONFIG_PATH=str(transaction.state / "openclaw.json"),
+                OPENCLAW_HOME=str(Path.home()),
+                OPENCLAW_NO_AUTO_UPDATE="1",
+                OPENCLAW_NO_RESPAWN="1",
+                NODE_DISABLE_COMPILE_CACHE="1",
+            )
+            env.pop("NODE_COMPILE_CACHE", None)
+            env.pop("NODE_OPTIONS", None)
+            checked = self._run(
+                command + ["config", "validate"],
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+            if checked.returncode != 0:
+                raise ValueError("The bundled runtime rejected the installed configuration")
+            if (
+                transaction.data["sourceVersion"]
+                and transaction.data["sourceVersion"] != OPENCLAW_TARGET_VERSION
+            ):
+                self._validate_bundled_migration(transaction, installed, env)
+            transaction.save("validating", validated=True)
+            self.log.success(
+                "Bundled runtime and configuration verified; no global core npm install was required"
+            )
+            return True
+        except Exception as error:
+            self.log.error(f"Bundled upgrade validation failed: {error}")
+            return False
+
+    def _validate_bundled_migration(self, transaction, installed, environment):
+        migration_env = {
+            **environment,
+            "OPENCLAW_SERVICE_REPAIR_POLICY": "external",
+            "OPENCLAW_SUPERVISOR_MODE": "external",
+            "OPENCLAW_SKIP_CRON": "1",
+            "OPENCLAW_SKIP_CHANNELS": "1",
+            "OPENCLAW_DISABLE_BONJOUR": "1",
+        }
+        self.log.step(
+            f"Migrating saved OpenClaw data {transaction.data['sourceVersion']} -> {OPENCLAW_TARGET_VERSION}…"
+        )
+        try:
+            migration = self._run_official_update(
+                [
+                    str(DEFAULT_DESKTOP_DIR / "resources" / "node.exe"),
+                    str(installed.entry_path),
+                    "doctor",
+                    "--fix",
+                    "--non-interactive",
+                ],
+                env=migration_env,
+                cwd=str(installed.package_dir),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as error:
+            parts = [
+                part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part or ""
+                for part in (error.stdout, error.stderr)
+            ]
+            (transaction.backup_dir / "migration-doctor.log").write_text(
+                "\n".join(parts), encoding="utf-8"
+            )
+            raise RuntimeError(
+                "Target data migration timed out; its partial log and recovery point were retained"
+            ) from error
+        (transaction.backup_dir / "migration-doctor.log").write_text(
+            (migration.stdout or "") + "\n" + (migration.stderr or ""), encoding="utf-8"
+        )
+        if migration.returncode != 0:
+            raise RuntimeError(
+                "The target OpenClaw data migration did not complete; recovery is retained"
+            )
+        # Exercise the target runtime's normal startup migrations with scheduled
+        # jobs, channels, hooks and heartbeat disabled for this temporary check.
+        config = json.loads((transaction.state / "openclaw.json").read_text(encoding="utf-8"))
+        config["cron"] = {**config.get("cron", {}), "enabled": False}
+        config["hooks"] = {**config.get("hooks", {}), "enabled": False}
+        config.setdefault("agents", {}).setdefault("defaults", {})["heartbeat"] = {"every": "0m"}
+        config["channels"] = {}
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        config.setdefault("gateway", {}).update(port=port, bind="loopback", mode="local")
+        temporary = transaction.backup_dir / "validation-config.json"
+        temporary.write_text(json.dumps(config), encoding="utf-8")
+        env = {
+            **environment,
+            "OPENCLAW_CONFIG_PATH": str(temporary),
+            "OPENCLAW_SKIP_CRON": "1",
+            "OPENCLAW_SKIP_CHANNELS": "1",
+            "OPENCLAW_DISABLE_BONJOUR": "1",
+            "OPENCLAW_GATEWAY_HOST_LIFELINE": "stdin",
+            "OPENCLAW_SERVICE_REPAIR_POLICY": "external",
+            "OPENCLAW_SUPERVISOR_MODE": "external",
+        }
+        child = None
+        job = None
+        try:
+            with (transaction.backup_dir / "migration-validation.log").open(
+                "w", encoding="utf-8"
+            ) as output:
+                child = subprocess.Popen(
+                    [
+                        str(DEFAULT_DESKTOP_DIR / "resources" / "node.exe"),
+                        str(Path(__file__).parent / "assets" / "bundled-migration-host.mjs"),
+                        str(installed.entry_path),
+                        str(port),
+                    ],
+                    env=env,
+                    cwd=str(installed.package_dir),
+                    stdin=subprocess.PIPE,
+                    stdout=output,
+                    stderr=output,
+                    creationflags=_CREATE_NO_WINDOW | _CREATE_SUSPENDED,
+                )
+                job = self._create_process_lifetime_job(child)
+                job.resume(child)
+                deadline = time.monotonic() + 300
+                while child.poll() is None and time.monotonic() < deadline:
+                    try:
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/readyz", timeout=2
+                        ) as response:
+                            if response.status == 200:
+                                owner = self._find_listening_pid(port)
+                                processes = self._process_snapshot()
+                                seen = set()
+                                while owner and owner != child.pid and owner not in seen:
+                                    seen.add(owner)
+                                    process = processes.get(owner)
+                                    owner = process.parent_pid if process else None
+                                if owner != child.pid:
+                                    raise RuntimeError(
+                                        "Validation listener is not owned by this upgrade"
+                                    )
+                                break
+                    except (OSError, urllib.error.URLError):
+                        pass
+                    time.sleep(0.5)
+                else:
+                    raise RuntimeError(
+                        "Target OpenClaw migration/readiness validation did not complete"
+                    )
+                # HTTP readiness alone is not proof that Agent data admission has
+                # finished. Read each configured agent's history through the
+                # official client; do not log its private response content.
+                agent_ids = list(config.get("agents", {}).get("entries", {})) or ["main"]
+                for agent_id in agent_ids:
+                    history_deadline = time.monotonic() + 180
+                    while True:
+                        result = self._run(
+                            [
+                                str(DEFAULT_DESKTOP_DIR / "resources" / "node.exe"),
+                                str(installed.entry_path),
+                                "gateway",
+                                "call",
+                                "chat.history",
+                                "--json",
+                                "--params",
+                                json.dumps({"sessionKey": f"agent:{agent_id}:main", "limit": 1}),
+                            ],
+                            env=env,
+                            cwd=str(installed.package_dir),
+                            stdin=subprocess.DEVNULL,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=120,
+                        )
+                        if result.returncode == 0:
+                            break
+                        detail = (result.stdout or "") + "\n" + (result.stderr or "")
+                        if time.monotonic() >= history_deadline or not re.search(
+                            "has not completed startup inspection|until background inspection|gateway starting",
+                            detail,
+                            re.I,
+                        ):
+                            raise RuntimeError(
+                                "Target OpenClaw did not admit existing agent history after migration"
+                            )
+                        time.sleep(1)
+                child.stdin.close()
+                child.wait(timeout=45)
+                if child.returncode != 0:
+                    raise RuntimeError("Target OpenClaw did not shut down cleanly after validation")
+        finally:
+            if job is not None:
+                self._terminate_process_tree(child, job)
+            elif child is not None and child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            temporary.unlink(missing_ok=True)
+
     def prepare_openclaw_update(self) -> bool:
         """Stop before core changes and recover transactions from older installers."""
+        if self.use_bundled_runtime:
+            return self._recover_bundled_upgrade()
         if not self._gateway_is_stopped_for_upgrade():
             return False
         if not self.recover_interrupted_openclaw_upgrade():
@@ -2364,13 +2766,13 @@ class WindowsSetup:
 
     def _create_lightweight_upgrade_backup(
         self,
-        upgrade: PackageManagerUpgrade,
+        upgrade: PackageManagerUpgrade | BundledUpgrade,
         installation: OpenClawInstallation,
         node: str,
         env: dict[str, str],
     ) -> None:
         state_dir = Path.home() / ".openclaw"
-        desktop_dir = Path(os.environ["APPDATA"]) / "MicroClaw"
+        desktop_dir = Path(os.environ["APPDATA"]) / "microclaw"
         label = "Backing up whitelisted configuration, databases, credentials and workspaces"
         self.log.step(label)
         self.log.info(
@@ -3174,6 +3576,8 @@ class WindowsSetup:
         return transaction.manifest.transaction_id if transaction is not None else None
 
     def begin_openclaw_upgrade_validation(self) -> bool:
+        if self.use_bundled_runtime:
+            return self._validate_bundled_upgrade()
         transaction = self._openclaw_transaction
         if transaction is not None:
             transaction.mark_verifying()
@@ -3221,6 +3625,25 @@ class WindowsSetup:
             self._stop_validation_gateway(process)
 
     def commit_openclaw_upgrade(self) -> bool:
+        if self.use_bundled_runtime:
+            transaction = self._bundled_upgrade
+            if transaction is None:
+                return False
+            for failure in transaction.commit():
+                self.log.warn(f"Upgrade committed; previous program cleanup is pending: {failure}")
+            self._bundled_upgrade = None
+            bundled = getattr(self, "_bundled_install_manifest", None)
+            if bundled is not None:
+                try:
+                    write_install_manifest(
+                        self._install_manifest_path,
+                        committed_install_manifest(bundled, self._desired_npm_registry()),
+                    )
+                except OSError as error:
+                    self.log.warn(
+                        f"Bundled upgrade committed but its cache marker could not be saved: {error}"
+                    )
+            return True
         transaction = self._openclaw_transaction
         if transaction is None:
             return True
@@ -3241,6 +3664,22 @@ class WindowsSetup:
         return True
 
     def rollback_openclaw_upgrade(self) -> bool:
+        if self.use_bundled_runtime:
+            if self._bundled_upgrade is None:
+                return True
+            try:
+                if not self._package_upgrade_is_idle():
+                    return False
+                self._bundled_upgrade.rollback()
+                self._bundled_upgrade = None
+                self._desktop_runtime_root = None
+                return True
+            except Exception as error:
+                self.log.error(
+                    f"Bundled upgrade recovery is incomplete; rerun this installer: {error}"
+                )
+                self._bundled_upgrade.close()
+                return False
         transaction = self._openclaw_transaction
         if transaction is None:
             return True
@@ -3993,7 +4432,11 @@ class WindowsSetup:
 
     def _generate_skill_snapshot(self, openclaw_dir: Path) -> None:
         """Run the Node.js script to generate skill integrity snapshot."""
-        node_exe = self.node_dir / "node.exe"
+        node_exe = (
+            DEFAULT_DESKTOP_DIR / "resources" / "node.exe"
+            if self._desktop_runtime_root is not None
+            else self.node_dir / "node.exe"
+        )
         if not node_exe.exists():
             self.log.warn("Node.js not found — skipping skill integrity snapshot")
             return
@@ -4106,12 +4549,17 @@ class WindowsSetup:
         self._desktop_runtime_root = None
         resources = DEFAULT_DESKTOP_DIR / "resources"
         if not (resources / "openclaw.asar").is_file():
+            if self.use_bundled_runtime:
+                self.log.error("The installer does not contain its required OpenClaw archive")
+                return False
             return True
         executable = DEFAULT_DESKTOP_DIR / "MicroClawDesktop.exe"
         if not executable.is_file() or not (resources / "node.exe").is_file():
             self.log.error("The packaged desktop executable or Node runtime is missing")
             return False
         self.log.step("Preparing the bundled OpenClaw runtime before service startup…")
+        if self._bundled_upgrade is not None:
+            self._bundled_upgrade.track_runtime()
         install_timing = getattr(self, "install_timing", None)
         timing = RuntimePreparationTiming(
             self.log, context=install_timing.context() if install_timing else None
@@ -4184,10 +4632,46 @@ class WindowsSetup:
             self.log.error(f"Bundled OpenClaw runtime preparation failed: {error}")
             return False
         self.log.success(f"Bundled OpenClaw runtime is ready: {runtime_root}")
+        if self.use_bundled_runtime:
+            for name, package_name in (
+                ("openclaw-weixin", "@tencent-weixin/openclaw-weixin"),
+                ("llama-cpp", "@openclaw/llama-cpp-provider"),
+            ):
+                plugin = Path.home() / ".openclaw" / "extensions" / name
+                if plugin.exists():
+                    metadata = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+                    if metadata.get("name") != package_name:
+                        raise ValueError(f"Managed plugin identity differs: {name}")
+                self._bundled_upgrade.bind_plugin_peer(name)
+            shim = DEFAULT_DESKTOP_DIR / "microclaw-openclaw.cmd"
+            content = (
+                "@echo off\r\nsetlocal\r\n"
+                'if exist "%~dp0upgrade\\.bundled-upgrade-active" (echo MicroClaw upgrade requires completion. 1>&2 & exit /b 2)\r\n'
+                'set "ELECTRON_RUN_AS_NODE="\r\n'
+                'set "OPENCLAW_STATE_DIR=%USERPROFILE%\\.openclaw"\r\n'
+                '"%~dp0resources\\node.exe" "%APPDATA%\\microclaw\\runtime\\openclaw\\node_modules\\openclaw\\openclaw.mjs" %*\r\n'
+                "exit /b %errorlevel%\r\n"
+            )
+            with tempfile.TemporaryDirectory(
+                prefix="cli-", dir=self._bundled_upgrade.backup_dir
+            ) as temporary:
+                staged = Path(temporary) / shim.name
+                staged.write_bytes(content.encode("utf-8"))
+                self._bundled_upgrade.replace("desktop", shim.name, staged)
+            self._add_to_user_path(str(DEFAULT_DESKTOP_DIR))
         return True
 
     def _extract_desktop_zip(self, zip_path: Path, install_dir: Path) -> bool:
         """Replace bundled desktop payloads without deleting installer state."""
+        if self.use_bundled_runtime:
+            manifest = getattr(self, "_bundled_install_manifest", None) or {}
+            expected = manifest.get("desktopArchiveSha256")
+            if expected:
+                with zip_path.open("rb") as stream:
+                    actual = hashlib.file_digest(stream, "sha256").hexdigest()
+                if actual != expected:
+                    self.log.error("The desktop ZIP does not match the installer manifest")
+                    return False
         if not zipfile.is_zipfile(zip_path):
             self.log.error("文件不是有效的 zip 包")
             return False
@@ -4201,6 +4685,10 @@ class WindowsSetup:
         preserve_work = False
         try:
             with zipfile.ZipFile(zip_path, "r") as archive:
+                for member in archive.infolist():
+                    destination = (payload / member.filename).resolve()
+                    if not destination.is_relative_to(payload.resolve()):
+                        raise ValueError("Desktop archive entry escaped the staging directory")
                 archive.extractall(payload)
 
             executable = payload / "MicroClawDesktop.exe"
@@ -4219,6 +4707,19 @@ class WindowsSetup:
                 executable = executables[0]
 
             previous.mkdir()
+            if self._bundled_upgrade is not None:
+                for required in (
+                    "MicroClawDesktop.exe",
+                    "resources/app.asar",
+                    "resources/node.exe",
+                    "resources/openclaw.asar",
+                ):
+                    if not (payload / required).is_file():
+                        raise ValueError(f"Incomplete bundled desktop payload: {required}")
+                for source in sorted(payload.iterdir()):
+                    self._bundled_upgrade.replace("desktop", source.name, source)
+                self.log.success(f"Desktop payload published with rollback retained: {install_dir}")
+                return True
             replaced: list[tuple[Path, Path | None]] = []
             try:
                 for source in sorted(payload.iterdir()):
@@ -4945,6 +5446,13 @@ class WindowsSetup:
                 app_dir=app_dir,
             )
             destination = Path.home() / ".openclaw"
+            if self._bundled_upgrade is not None:
+                for name in ("MicroClawInstaller.exe", "_internal"):
+                    if not any(
+                        o["kind"] == "uninstaller" and o["name"] == name
+                        for o in self._bundled_upgrade.data["operations"]
+                    ):
+                        self._bundled_upgrade.replace("uninstaller", name, None)
             persisted = publish_uninstaller_bundle(
                 source,
                 destination,
@@ -5963,6 +6471,7 @@ class WindowsSetup:
         dirs = [
             self.node_dir,  # ~/.openclaw-node (node + node_modules)
             appdata / "npm" / "node_modules" / "openclaw",
+            appdata / "microclaw" / "runtime",  # bundled runtime and sibling staging directories
             Path.home() / ".openclaw",  # config, skills, plugins, compile-cache
             Path.home() / ".openclaw-git",  # PortableGit
             Path.home() / ".microclaw",  # Electron desktop client
@@ -5973,7 +6482,7 @@ class WindowsSetup:
         marker = DEFAULT_DESKTOP_DIR / "install-state" / "defender-exclusions.json"
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
-            if payload == {"schema": 1, "paths": normalized}:
+            if payload == {"schema": 2, "paths": normalized}:
                 self.log.info("  Windows Defender exclusions already configured")
                 return True
         except (OSError, json.JSONDecodeError, TypeError):
@@ -5985,7 +6494,7 @@ class WindowsSetup:
             marker.parent.mkdir(parents=True, exist_ok=True)
             temporary = marker.with_suffix(".tmp")
             temporary.write_text(
-                json.dumps({"schema": 1, "paths": normalized}, indent=2) + "\n",
+                json.dumps({"schema": 2, "paths": normalized}, indent=2) + "\n",
                 encoding="utf-8",
             )
             os.replace(temporary, marker)
@@ -6036,26 +6545,52 @@ class WindowsSetup:
             self.log.info("  Windows Defender exclusions already configured")
             return True
 
-        # Add-MpPreference always requires admin — elevate directly
-        safe_paths = ",".join(f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing)
+        # Preserve literal paths across both PowerShell processes. The elevated
+        # child must confirm the settings and return its own exit code; launching
+        # it successfully does not mean Defender accepted the exclusions.
+        safe_paths = ",".join("'" + str(d).replace("'", "''") + "'" for d in missing)
+        elevated_script = (
+            "$ErrorActionPreference = 'Stop'; "
+            "try { "
+            f"$requestedPaths = @({safe_paths}); "
+            "Add-MpPreference -ExclusionPath $requestedPaths -ErrorAction Stop; "
+            "$configuredPaths = @((Get-MpPreference -ErrorAction Stop).ExclusionPath | "
+            "Where-Object { $_ } | ForEach-Object { "
+            "[IO.Path]::GetFullPath($_).TrimEnd([char[]]'\\/') }); "
+            "foreach ($requestedPath in $requestedPaths) { "
+            "$normalizedPath = [IO.Path]::GetFullPath($requestedPath).TrimEnd([char[]]'\\/'); "
+            "if ($configuredPaths -notcontains $normalizedPath) { "
+            "throw 'Defender did not retain a requested exclusion' } }; "
+            "exit 0 "
+            "} catch { exit 1 }"
+        )
+        encoded = base64.b64encode(elevated_script.encode("utf-16le")).decode("ascii")
+        launch_script = (
+            "$ErrorActionPreference = 'Stop'; try { "
+            "$defenderProcess = Start-Process powershell.exe -Verb RunAs -Wait "
+            "-WindowStyle Hidden -PassThru "
+            f"-ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'); "
+            "exit $defenderProcess.ExitCode } catch { exit 1 }"
+        )
         try:
             result = self._run(
                 [
                     "powershell",
                     "-NoProfile",
                     "-Command",
-                    f"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
-                    f"-ArgumentList '-NoProfile','-Command',"
-                    f"'Add-MpPreference -ExclusionPath {safe_paths}'",
+                    launch_script,
                 ],
                 capture_output=True,
                 timeout=30,
             )
             if result.returncode != 0:
-                self.log.warning("  Defender exclusion command did not complete successfully")
+                self.log.warning(
+                    "  Defender exclusions were not confirmed. Administrator approval or "
+                    "organization policy may prevent changes; installation will continue."
+                )
                 return False
             for d in missing:
-                self.log.info(f"  Defender exclusion added: {d}")
+                self.log.info(f"  Defender exclusion added and confirmed: {d}")
             return True
         except Exception as e:
             self.log.warning(f"  Defender 排除项添加失败（需要管理员权限）: {e}")

@@ -490,14 +490,14 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(
             final_steps,
             [
-                (99, "verifyUpgrade", setup.begin_openclaw_upgrade_validation, 1),
-                (100, "commitUpgrade", setup.commit_openclaw_upgrade, 1),
+                (99, "verifyUpgrade", setup.begin_openclaw_upgrade_validation, 0),
+                (100, "commitUpgrade", setup.commit_openclaw_upgrade, 0),
             ],
         )
         for strings in _STRINGS.values():
             self.assertNotIn("startService", strings["steps"])
 
-    def test_managed_backup_runs_after_core_update_without_extra_doctor(self):
+    def test_bundled_pipeline_backs_up_before_publication_without_global_core_install(self):
         setup = unittest.mock.Mock()
         steps = self.bridge._build_install_steps(setup)
         actions = [step[2] for step in steps]
@@ -505,7 +505,9 @@ class WebInstallerBridgeTests(unittest.TestCase):
         self.assertEqual(steps[backup_index][0], 52)
         self.assertLess(backup_index, actions.index(setup.write_config))
         self.assertNotIn(setup.migrate_openclaw_state, actions)
-        self.assertEqual(next(step[3] for step in steps if step[0] == 50), 0)
+        self.assertNotIn(50, [step[0] for step in steps])
+        self.assertLess(backup_index, actions.index(setup.install_desktop_client))
+        self.assertEqual(next(step[3] for step in steps if step[0] == 60), 0)
 
     def test_failed_install_does_not_persist_language(self):
         self.bridge.set_language("zh")

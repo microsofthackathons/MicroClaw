@@ -10,6 +10,7 @@ interface FixtureApp {
 export function configurePerformanceFixture(
   app: FixtureApp,
   environment: NodeJS.ProcessEnv,
+  options: { runtimePreparationOnly?: boolean } = {},
 ): boolean {
   const marker = environment.MICROCLAW_PERF_FIXTURE;
   const token = environment.MICROCLAW_PERF_TOKEN;
@@ -37,19 +38,29 @@ export function configurePerformanceFixture(
       return [name, directory];
     }),
   );
-  const config = JSON.parse(fs.readFileSync(path.join(directories.state, "openclaw.json"), "utf8"));
   if (
     !Number.isInteger(manifest.gatewayPort) ||
     manifest.gatewayPort < 1024 ||
-    manifest.gatewayPort > 65535 ||
-    config.gateway?.port !== manifest.gatewayPort ||
-    config.gateway?.bind !== "loopback" ||
-    !Array.isArray(config.tools?.deny) ||
-    !config.tools.deny.includes("*")
+    manifest.gatewayPort > 65535
   ) {
-    throw new Error(
-      "Performance fixture requires its own loopback Gateway port and deny-all model tools",
+    throw new Error("Performance fixture requires its own Gateway port");
+  }
+  // The installer prepares the runtime before creating any user configuration.
+  // This helper cannot start a Gateway; keep the profile empty for first-install tests.
+  if (!options.runtimePreparationOnly) {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(directories.state, "openclaw.json"), "utf8"),
     );
+    if (
+      config.gateway?.port !== manifest.gatewayPort ||
+      config.gateway?.bind !== "loopback" ||
+      !Array.isArray(config.tools?.deny) ||
+      !config.tools.deny.includes("*")
+    ) {
+      throw new Error(
+        "Performance fixture requires its own loopback Gateway port and deny-all model tools",
+      );
+    }
   }
   for (const name of ["home", "appData", "userData", "sessionData", "temp"] as const) {
     app.setPath(name, directories[name]);

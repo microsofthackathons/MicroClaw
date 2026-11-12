@@ -35,6 +35,7 @@ const STATE_PATHS = [
 const DESKTOP_PATHS = [
   "config.json",
   "settings.json",
+  "connectors",
   "windows-node/identity",
   "windows-node/policy.json",
   "windows-node/durable-approvals.json",
@@ -163,7 +164,14 @@ export async function createLightweightPlan(
       configValues.push(value);
       referencedPaths(value, roots);
     }
-    const knownPlugins = new Set(["openclaw-weixin", "llama-cpp"]);
+    // Managed connector credentials live in the Desktop's connectors directory;
+    // Copilot authentication is included by OpenClaw's credential/auth snapshots.
+    const knownPlugins = new Set([
+      "openclaw-weixin",
+      "llama-cpp",
+      "connector-catalog",
+      "github-copilot",
+    ]);
     const declaredPlugins = new Set(
       plan.resources.regenerableRoots
         .filter((resource) => resource.kind === "plugin dependencies")
@@ -340,6 +348,8 @@ export async function createLightweightPlan(
       verifiedSqlite: true,
       entries: [...selected.values()],
       directories: [...directories].sort(),
+      protectedRoots: [...new Set(roots.map((root) => path.resolve(root.sourcePath)))],
+      skippedPaths: [...skipped],
       excluded: [
         "models",
         "browser",
