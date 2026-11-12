@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as path from "node:path";
 import {
   buildGitHubCopilotAuthStatusArgs,
@@ -6,6 +6,7 @@ import {
   buildGitHubCopilotModelsArgs,
   getGitHubCopilotAuthStatus,
   GITHUB_COPILOT_AUTH_AGENT_ID,
+  GITHUB_COPILOT_CATALOG_CACHE_MS,
   GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
   invalidateGitHubCopilotAuthStatusCache,
   listGitHubCopilotModels,
@@ -214,53 +215,114 @@ describe("GitHub Copilot model discovery", () => {
     models: [{ provider: "github-copilot", id: "gpt-5.4", name: "GPT-5.4" }],
   };
   const models = [{ id: "github-copilot/gpt-5.4", name: "GPT-5.4" }];
+  const liveCatalog = {
+    models: [
+      { provider: "github-copilot", id: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
+      { provider: "github-copilot", id: "gpt-6.1-terra", name: "GPT-6.1 Terra" },
+    ],
+  };
+  const liveModels = [
+    { id: "github-copilot/gpt-6.1-sol", name: "GPT-6.1 Sol" },
+    { id: "github-copilot/gpt-6.1-terra", name: "GPT-6.1 Terra" },
+  ];
 
-  it("uses an already prepared catalog without refreshing or starting the CLI", async () => {
-    const queryGateway = vi.fn().mockResolvedValue(catalog);
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
-    expect(queryGateway).toHaveBeenCalledExactlyOnceWith(
-      { agentId: "main", provider: "github-copilot", view: "all", preparedOnly: true },
-      30_000,
+  it("discovers new models even when the prepared catalog contains older models", async () => {
+    const queryGateway = vi.fn(async (params: Record<string, unknown>) =>
+      params.refresh === true ? liveCatalog : catalog,
     );
-    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(
+      liveModels,
+    );
+    expect(queryGateway).toHaveBeenCalledExactlyOnceWith(
+      { agentId: "main", provider: "github-copilot", view: "all", refresh: true },
+      GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
+    );
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(
+      liveModels,
+    );
     expect(queryGateway).toHaveBeenCalledOnce();
   });
 
-  it("refreshes an empty prepared catalog before treating the account as having no models", async () => {
-    const queryGateway = vi.fn().mockResolvedValueOnce({ models: [] }).mockResolvedValue(catalog);
+  it("reuses a fresh catalog and discovers new models again when it expires", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const queryGateway = vi.fn().mockResolvedValueOnce(catalog).mockResolvedValue(liveCatalog);
 
     await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+    now.mockReturnValue(1_000 + GITHUB_COPILOT_CATALOG_CACHE_MS - 1);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+    expect(queryGateway).toHaveBeenCalledOnce();
+
+    now.mockReturnValue(1_000 + GITHUB_COPILOT_CATALOG_CACHE_MS);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(
+      liveModels,
+    );
     expect(queryGateway).toHaveBeenNthCalledWith(
       2,
       { agentId: "main", provider: "github-copilot", view: "all", refresh: true },
       GITHUB_COPILOT_CATALOG_TIMEOUT_MS,
     );
-  });
 
-  it("shares discovery between simultaneous requests", async () => {
-    const queryGateway = vi.fn().mockResolvedValueOnce({ models: [] }).mockResolvedValue(catalog);
-
-    await expect(
-      Promise.all([
-        listGitHubCopilotModels(missingRuntime, queryGateway),
-        listGitHubCopilotModels(missingRuntime, queryGateway),
-      ]),
-    ).resolves.toEqual([models, models]);
+    now.mockReturnValue(1_000 + 2 * GITHUB_COPILOT_CATALOG_CACHE_MS - 1);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(
+      liveModels,
+    );
     expect(queryGateway).toHaveBeenCalledTimes(2);
   });
 
+  it.each([false, true])(
+    "shares discovery between simultaneous requests (expired: %s)",
+    async (expired) => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+      const queryGateway = vi.fn().mockResolvedValue(catalog);
+      if (expired) {
+        await listGitHubCopilotModels(missingRuntime, queryGateway);
+        now.mockReturnValue(1_000 + GITHUB_COPILOT_CATALOG_CACHE_MS);
+        queryGateway.mockClear();
+      }
+      queryGateway.mockResolvedValue(liveCatalog);
+
+      await expect(
+        Promise.all([
+          listGitHubCopilotModels(missingRuntime, queryGateway),
+          listGitHubCopilotModels(missingRuntime, queryGateway),
+        ]),
+      ).resolves.toEqual([liveModels, liveModels]);
+      expect(queryGateway).toHaveBeenCalledOnce();
+    },
+  );
+
   it("falls back to the CLI without caching a failed discovery", async () => {
-    const queryGateway = vi
-      .fn()
-      .mockResolvedValueOnce({ models: [] })
-      .mockResolvedValueOnce({ models: [] });
+    const queryGateway = vi.fn().mockResolvedValueOnce({ models: [] });
 
     await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).rejects.toThrow(
       "OpenClaw CLI was not found",
     );
     queryGateway.mockResolvedValue(catalog);
     await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+  });
+
+  it("retries a failed refresh without treating the expired catalog as fresh", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const queryGateway = vi
+      .fn()
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce({ models: [] });
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(models);
+
+    now.mockReturnValue(1_000 + GITHUB_COPILOT_CATALOG_CACHE_MS);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).rejects.toThrow(
+      "OpenClaw CLI was not found",
+    );
+    queryGateway.mockResolvedValue(liveCatalog);
+    await expect(listGitHubCopilotModels(missingRuntime, queryGateway)).resolves.toEqual(
+      liveModels,
+    );
+    expect(queryGateway).toHaveBeenCalledTimes(3);
   });
 
   it("does not reuse or cache an in-flight catalog from before a new login", async () => {

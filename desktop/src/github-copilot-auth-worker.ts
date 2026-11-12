@@ -254,7 +254,7 @@ if (require.main === module) {
     .finally(() => {
       process.off("message", onMessage);
       process.off("disconnect", cancel);
-      if (process.connected) process.disconnect();
+      if (process.connected) process.disconnect?.();
       // The SDK flow has committed or unwound and released its credential locks.
       // Flush the terminal reply before exiting any remaining idle SDK workers.
       process.stdout.write("", () => process.exit(process.exitCode ?? 0));
