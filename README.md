@@ -27,7 +27,7 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 - **Only the LLM is bring-your-own**: the user supplies the model endpoint, API key, and model name; the rest of the stack is installed and configured by MicroClaw
 - **Fast path on first launch**: if no provider is configured, the app opens a setup wizard that asks only for model credentials; if `MODEL_*` values already exist in `.env`, MicroClaw can auto-configure them
 - **Recommended tasks on day one**: the home screen ships with starter task cards and prompt suggestions so users can begin with concrete tasks instead of a blank chat box
-- **Preloaded capability surface**: 17 bundled skills plus 6 managed skills are available as part of the default Windows experience; specialist agents add their own skills on demand
+- **Preloaded capability surface**: bundled OpenClaw skills plus 6 managed skills are included in the default Windows experience; availability depends on each skill's platform, dependencies and configuration, and specialist agents add their own skills on demand
 
 ### Built-In Trust
 
@@ -46,7 +46,7 @@ graph TB
 
     Desktop["Desktop App"]
     Gateway["OpenClaw Gateway"]
-    Skills["Skills<br/><i>17 built-in + 6 managed</i>"]
+    Skills["Skills<br/><i>OpenClaw built-ins + 6 managed</i>"]
     Plugins["Plugins<br/><i>WeChat · Teams</i>"]
     Installer["Installer"]
 
@@ -312,9 +312,9 @@ See [native Windows Node + MXC](docs/experimental-windows-node-mxc.md) for the c
 
 ## Skill System
 
-### Built-in Skills (17)
+### Built-in Skills
 
-Installed alongside OpenClaw and controlled via the `skills.allowBundled` allowlist. Categories include:
+Installed alongside OpenClaw and controlled via the `skills.allowBundled` allowlist. The repository's compatibility catalog currently describes 17 skills; this is not a cap on the runtime's bundled skill count. The desktop scans the installed skills, filters explicitly excluded entries, and checks platform, dependencies and configuration to determine availability. Catalog examples include:
 
 | Category | Example Skills |
 |---|---|
@@ -480,7 +480,7 @@ Operational Windows scripts now live under `scripts/windows/`. Root `.bat` and `
 ├── deployer/
 │   ├── config.py                # Configuration management (.env + YAML)
 │   ├── logger.py                # Thread-safe logger + in-memory ring buffer
-│   ├── skill_catalog.py         # 17 built-in + 6 managed skill catalog
+│   ├── skill_catalog.py         # Built-in and managed skill compatibility metadata
 │   ├── skill_manager_ui.py      # Skill selector dialog
 │   └── windows_setup.py         # Windows install logic (Node/npm/OpenClaw)
 ├── desktop/                     # Electron desktop app
