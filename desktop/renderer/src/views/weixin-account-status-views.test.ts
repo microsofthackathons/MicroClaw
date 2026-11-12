@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessageBox } from "element-plus";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { setLocale, t } from "@/i18n";
+import WeixinConnectionCard from "@/components/WeixinConnectionCard.vue";
+import SettingsSectionHeader from "@/components/SettingsSectionHeader.vue";
 import ChannelsView from "./ChannelsView.vue";
 import PluginsView from "./PluginsView.vue";
 
@@ -48,6 +50,40 @@ const loggedInStatus = (): WeixinStatus => ({
   invariantState: "single",
   currentAccount: { accountId: "current-im-bot", userId: "current@im.wechat" },
   connected: true,
+});
+
+describe("ChannelsView section heading", () => {
+  it.each(["en-US", "zh-CN"] as const)(
+    "keeps the shared heading and connection card in standalone and embedded modes in %s",
+    async (locale) => {
+      setLocale(locale);
+      window.openclaw = createBrowserOpenClawMock();
+      const wrapper = mount(ChannelsView, {
+        global: {
+          plugins: [createPinia()],
+          stubs: { WeixinConnectionCard: true },
+        },
+      });
+      try {
+        await flushPromises();
+        const header = wrapper.getComponent(SettingsSectionHeader);
+        expect(header.get("h3").text()).toBe(t("channels.title"));
+        expect(header.find(".settings-section-description").exists()).toBe(false);
+        expect(header.find(".settings-section-actions").exists()).toBe(false);
+        expect(wrapper.classes()).not.toContain("embedded");
+        expect(wrapper.getComponent(WeixinConnectionCard).props("showMessages")).toBe(true);
+
+        await wrapper.setProps({ embedded: true });
+        expect(wrapper.classes()).toContain("embedded");
+        expect(wrapper.getComponent(SettingsSectionHeader).get("h3").text()).toBe(
+          t("channels.title"),
+        );
+        expect(wrapper.getComponent(WeixinConnectionCard).props("showMessages")).toBe(true);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
 });
 
 describe.each([
