@@ -127,7 +127,7 @@ export function resolveNodePath(): string {
  * Resolve the path to the OpenClaw entry script (`openclaw.mjs` or `dist/index.js`).
  *
  * Priority:
- *  1. Bundled in packaged app resources
+ *  1. Bundled in packaged app resources, or the installer's prepared runtime in development
  *  2. Deployer-installed under `~/.openclaw-node` (classic & `lib/` npm layouts)
  *  3. Global npm install under `%APPDATA%/npm`
  *  4. Per-machine Node at `%ProgramFiles%/nodejs`
@@ -177,7 +177,10 @@ export function resolveOpenClawEntry(): string {
   for (const p of candidates) {
     if (p && fs.existsSync(p)) return p;
   }
-  return candidates[0];
+  throw new Error(
+    "No OpenClaw runtime was found. Run the MicroClaw installer to prepare the bundled runtime, " +
+      "then restart the app or npm run dev.",
+  );
 }
 
 /** Resolve the package root that must remain readable by the sandbox preload. */
@@ -191,7 +194,7 @@ export function resolveOpenClawPackageDir(entryPath: string): string {
  * npm package) skills.
  *
  * Mirrors the layouts probed by {@link resolveOpenClawEntry}:
- *  1. Bundled in packaged app resources (`resources/openclaw/skills`)
+ *  1. The packaged runtime, or the installer's prepared runtime in development
  *  2. Deployer-installed under `~/.openclaw-node` (classic & `lib/` npm layouts)
  *  3. Global npm install under `%APPDATA%/npm` (per-user, default `npm i -g`)
  *  4. Per-machine Node at `%ProgramFiles%/nodejs`
