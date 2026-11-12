@@ -1,5 +1,4 @@
 import os
-import shutil
 import tempfile
 import unittest
 import unittest.mock
@@ -8,6 +7,8 @@ from pathlib import Path
 from deployer.uninstaller_bundle import (
     UninstallerBundleError,
     bundle_manifest,
+    bundles_match,
+    copy_uninstaller_runtime,
     publish_uninstaller_bundle,
     resolve_uninstaller_bundle,
     validate_uninstaller_bundle,
@@ -28,7 +29,7 @@ class UninstallerBundleTests(unittest.TestCase):
         internal = root / "_internal"
         internal.mkdir()
         (internal / "python.dll").write_text(f"{marker}-runtime", encoding="utf-8")
-        (internal / "deployer.pyc").write_text(f"{marker}-code", encoding="utf-8")
+        (internal / "base_library.zip").write_text(f"{marker}-stdlib", encoding="utf-8")
         return root
 
     def test_resolves_frozen_bundle_from_executable_directory(self):
@@ -98,20 +99,130 @@ class UninstallerBundleTests(unittest.TestCase):
             any(path.name.startswith(".microclaw-uninstaller-") for path in state.iterdir())
         )
 
+    def test_publication_keeps_runtime_dependencies_but_excludes_installation_payloads(self):
+        source = self._write_bundle(self.root / "source")
+        required = (
+            "_ssl.pyd",
+            "install-manifest.json",
+            "pythonnet/runtime/Python.Runtime.dll",
+            "pythonnet/runtime/Python.Runtime.deps.json",
+            "clr_loader/ffi/dlls/amd64/ClrLoader.dll",
+            "webview/lib/WebView2Loader.dll",
+            "webview/js/api.js",
+            "_tcl_data/init.tcl",
+            "_tk_data/tk.tcl",
+            "tcl8/8.6/init.tcl",
+            "setuptools/_vendor/metadata.txt",
+            "yaml/_yaml.pyd",
+            "deployer/assets/uninstall_template.html",
+            "deployer/assets/microclaw.ico",
+            "deployer/assets/microclaw-uninstall.ico",
+        )
+        excluded = (
+            "microclaw-portable.zip",
+            "another-desktop.zip",
+            "setup-dependencies.ps1",
+            "node-runtime.ps1",
+            "scripts/install.ps1",
+            "skills/example/SKILL.md",
+            "deployer/assets/installer_template.html",
+            "deployer/assets/welcome-expand.png",
+            "unknown-data/payload.bin",
+        )
+        for relative in required + excluded:
+            path = source / "_internal" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(relative, encoding="utf-8")
+        state = self.root / "state"
+        publish_uninstaller_bundle(source, state, lambda _exe: None)
+        for relative in required + ("base_library.zip",):
+            with self.subTest(required=relative):
+                self.assertEqual(
+                    (state / "_internal" / relative).read_bytes(),
+                    (source / "_internal" / relative).read_bytes(),
+                )
+        for relative in excluded:
+            with self.subTest(excluded=relative):
+                self.assertFalse((state / "_internal" / relative).exists())
+                self.assertTrue((source / "_internal" / relative).is_file())
+                self.assertNotIn(f"_internal/{relative}", bundle_manifest(source))
+        self.assertTrue(bundles_match(source, state))
+
+    def test_legacy_destination_payload_forces_cleanup_even_when_runtime_matches(self):
+        source = self._write_bundle(self.root / "source", "same")
+        state = self._write_bundle(self.root / "state", "same")
+        for root in (source, state):
+            (root / "_internal" / "microclaw-portable.zip").write_bytes(b"old desktop ZIP")
+        self.assertFalse(bundles_match(source, state))
+        check = unittest.mock.Mock()
+        publish_uninstaller_bundle(source, state, check)
+        self.assertFalse((state / "_internal" / "microclaw-portable.zip").exists())
+        self.assertTrue((source / "_internal" / "microclaw-portable.zip").exists())
+        check.assert_called_once_with(state / "MicroClawInstaller.exe")
+
+    def test_installation_payload_changes_do_not_invalidate_clean_uninstaller(self):
+        source = self._write_bundle(self.root / "source")
+        state = self.root / "state"
+        payload = source / "_internal" / "microclaw-portable.zip"
+        payload.write_bytes(b"old desktop")
+        publish_uninstaller_bundle(source, state, lambda _exe: None)
+        payload.write_bytes(b"new desktop payload")
+        check = unittest.mock.Mock()
+        publish_uninstaller_bundle(source, state, check)
+        check.assert_not_called()
+        self.assertTrue(bundles_match(source, state))
+        (state / "_internal" / "python.dll").write_bytes(b"broken runtime")
+        self.assertFalse(bundles_match(source, state))
+
+    def test_desktop_zip_alone_is_not_an_uninstaller_runtime(self):
+        source = self.root / "source"
+        (source / "_internal").mkdir(parents=True)
+        (source / "MicroClawInstaller.exe").write_bytes(b"exe")
+        (source / "_internal" / "microclaw-portable.zip").write_bytes(b"payload")
+        with self.assertRaisesRegex(UninstallerBundleError, "empty"):
+            validate_uninstaller_bundle(source)
+
+    def test_unreadable_runtime_cannot_be_silently_omitted_from_publication(self):
+        source = self._write_bundle(self.root / "source", "new")
+        state = self._write_bundle(self.root / "state", "old")
+
+        def unreadable_tree(_root, *, onerror):
+            onerror(PermissionError("runtime directory denied"))
+            return iter(())
+
+        with (
+            unittest.mock.patch("deployer.uninstaller_bundle.os.walk", side_effect=unreadable_tree),
+            self.assertRaisesRegex(UninstallerBundleError, "runtime directory denied"),
+        ):
+            publish_uninstaller_bundle(source, state, lambda _exe: None)
+        self.assertEqual((state / "_internal" / "python.dll").read_text(), "old-runtime")
+        self.assertEqual((state / "MicroClawInstaller.exe").read_text(), "old")
+
+    def test_failed_runtime_migration_restores_the_original_legacy_bundle(self):
+        source = self._write_bundle(self.root / "source", "new")
+        state = self._write_bundle(self.root / "state", "old")
+        payload = state / "_internal" / "microclaw-portable.zip"
+        payload.write_bytes(b"old desktop ZIP")
+        with self.assertRaisesRegex(UninstallerBundleError, "check failed"):
+            publish_uninstaller_bundle(
+                source, state, unittest.mock.Mock(side_effect=RuntimeError("check failed"))
+            )
+        self.assertEqual((state / "MicroClawInstaller.exe").read_text(), "old")
+        self.assertEqual((state / "_internal" / "python.dll").read_text(), "old-runtime")
+        self.assertEqual(payload.read_bytes(), b"old desktop ZIP")
+
     def test_manifest_mismatch_does_not_replace_existing_bundle(self):
         source = self._write_bundle(self.root / "source", "new")
         state = self._write_bundle(self.root / "state", "old")
         original = bundle_manifest(state)
-        real_copytree = shutil.copytree
 
         def incomplete_copytree(src, dst):
-            copied = real_copytree(src, dst)
-            (copied / "deployer.pyc").unlink()
-            return copied
+            copy_uninstaller_runtime(src, dst)
+            (dst / "base_library.zip").unlink()
 
         with (
             unittest.mock.patch(
-                "deployer.uninstaller_bundle.shutil.copytree",
+                "deployer.uninstaller_bundle.copy_uninstaller_runtime",
                 side_effect=incomplete_copytree,
             ),
             self.assertRaisesRegex(UninstallerBundleError, "manifest"),

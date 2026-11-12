@@ -6759,6 +6759,13 @@ function connectGatewayWs(): void {
     token: gatewayToken,
     supportsExecApprovals: true,
     beforeChatSend: requireEffectiveWindowsNodeMxc,
+    onStartupRetry: (retryAfterMs) => {
+      electronLifecycleDiagnostics.log(
+        "gateway-ws-startup-retry",
+        { processId: process.pid, retryAfterMs },
+        { durable: false },
+      );
+    },
     onConnected: () => {
       if (explicitQuitRequested || gatewayStopPromise) return;
       console.log("[gateway-ws] connected");

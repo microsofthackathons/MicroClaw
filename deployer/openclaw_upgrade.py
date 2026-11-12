@@ -18,6 +18,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from deployer.uninstaller_bundle import copy_uninstaller_runtime
+
 
 class UpgradePhase(StrEnum):
     BACKING_UP = "backing-up"
@@ -50,6 +52,7 @@ _MANAGED_STATE_CORE_PATHS = (
 )
 _UNINSTALLER_STATE_PATHS = (
     Path("MicroClawInstaller.exe"),
+    # This subtree is copied through the shared uninstaller runtime allowlist.
     Path("_internal"),
 )
 _MANAGED_STATE_PATHS = _MANAGED_STATE_CORE_PATHS + _UNINSTALLER_STATE_PATHS
@@ -899,7 +902,10 @@ class OpenClawUpgradeTransaction:
             source = state_dir / relative
             destination = staging / "state" / relative
             if source.is_dir() and not source.is_symlink():
-                shutil.copytree(_native_io_path(source), _native_io_path(destination))
+                if relative == Path("_internal"):
+                    copy_uninstaller_runtime(_native_io_path(source), _native_io_path(destination))
+                else:
+                    shutil.copytree(_native_io_path(source), _native_io_path(destination))
             elif source.exists() or source.is_symlink():
                 _durable_mkdir(destination.parent)
                 shutil.copy2(_native_io_path(source), _native_io_path(destination))
@@ -1013,12 +1019,20 @@ class OpenClawUpgradeTransaction:
             _durable_rename(staging, failed)
             _durable_remove(live)
 
-    def _restore_tree(self, backup: Path, live: Path, failed: Path, existed: bool) -> None:
+    def _restore_tree(
+        self,
+        backup: Path,
+        live: Path,
+        failed: Path,
+        existed: bool,
+        *,
+        copy_tree: Callable[[Path, Path], object] | None = None,
+    ) -> None:
         staging = None
         if existed:
             _durable_mkdir(live.parent)
             staging = live.with_name(f".{live.name}.{uuid.uuid4().hex}.restore")
-            shutil.copytree(
+            (copy_tree or shutil.copytree)(
                 _native_io_path(backup),
                 _native_io_path(staging),
             )
@@ -1075,7 +1089,13 @@ class OpenClawUpgradeTransaction:
             backup = self.backup_dir / "state" / relative
             failed = failed_dir / "state" / relative
             if backup.is_dir() and not backup.is_symlink():
-                self._restore_tree(backup, live, failed, True)
+                self._restore_tree(
+                    backup,
+                    live,
+                    failed,
+                    True,
+                    copy_tree=copy_uninstaller_runtime if relative == Path("_internal") else None,
+                )
                 continue
 
             staging = None

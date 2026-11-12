@@ -27,6 +27,12 @@ absolute positions across processes.
 - `startup-outcome` preserves failed, cancelled, timed-out and retried Gateway
   attempts. It does not manufacture readiness on failure. A timeout may still be
   followed by a later observed connection through the existing reconnect path.
+- `gateway-ws-startup-retry` records an explicit, retryable `startup-sidecars`
+  handshake response and its bounded `retryAfterMs`. This distinguishes the
+  server's remaining initialization from client reconnect backoff, without
+  logging authentication data. Only this structured startup response uses the
+  short protocol delay (100–2000 ms, normally 500 ms); authentication cooldowns
+  and generic disconnect backoff retain their existing handling.
 
 Timing details are appended immediately; cumulative summaries and existing lifecycle
 receipts retain durable flushes. Fine-grained events avoid an fsync per phase.
@@ -113,3 +119,11 @@ files and command execution policy are unchanged, as are stdout, stderr, IPC,
 the Gateway PID, and the MXC host launch configuration. Other platforms keep
 ordinary `pipe` stdin. Regression tests exercise inherited command input while
 the lifeline stays open, then verify EOF shutdown and stdout/stderr/IPC delivery.
+
+## Measured startup investigation
+
+See [2026-11-11 startup analysis](reference/startup-analysis-2026-11-11.md) for the
+147-second user launch, the distinction between Agent admission waits and actual
+database work, isolated standalone/managed comparisons, and the measured retry
+and module-loading improvements. Isolated timings are not a replacement for a
+new measurement of the user's complete installed application.
