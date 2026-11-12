@@ -38,12 +38,7 @@ import { WeixinReplyProgressSender } from "./reply-progress-sender.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import {
   assertMxcWeixinIngressReleased,
-  assertMxcWeixinOutboundMediaSource,
-  authorizeMxcWeixinOutboundMedia,
-  hasMxcWeixinMediaPolicy,
   resolveWeixinLocalMediaPath,
-  resolveWeixinOutboundTempRoot,
-  stageMxcWeixinInboundMedia,
 } from "../security/mxc-policy.js";
 import type { WeixinRemoteApprovalTransport } from "../security/remote-approval.js";
 
@@ -199,10 +194,7 @@ export async function processOneMessage(
     const label = refMediaItem ? "ref" : "inbound";
     const downloaded = await downloadMediaFromItem(mediaItem, {
       cdnBaseUrl: deps.cdnBaseUrl,
-      saveMedia: hasMxcWeixinMediaPolicy()
-        ? (buffer, contentType, _subdir, maxBytes, originalFilename) =>
-            stageMxcWeixinInboundMedia(buffer, contentType, maxBytes, originalFilename)
-        : deps.channelRuntime.media.saveMediaBuffer,
+      saveMedia: deps.channelRuntime.media.saveMediaBuffer,
       log: deps.log,
       errLog: deps.errLog,
       label,
@@ -400,7 +392,6 @@ export async function processOneMessage(
         const rawText = payload.text ?? "";
         const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
         assertMxcWeixinIngressReleased();
-        if (mediaUrl) assertMxcWeixinOutboundMediaSource(mediaUrl);
         let text = (() => {
           const f = new StreamingMarkdownFilter();
           return f.feed(rawText) + f.flush();
@@ -443,7 +434,7 @@ export async function processOneMessage(
               logger.debug(`outbound: downloading remote mediaUrl=${mediaUrl.slice(0, 80)}...`);
               filePath = await downloadRemoteImageToTemp(
                 mediaUrl,
-                resolveWeixinOutboundTempRoot(LEGACY_MEDIA_OUTBOUND_TEMP_DIR),
+                LEGACY_MEDIA_OUTBOUND_TEMP_DIR,
               );
               logger.debug(`outbound: remote image downloaded to filePath=${filePath}`);
             } else {
@@ -472,7 +463,6 @@ export async function processOneMessage(
               logger.info(`outbound: text sent to=${ctx.To}`);
               return;
             }
-            filePath = await authorizeMxcWeixinOutboundMedia(filePath);
             assertMxcWeixinIngressReleased();
             assertAccountStillActive();
             await sendWeixinMediaFile({

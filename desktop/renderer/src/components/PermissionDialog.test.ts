@@ -177,20 +177,15 @@ describe("PermissionDialog", () => {
     wrapper.unmount();
   });
 
-  it("omits Limited metadata without changing eligible remember decisions", async () => {
+  it("keeps eligible remember decisions for MXC commands", async () => {
     const wrapper = mount(PermissionDialog, {
       props: {
         request: {
-          requestId: "mxc-limited-request",
+          requestId: "mxc-request",
           type: "mxc-approval",
           command: "Get-ChildItem",
           dirPath: "isolated-scratch:v1",
-          containmentStrength: "limited-dacl",
           declaredAccess: [{ access: "ro", path: String.raw`C:\Work` }],
-          ambientAccess: [
-            { category: "desktop", status: "read-write" },
-            { category: "ssh", status: "denied" },
-          ],
           allowedDecisions: ["deny", "allow-once", "allow-always"],
         },
       },
@@ -229,7 +224,6 @@ describe("PermissionDialog", () => {
       type: "mxc-approval" as const,
       command,
       dirPath: String.raw`C:\workspace\cwd`,
-      containmentStrength: "limited-dacl" as const,
       providerInitialization: { contract: "microclaw.powershell-filesystem-scope.v1" as const },
       declaredAccess: [{ access: "rw" as const, path: String.raw`C:\workspace` }],
       allowedDecisions: ["deny" as const, "allow-once" as const],
@@ -238,9 +232,6 @@ describe("PermissionDialog", () => {
     expect(wrapper.find('[data-testid="mxc-powershell-scope"]').exists()).toBe(false);
     expect(wrapper.get(".perm-command-code").text()).toBe(command);
     expect(wrapper.findAll(".perm-actions button")).toHaveLength(2);
-    await wrapper.setProps({ request: { ...request, containmentStrength: "full" } });
-    expect(wrapper.find('[data-testid="mxc-powershell-scope"]').exists()).toBe(false);
-    expect(wrapper.get(".perm-command-code").text()).toBe(command);
     wrapper.unmount();
   });
 
@@ -305,44 +296,38 @@ describe("PermissionDialog", () => {
   it.each([
     ["en-US", "Your agent wants to run the following command"],
     ["zh-CN", "你的智能体希望运行以下命令"],
-  ] as const)(
-    "uses the simplified command title and content in %s for every containment mode",
-    async (locale, title) => {
-      setLocale(locale);
-      const request = {
-        requestId: "localized-command",
-        type: "mxc-approval" as const,
-        command: "hostname.exe",
-        dirPath: "C:\\Private",
-        callerStack: "private diagnostic stack",
-        remoteDelivery: {
-          state: "local-only" as const,
-          reason: "source-origin-unavailable" as const,
-          replyMode: null,
-          revision: 1,
-        },
-        allowedDecisions: ["deny" as const, "allow-once" as const],
-      };
-      const wrapper = mount(PermissionDialog, { props: { request } });
-      try {
-        for (const containmentStrength of ["full", "limited-dacl", "off"] as const) {
-          await wrapper.setProps({ request: { ...request, containmentStrength } });
-          expect(wrapper.get(".perm-title").text()).toBe(title);
-          expect(wrapper.get(".perm-command-code").text()).toBe(request.command);
-          expect(wrapper.find(".perm-body").exists()).toBe(false);
-          expect(wrapper.find(".perm-risk-label").exists()).toBe(false);
-          expect(wrapper.text()).not.toContain("C:\\Private");
-          expect(wrapper.text()).not.toContain("source-origin-unavailable");
-          expect(wrapper.findAll(".perm-actions button")).toHaveLength(2);
-        }
-        await wrapper.findAll(".perm-actions button")[0].trigger("click");
-        expect(wrapper.emitted("respond")).toEqual([["deny"]]);
-      } finally {
-        wrapper.unmount();
-        setLocale("en-US");
-      }
-    },
-  );
+  ] as const)("uses the simplified command title and content in %s", async (locale, title) => {
+    setLocale(locale);
+    const request = {
+      requestId: "localized-command",
+      type: "mxc-approval" as const,
+      command: "hostname.exe",
+      dirPath: "C:\\Private",
+      callerStack: "private diagnostic stack",
+      remoteDelivery: {
+        state: "local-only" as const,
+        reason: "source-origin-unavailable" as const,
+        replyMode: null,
+        revision: 1,
+      },
+      allowedDecisions: ["deny" as const, "allow-once" as const],
+    };
+    const wrapper = mount(PermissionDialog, { props: { request } });
+    try {
+      expect(wrapper.get(".perm-title").text()).toBe(title);
+      expect(wrapper.get(".perm-command-code").text()).toBe(request.command);
+      expect(wrapper.find(".perm-body").exists()).toBe(false);
+      expect(wrapper.find(".perm-risk-label").exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("C:\\Private");
+      expect(wrapper.text()).not.toContain("source-origin-unavailable");
+      expect(wrapper.findAll(".perm-actions button")).toHaveLength(2);
+      await wrapper.findAll(".perm-actions button")[0].trigger("click");
+      expect(wrapper.emitted("respond")).toEqual([["deny"]]);
+    } finally {
+      wrapper.unmount();
+      setLocale("en-US");
+    }
+  });
 
   it("preserves the separate file-access dialog and grant decision", async () => {
     const wrapper = mount(PermissionDialog, {

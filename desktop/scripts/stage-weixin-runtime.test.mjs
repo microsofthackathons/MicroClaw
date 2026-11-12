@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -579,6 +580,53 @@ test("prepared package resource is provenance-pinned and excludes a nested OpenC
       .treeSha256,
     manifest.treeSha256,
   );
+});
+
+test("packaged Zod retains its complete JavaScript runtime without development-only files", async () => {
+  const destination = path.join(tempDir, "zod-runtime-resource");
+  const manifest = prepareWeixinPluginResource({ source: sourceDir, destination });
+  const original = path.join(tempDir, "original-zod");
+  fs.mkdirSync(original);
+  execFileSync("tar", [
+    "-xzf",
+    path.join(sourceDir, "vendor", "zod-4.4.3.tgz"),
+    "-C",
+    original,
+    "--strip-components=1",
+  ]);
+  const runtime = path.join(destination, "node_modules", "zod");
+  const originalFiles = fs.readdirSync(original, { recursive: true, withFileTypes: true });
+  for (const entry of originalFiles) {
+    if (!entry.isFile() || !/\.(?:js|cjs|json)$/.test(entry.name)) continue;
+    const relative = path.relative(original, path.join(entry.parentPath, entry.name));
+    if (relative === "package.json" || relative.startsWith(`src${path.sep}`)) continue;
+    assert.deepEqual(
+      fs.readFileSync(path.join(runtime, relative)),
+      fs.readFileSync(path.join(original, relative)),
+      relative,
+    );
+  }
+  assert.equal(fs.existsSync(path.join(runtime, "src")), false);
+  assert.equal(fs.existsSync(path.join(runtime, "LICENSE")), true);
+  assert.ok(
+    manifest.files
+      .filter(({ path: file }) => file.startsWith("node_modules/zod/"))
+      .every(({ path: file }) => !/\.d\.(?:cts|ts)$/.test(file)),
+  );
+  const pkg = JSON.parse(fs.readFileSync(path.join(runtime, "package.json"), "utf8"));
+  assert.equal(pkg.types, undefined);
+  const require = createRequire(path.join(destination, "package.json"));
+  for (const [subpath, conditions] of Object.entries(pkg.exports)) {
+    if (typeof conditions !== "object" || subpath.includes("*")) continue;
+    assert.equal(conditions.types, undefined);
+    assert.equal(conditions["@zod/source"], undefined);
+    assert.ok(require(`zod${subpath === "." ? "" : subpath.slice(1)}`));
+    assert.ok(await import(pathToFileURL(path.join(runtime, conditions.import)).href));
+  }
+  const { z } = await import(pathToFileURL(path.join(runtime, "index.js")).href);
+  const schema = z.object({ enabled: z.boolean() });
+  assert.equal(schema.safeParse({ enabled: true }).success, true);
+  assert.equal(schema.safeParse({ enabled: "yes" }).success, false);
 });
 
 test("the packaged plugin registers admin-only login lifecycle RPCs without starting login", async (context) => {

@@ -191,8 +191,14 @@ describe("lightweight default plugin and runtime connection", () => {
     const config = {};
     ensureDefaultWeixinPlugin(config);
     expect(config).toEqual({
-      plugins: { entries: { "openclaw-weixin": { enabled: true } }, allow: ["openclaw-weixin"] },
+      plugins: { entries: { "openclaw-weixin": { enabled: true } } },
     });
+  });
+
+  it("preserves an unrestricted empty plugin allowlist", () => {
+    const config = { plugins: { allow: [] as string[] } };
+    expect(ensureDefaultWeixinPlugin(config)).toBe(true);
+    expect(config.plugins.allow).toEqual([]);
   });
 
   it("never treats a registered/running channel or a different account as connected", () => {

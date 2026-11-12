@@ -450,6 +450,9 @@
         <div class="sub-label-row">
           <h2 class="model-section-title">{{ t("settings.webSearch") }}</h2>
           <div class="sub-label-actions">
+            <span v-if="!searchConfigured" class="search-configuration-state">
+              {{ t("settings.searchNotConfigured") }}
+            </span>
             <span
               v-if="searchSaveStatus !== 'idle'"
               class="status-indicator"
@@ -474,6 +477,16 @@
               >
                 <el-option v-for="p in searchProviders" :key="p.id" :label="p.name" :value="p.id" />
               </el-select>
+              <button
+                v-if="!searchConfigured"
+                type="button"
+                class="search-enable-btn"
+                data-testid="enable-web-search"
+                :disabled="searchSaveStatus === 'saving'"
+                @click="saveSearchSettings"
+              >
+                {{ t("settings.enableWebSearch") }}
+              </button>
             </div>
           </div>
           <div v-if="activeSearchProvider.requiresKey" class="card-row no-border api-key-row">
@@ -594,6 +607,9 @@
               @update:model-value="stageWindowsNodeMxcEnabled"
             />
           </div>
+          <p class="mxc-primary-detail" data-testid="mxc-execution-scope">
+            {{ t("settings.windowsNodeMxcExecutionScope") }}
+          </p>
           <p
             v-if="windowsNodeMxcUnavailable"
             class="mxc-primary-detail"
@@ -631,28 +647,6 @@
             </div>
             <div v-if="windowsNodeMxcProtectionDetail" class="mxc-primary-detail">
               {{ windowsNodeMxcProtectionDetail }}
-            </div>
-            <div
-              v-if="windowsNodeMxcHooksPausedSummary"
-              class="mxc-alert mxc-alert-warning"
-              data-testid="mxc-hooks-paused"
-            >
-              {{ windowsNodeMxcHooksPausedSummary }}
-            </div>
-            <div
-              v-if="windowsNodeMxcStatus.canvas.state === 'paused'"
-              class="mxc-alert mxc-alert-warning"
-              data-testid="mxc-canvas-status"
-            >
-              {{ t("settings.windowsNodeMxcCanvasPaused") }}
-            </div>
-            <div
-              v-if="windowsNodeMxcLimitedMode && windowsNodeMxcAmbientSummary"
-              class="card-row no-border mxc-ambient-compact"
-              :class="windowsNodeMxcAmbientSummaryClass"
-              data-testid="mxc-ambient-compact"
-            >
-              {{ windowsNodeMxcAmbientSummary }}
             </div>
           </template>
           <div
@@ -748,6 +742,9 @@
                 {{ t("settings.sandboxNoDirs") }}
               </div>
             </div>
+            <div class="mxc-folder-overlap-hint" data-testid="mxc-folder-overlap-hint">
+              {{ t("settings.windowsNodeMxcFolderOverlapHint") }}
+            </div>
             <div
               v-if="windowsNodeMxcStatus.folderPolicyRecovery?.previous"
               class="mxc-folder-policy-actions"
@@ -782,27 +779,34 @@
             </el-select>
           </div>
         </div>
-        <div
-          v-if="windowsNodeMxcDraftDirty || windowsNodeMxcApplying"
-          class="mxc-folder-policy-actions"
-        >
-          <el-button
-            type="primary"
-            :loading="windowsNodeMxcApplying"
-            :disabled="windowsNodeMxcApplyDisabled"
-            data-testid="mxc-apply-changes"
-            @click="applyWindowsNodeMxcChanges"
+        <template v-if="windowsNodeMxcDraftDirty || windowsNodeMxcApplying">
+          <div
+            v-if="windowsNodeMxcApplyWarnings.length"
+            class="mxc-alert mxc-alert-warning mxc-change-impact"
+            role="status"
+            data-testid="mxc-change-impact"
           >
-            {{ t("settings.windowsNodeMxcApplyChanges") }}
-          </el-button>
-          <el-button
-            data-testid="mxc-cancel-changes"
-            :disabled="windowsNodeMxcControlsBusy"
-            @click="cancelWindowsNodeMxcChanges"
-          >
-            {{ t("common.cancel") }}
-          </el-button>
-        </div>
+            <p v-for="warning in windowsNodeMxcApplyWarnings" :key="warning">{{ warning }}</p>
+          </div>
+          <div class="mxc-folder-policy-actions">
+            <el-button
+              type="primary"
+              :loading="windowsNodeMxcApplying"
+              :disabled="windowsNodeMxcApplyDisabled"
+              data-testid="mxc-apply-changes"
+              @click="applyWindowsNodeMxcChanges"
+            >
+              {{ t("settings.windowsNodeMxcApplyChanges") }}
+            </el-button>
+            <el-button
+              data-testid="mxc-cancel-changes"
+              :disabled="windowsNodeMxcControlsBusy"
+              @click="cancelWindowsNodeMxcChanges"
+            >
+              {{ t("common.cancel") }}
+            </el-button>
+          </div>
+        </template>
       </div>
 
       <!-- Data & Privacy -->
@@ -984,6 +988,7 @@ import ChannelsView from "@/views/ChannelsView.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
+import { windowsNodeMxcModeTransitionPhases } from "@/windows-node-mxc-lifecycle";
 import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import LocalModelDownloadDialog from "@/components/LocalModelDownloadDialog.vue";
@@ -1112,9 +1117,6 @@ const windowsNodeMxcFolderDraft = reactive<{ rw: string[]; ro: string[] }>({ rw:
 const windowsNodeMxcFolderBaseline = reactive<{ rw: string[]; ro: string[] }>({ rw: [], ro: [] });
 type WindowsNodeMxcStatus = Awaited<ReturnType<typeof window.openclaw.windowsNodeMxc.getStatus>>;
 type WindowsNodeMxcMode = WindowsNodeMxcStatus["requestedMode"];
-type WindowsNodeMxcAmbientEntry = NonNullable<
-  WindowsNodeMxcStatus["ambientAccess"]
->["entries"][number];
 const windowsNodeMxcStatus = ref<WindowsNodeMxcStatus | null>(null);
 const windowsNodeMxcStatusLoading = ref(false);
 const windowsNodeMxcVerifiedAt = ref<number | null>(null);
@@ -1131,23 +1133,13 @@ const commandConsentLoaded = ref(false);
 const windowsNodeMxcControlsBusy = computed(
   () => windowsNodeMxcApplying.value || windowsNodeMxcFolderEditing.value,
 );
-const windowsNodeMxcTransitionPhases = new Set([
+const windowsNodeMxcTransitionPhases = new Set<string>([
   "updating-folders",
   "updating-consent",
   "updating-model",
   "connecting-weixin",
   "disconnecting-weixin",
-  "locking",
-  "disabling",
-  "validating",
-  "persisting",
-  "starting-locked",
-  "smoking-locked",
-  "starting-active",
-  "smoking-active",
-  "promoting-active",
-  "verifying-active",
-  "starting-standard",
+  ...windowsNodeMxcModeTransitionPhases,
 ]);
 
 const windowsNodeMxcUnavailable = computed(() => {
@@ -1156,8 +1148,8 @@ const windowsNodeMxcUnavailable = computed(() => {
     !!status &&
     !status.desiredEnabled &&
     !!status.probe &&
-    (status.probe.outcome === "error" ||
-      (!status.fullAvailability?.available && !status.limitedAvailability?.available))
+    status.probe.outcome === "unsupported" &&
+    status.probe.windowsUnsupported === true
   );
 });
 
@@ -1179,8 +1171,7 @@ const windowsNodeMxcFullyOff = computed(() => {
     status.effectiveStrength === "off" &&
     status.lifecycleState.phase === "idle" &&
     !status.lifecycleState.detail &&
-    status.activationLeaseMode === null &&
-    status.canvas.state === "off" &&
+    status.activationLeaseMode !== "diagnostic" &&
     !status.hooks.pausedByMxc &&
     !status.folderPolicyRecovery?.lastError &&
     !windowsNodeMxcStatusError.value
@@ -1226,22 +1217,6 @@ const windowsNodeMxcProtectionDetail = computed(() => {
   return status.lifecycleState.detail ? `${phase} · ${status.lifecycleState.detail}` : phase;
 });
 
-const windowsNodeMxcHooksPausedSummary = computed(() => {
-  const hooks = windowsNodeMxcStatus.value?.hooks;
-  if (!hooks?.pausedByMxc) return "";
-  if (hooks.requestedExternalEnabled && hooks.requestedInternalEnabled) {
-    return t("settings.windowsNodeMxcHooksPausedBoth");
-  }
-  return hooks.requestedExternalEnabled
-    ? t("settings.windowsNodeMxcHooksPausedExternal")
-    : t("settings.windowsNodeMxcHooksPausedInternal");
-});
-
-const windowsNodeMxcLimitedMode = computed(() => {
-  const status = windowsNodeMxcStatus.value;
-  return status?.requestedMode === "limited-dacl" || status?.effectiveStrength === "limited-dacl";
-});
-
 const windowsNodeMxcCompactStatus = computed(() => {
   const status = windowsNodeMxcStatus.value;
   if (!status || windowsNodeMxcFullyOff.value) {
@@ -1253,55 +1228,8 @@ const windowsNodeMxcCompactStatus = computed(() => {
   });
 });
 
-const windowsNodeMxcAmbientEntries = computed(
-  () => windowsNodeMxcStatus.value?.ambientAccess?.entries ?? [],
-);
-
-const windowsNodeMxcAmbientExceptions = computed(() =>
-  windowsNodeMxcAmbientEntries.value.filter((entry) => entry.status !== "denied"),
-);
-
-const windowsNodeMxcAmbientSummary = computed(() => {
-  const entries = windowsNodeMxcAmbientEntries.value;
-  if (entries.length === 0) {
-    return t("settings.windowsNodeMxcAmbientUnavailable");
-  }
-  const denied = entries.length - windowsNodeMxcAmbientExceptions.value.length;
-  if (windowsNodeMxcAmbientExceptions.value.length === 0) {
-    return "";
-  }
-  const details = windowsNodeMxcAmbientExceptions.value
-    .map(
-      (entry) =>
-        `${windowsNodeMxcAmbientCategoryLabel(entry.category)} — ${windowsNodeMxcAmbientStatusLabel(entry.status)}`,
-    )
-    .join(", ");
-  return t("settings.windowsNodeMxcAmbientExceptions", {
-    details,
-    denied,
-    total: entries.length,
-  });
-});
-
-const windowsNodeMxcAmbientSummaryClass = computed(() => {
-  if (windowsNodeMxcAmbientEntries.value.length === 0) {
-    return "mxc-summary-warning";
-  }
-  return "mxc-summary-error";
-});
-
 function windowsNodeMxcModeLabel(mode: WindowsNodeMxcMode) {
-  if (mode === "full") return t("settings.windowsNodeMxcModeFull");
-  if (mode === "limited-dacl") return t("settings.windowsNodeMxcModeLimited");
-  return t("settings.windowsNodeMxcModeOff");
-}
-
-function windowsNodeMxcAmbientCategoryLabel(category: WindowsNodeMxcAmbientEntry["category"]) {
-  return t(`settings.windowsNodeMxcAmbientCategory.${category}`);
-}
-
-function windowsNodeMxcAmbientStatusLabel(status: WindowsNodeMxcAmbientEntry["status"]) {
-  return t(`settings.windowsNodeMxcAmbientStatus.${status}`);
+  return t(mode === "off" ? "settings.windowsNodeMxcModeOff" : "settings.windowsNodeMxcModeFull");
 }
 
 const windowsNodeMxcFolderDraftDirty = computed(
@@ -1321,6 +1249,40 @@ const windowsNodeMxcDraftDirty = computed(
     windowsNodeMxcFolderDraftDirty.value ||
     commandConsentDraftDirty.value,
 );
+const windowsNodeMxcApplyWarnings = computed(() => {
+  if (!windowsNodeMxcDraftDirty.value) return [];
+  const warnings: string[] = [];
+  if (windowsNodeMxcFolderDraftDirty.value) {
+    warnings.push(
+      t(
+        windowsNodeMxcEnabledBaseline.value
+          ? "settings.windowsNodeMxcApplyFoldersImpact"
+          : "settings.windowsNodeMxcSaveFoldersImpact",
+      ),
+    );
+  }
+  if (commandConsentDraftDirty.value) {
+    warnings.push(
+      t("settings.commandConsentApplyImpact", {
+        mode: t(
+          commandConsentDraft.value === "allow-always"
+            ? "settings.commandConsentAllowAlways"
+            : "settings.commandConsentAskWhenNeeded",
+        ),
+      }),
+    );
+  }
+  warnings.push(
+    t(
+      windowsNodeMxcModeDraftDirty.value
+        ? windowsNodeMxcFolderDraftDirty.value
+          ? "settings.windowsNodeMxcApplyFoldersBeforeRestart"
+          : "settings.windowsNodeMxcApplyRestart"
+        : "settings.windowsNodeMxcApplyWithoutRestart",
+    ),
+  );
+  return warnings;
+});
 const windowsNodeMxcApplyDisabled = computed(
   () =>
     !windowsNodeMxcStatus.value ||
@@ -1422,7 +1384,6 @@ function showWindowsNodeMxcFolderPolicyError(reason: string) {
     "path-nonlocal": "settings.windowsNodeMxcFolderNonlocal",
     "path-not-found": "settings.windowsNodeMxcFolderMissing",
     "path-reparse-point": "settings.windowsNodeMxcFolderReparse",
-    "path-sensitive": "settings.windowsNodeMxcFolderSensitive",
     "acl-failed": "settings.windowsNodeMxcFolderAclFailed",
     "folder-not-configured": "settings.windowsNodeMxcFolderNotConfigured",
   };
@@ -1446,11 +1407,6 @@ async function addWindowsNodeMxcFolder(access: "rw" | "ro") {
       return;
     }
     replaceWindowsNodeMxcFolderDraft(result.dirs);
-    if (result.removedChildren?.length) {
-      ElMessage.info(
-        t("settings.sandboxChildrenRemoved", { count: result.removedChildren.length }),
-      );
-    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   } finally {
@@ -1509,44 +1465,9 @@ async function applyWindowsNodeMxcChanges() {
     rw: [...windowsNodeMxcFolderDraft.rw],
     ro: [...windowsNodeMxcFolderDraft.ro],
   };
-  const warnings: string[] = [];
-  if (foldersChanged) {
-    warnings.push(
-      t(
-        previousEnabled
-          ? "settings.windowsNodeMxcApplyFoldersImpact"
-          : "settings.windowsNodeMxcSaveFoldersImpact",
-      ),
-    );
-  }
-  if (consentChanged) {
-    warnings.push(
-      t("settings.commandConsentApplyImpact", {
-        mode: t(
-          consent === "allow-always"
-            ? "settings.commandConsentAllowAlways"
-            : "settings.commandConsentAskWhenNeeded",
-        ),
-      }),
-    );
-  }
-  warnings.push(
-    t(
-      modeChanged
-        ? foldersChanged
-          ? "settings.windowsNodeMxcApplyFoldersBeforeRestart"
-          : "settings.windowsNodeMxcApplyRestart"
-        : "settings.windowsNodeMxcApplyWithoutRestart",
-    ),
-  );
   windowsNodeMxcApplying.value = true;
   let consentAttempted = false;
   try {
-    await ElMessageBox.confirm(warnings.join("\n\n"), t("settings.windowsNodeMxcApplyChanges"), {
-      type: "warning",
-      confirmButtonText: t("settings.windowsNodeMxcApplyChanges"),
-      cancelButtonText: t("common.cancel"),
-    });
     if (
       !windowsNodeMxcStatus.value ||
       windowsNodeMxcTransitionPhases.has(windowsNodeMxcStatus.value.lifecycleState.phase) ||
@@ -1586,7 +1507,6 @@ async function applyWindowsNodeMxcChanges() {
     } else if (consentChanged || (foldersChanged && !previousEnabled)) {
       updateWindowsNodeMxcStatus(await window.openclaw.windowsNodeMxc.getStatus());
     }
-    ElMessage.success(t("settings.windowsNodeMxcApplyComplete"));
   } catch (error) {
     if (error === "cancel" || error === "close") return;
     ElMessage.error(error instanceof Error ? error.message : String(error));
@@ -1886,13 +1806,7 @@ const searchKeys = reactive<Record<SearchProviderId, string>>({
 const activeSearchProvider = computed(
   () => searchProviders.find((p) => p.id === searchProvider.value) ?? searchProviders[0],
 );
-// Only the provider/key actually written is committed to this persisted snapshot.
-const savedSearchProvider = ref<SearchProviderId>("parallel-free");
-const savedSearchKeys = reactive<Record<SearchProviderId, string>>({
-  "parallel-free": "",
-  brave: "",
-  tavily: "",
-});
+const searchConfigured = ref(false);
 type SearchSaveStatus = "idle" | "saving" | "saved" | "error" | "invalid";
 const searchSaveStatus = ref<SearchSaveStatus>("idle");
 const searchSaveError = ref("");
@@ -1914,9 +1828,8 @@ const searchAutosave = createSearchAutosave({
     searchSaveError.value = "";
     searchSaveStatus.value = "saving";
   },
-  saved(request, current) {
-    savedSearchProvider.value = request.provider;
-    savedSearchKeys[request.provider] = request.key;
+  saved(_request, current) {
+    searchConfigured.value = true;
     if (current) {
       searchSaveError.value = "";
       searchSaveStatus.value = "saved";
@@ -2476,21 +2389,22 @@ async function disconnectGitHubCopilot() {
 
 function loadSearchConfig(config: any): void {
   const active = config?.tools?.web?.search;
-  if (searchProviders.some((provider) => provider.id === active?.provider)) {
-    const provider: SearchProviderId = active.provider;
-    searchProvider.value = provider;
-    if (typeof active.apiKey === "string" && active.apiKey) {
-      searchKeys[provider] = active.apiKey;
+  const provider = searchProviders.find((candidate) => candidate.id === active?.provider);
+  const pluginId = provider?.id === "parallel-free" ? "parallel" : provider?.id;
+  const pluginKey = pluginId
+    ? config?.plugins?.entries?.[pluginId]?.config?.webSearch?.apiKey
+    : undefined;
+  const key = typeof pluginKey === "string" ? pluginKey : active?.apiKey;
+  searchConfigured.value =
+    !!provider &&
+    active?.enabled !== false &&
+    (!provider.requiresKey || (typeof key === "string" && !!key.trim()));
+  if (provider) {
+    searchProvider.value = provider.id;
+    if (typeof key === "string" && key) {
+      searchKeys[provider.id] = key;
     }
   }
-  snapshotSearchConfig();
-}
-
-// Records the current selection + keys as the persisted baseline that drives the Configured
-// status badges and whether the Save button is enabled.
-function snapshotSearchConfig(): void {
-  savedSearchProvider.value = searchProvider.value;
-  for (const p of searchProviders) savedSearchKeys[p.id] = searchKeys[p.id].trim();
 }
 
 function validateActiveSearchKey(request: SearchSaveRequest): string | null {
@@ -2511,16 +2425,17 @@ function setSearchValidationError(message: string): void {
   searchSaveStatus.value = "invalid";
 }
 
-// Writes only the active provider into tools.web.search — the single object the gateway
-// consumes. The gateway schema rejects any extra keys under tools.web, so no per-provider map
-// is persisted; unsaved keys for other providers live only in-memory for quick switching.
+// The main process places the submitted key in the selected plugin's webSearch config.
+// Unsaved keys for other providers live only in memory for quick switching.
 async function persistSearchConfig(
   request: SearchSaveRequest,
   canWrite: () => boolean,
 ): Promise<boolean> {
   const config = await window.openclaw.config.read();
   if (!canWrite()) return false;
-  await window.openclaw.config.write(patchSearchConfig(config, request));
+  await window.openclaw.config.write(patchSearchConfig(config, request), config, {
+    kind: "search-settings",
+  });
   return true;
 }
 
@@ -2756,6 +2671,22 @@ async function clearChatHistory() {
 .model-search-hint {
   color: var(--text-secondary);
   font-size: 13px;
+}
+.search-configuration-state {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.search-enable-btn {
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: var(--el-color-primary);
+  color: #fff;
+  cursor: pointer;
+}
+.search-enable-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 @media (max-width: 700px) {
   .provider-card-heading {
@@ -3573,19 +3504,6 @@ async function clearChatHistory() {
 .mxc-status-summary .mxc-state {
   font-size: 14px;
 }
-.mxc-ambient-compact {
-  display: block;
-  padding: 12px 24px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.45;
-}
-.mxc-summary-warning {
-  color: #b26a00;
-}
-.mxc-summary-error {
-  color: var(--settings-action-danger);
-}
 .mxc-folder-policy {
   gap: 8px;
 }
@@ -3604,6 +3522,11 @@ async function clearChatHistory() {
 .mxc-folder-policy .tag-remove:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+.mxc-folder-overlap-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .mxc-folder-policy-actions {
@@ -3629,6 +3552,12 @@ async function clearChatHistory() {
 .mxc-alert-warning {
   border-color: rgba(230, 162, 60, 0.45);
   background: rgba(230, 162, 60, 0.08);
+}
+.mxc-change-impact p {
+  margin: 0;
+}
+.mxc-change-impact p + p {
+  margin-top: 6px;
 }
 .mxc-alert-success {
   border-color: rgba(103, 194, 58, 0.45);

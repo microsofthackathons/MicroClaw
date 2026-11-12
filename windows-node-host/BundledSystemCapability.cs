@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using OpenClaw.Shared;
 using OpenClaw.Shared.ExecApprovals;
 using OpenClaw.Shared.Mxc;
+using OpenClaw.Shared.Telemetry;
 
 namespace MicroClaw.WindowsNodeHost;
 
@@ -21,18 +22,16 @@ internal sealed class BundledSystemCapability(
     ApprovalProofVerifier? approvalProof = null,
     ReadinessProofVerifier? readinessProof = null,
     Func<CancellationToken, Task>? isolationGuard = null,
-    Func<CancellationToken, Task>? ambientGuard = null,
     ReadinessPreparationGuard? readinessPreparation = null,
     string? policyFingerprint = null,
-    CommandConsent? commandConsent = null) : INodeCapability
+    CommandConsent? commandConsent = null) : INodeCapability, IDisposable
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
+    private readonly MxcExecutionContext? _mxcExecution = policy.RequestedStrength == "full"
+        ? MxcSdkRunner.CreateExecutor(policy, approvalsPath)
+        : null;
     private readonly ReadinessPreparationGuard _readinessPreparation =
         readinessPreparation ?? new ReadinessPreparationGuard();
-    private static readonly JsonSerializerOptions MxcConfigJsonOptions = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
     private static readonly string[] SupportedCommands =
     [
         "system.run",
@@ -45,6 +44,19 @@ internal sealed class BundledSystemCapability(
     public string Category => "system";
     public IReadOnlyList<string> Commands => SupportedCommands;
     public bool CanHandle(string command) => SupportedCommands.Contains(command, StringComparer.Ordinal);
+    public async Task WaitForOwnedOperationsAsync()
+    {
+        if (_mxcExecution is not null)
+        {
+            await _mxcExecution.Executor.WaitForOwnedOperationsAsync();
+            _mxcExecution.Processes.AssertSettled();
+        }
+    }
+    public void Dispose()
+    {
+        _mxcExecution?.Executor.Dispose();
+        _runGate.Dispose();
+    }
     public Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request) =>
         ExecuteAsync(request, CancellationToken.None);
 
@@ -165,7 +177,6 @@ internal sealed class BundledSystemCapability(
                     throw new HostPolicyException(
                         "readiness-preparation-scope-invalid",
                         "The readiness preparation permits only the exact built-in probe in isolated scratch.");
-                await EnsureAmbientAccessAsync(cancellationToken);
                 cwd = policy.RevalidateCwd(run.Cwd, cwd.ApprovalBinding);
                 executableIdentity = executableLease.Capture(
                     exactArgs,
@@ -244,8 +255,6 @@ internal sealed class BundledSystemCapability(
         CancellationToken cancellationToken)
     {
         await EnsureFilesystemIsolationAsync(cancellationToken);
-        if (!readiness)
-            await EnsureAmbientAccessAsync(cancellationToken);
         var request = ParseRun(args);
         var cwd = policy.ResolveCwd(request.Cwd);
         var validatedActivation = activationLease.Validate(request.Argv);
@@ -354,17 +363,21 @@ internal sealed class BundledSystemCapability(
             string? hostScratch = null;
             try
             {
-                var commandRequest = consentExecution.ToCommandRequest();
+                var hostRequest = consentExecution.ToCommandRequest();
                 if (string.IsNullOrEmpty(currentCwd.LaunchPath))
                 {
-                    hostScratch = Path.Combine(Path.GetTempPath(), "microclaw-host-" + Guid.NewGuid().ToString("N"));
+                    var stateRoot = Path.GetDirectoryName(approvalsPath)
+                        ?? throw new HostPolicyException(
+                            "approval-path-invalid", "The command approval store has no parent directory.");
+                    hostScratch = Path.Combine(
+                        stateRoot, "scratch", "microclaw-host-" + Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(hostScratch);
                 }
-                commandRequest.Cwd = hostScratch ?? currentCwd.LaunchPath;
+                hostRequest.Cwd = hostScratch ?? currentCwd.LaunchPath;
                 await commandConsent.RevalidateAsync(consentExecution, cancellationToken);
                 activationLease.Revalidate(validatedActivation, request.Argv);
                 approvalProof!.Revalidate(validatedApproval);
-                var result = await HostCommandRunner.RunAsync(commandRequest, cancellationToken);
+                var result = await HostCommandRunner.RunAsync(hostRequest, cancellationToken);
                 return Completed(result.Stdout, result.Stderr, result.ExitCode, result.TimedOut,
                     result.DurationMs, "off", "host");
             }
@@ -379,88 +392,61 @@ internal sealed class BundledSystemCapability(
             }
         }
 
-        var scratch = Path.Combine(Path.GetTempPath(), "microclaw-mxc-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(scratch);
+        var executor = _mxcExecution?.Executor
+            ?? throw new HostPolicyException("mxc-unavailable", "The MXC SDK executor is unavailable.");
+        using var directoryLease = DirectoryPathLease.Acquire(
+            policy.ApprovedRoots.Select(root => root.Path).Append(currentCwd.LaunchPath));
+        await EnsureFilesystemIsolationAsync(cancellationToken);
+        var runner = new MxcCommandRunner(executor);
+        var readinessConsumed = false;
+        var commandRequest = new CommandRequest
+        {
+            Argv = MxcCmdTransport.Prepare([currentExecutable, .. exactArgs]),
+            Cwd = string.IsNullOrEmpty(currentCwd.LaunchPath) ? null : currentCwd.LaunchPath,
+            TimeoutMs = request.TimeoutMs,
+            ExpectedMxcPolicy = runner.CapturePolicy(),
+            RevalidateApproval = async token =>
+            {
+                token.ThrowIfCancellationRequested();
+                var launchCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
+                var launchIdentity = executableLease.Capture(
+                    exactArgs, launchCwd.ApprovalBinding, declaredApprovalAccess);
+                if (!DurableApprovalIdentity.Matches(approvedIdentity, launchIdentity))
+                    return ExecApprovalRevalidationResult.PolicyDenied("approval-changed-before-launch");
+                activationLease.Revalidate(validatedActivation, request.Argv);
+                if (validatedApproval is not null)
+                {
+                    PowerShellFilesystemScope.ValidateTarget(request.ProviderInitialization, request.DeclaredAccess);
+                    approvalProof!.Revalidate(validatedApproval);
+                    if (consentExecution is not null)
+                        await commandConsent!.RevalidateAsync(consentExecution, token);
+                }
+                if (validatedReadiness is not null)
+                {
+                    readinessProof!.Revalidate(validatedReadiness);
+                    if (!readinessConsumed)
+                    {
+                        var elapsedMs = _readinessPreparation.ValidateAndConsume(
+                            validatedReadiness.ProbeKind, launchIdentity);
+                        readinessConsumed = true;
+                        Console.Error.WriteLine(
+                            $"[readiness-probe] launch prepared kind={validatedReadiness.ProbeKind} preparationToLaunchMs={elapsedMs}");
+                    }
+                }
+                if (requireDurableRecheck && !DurableApprovalIdentity.Load(approvalsPath)
+                    .Any(entry => DurableApprovalIdentity.Matches(entry, launchIdentity)))
+                    return ExecApprovalRevalidationResult.PolicyDenied("approval-changed-before-launch");
+                return ExecApprovalRevalidationResult.Current;
+            },
+        };
+        Console.Error.WriteLine(
+            $"[filesystem-policy] launchLocation={(currentCwd.MatchedRoot is null ? "isolated-scratch" : "selected-grant")} effectiveAccess={currentCwd.Access} containmentStrength={policy.RequestedStrength}");
         try
         {
-            using var directoryLease = DirectoryPathLease.Acquire(
-                policy.ApprovedRoots.Select(root => root.Path)
-                    .Append(currentCwd.LaunchPath)
-                    .Append(scratch));
-            var wxcDirectory = Path.GetDirectoryName(policy.WxcExecPath)
-                ?? throw new HostPolicyException(
-                    "mxc-path-invalid",
-                    "The pinned MXC runtime path has no parent directory.");
-            using var wxcDirectoryLease = DirectoryPathLease.Acquire([wxcDirectory]);
-            using var wxcExecutableLease = ExecutableApprovalLease.Acquire(policy.WxcExecPath);
-            await EnsureFilesystemIsolationAsync(
-                cancellationToken,
-                wxcExecutableLease);
-            if (!readiness)
-                await EnsureAmbientAccessAsync(cancellationToken);
-            currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
-            currentIdentity = executableLease.Capture(
-                exactArgs,
-                currentCwd.ApprovalBinding,
-                declaredApprovalAccess);
-            if (!DurableApprovalIdentity.Matches(approvedIdentity, currentIdentity))
+            var result = await runner.RunAsync(commandRequest, cancellationToken);
+            if (result.ExecutionMode == NodeToolExecutionMode.Host)
                 throw new HostPolicyException(
-                    "approval-changed-before-launch",
-                    "The executable, arguments, CWD, or declared access changed before launch.");
-            var launchCwd = string.IsNullOrEmpty(currentCwd.LaunchPath) ? scratch : currentCwd.LaunchPath;
-            Console.Error.WriteLine(
-                $"[filesystem-policy] launchLocation={(currentCwd.MatchedRoot is null ? "isolated-scratch" : "selected-grant")} effectiveAccess={currentCwd.Access} containmentStrength={policy.RequestedStrength}");
-            var config = BuildMxcConfig(
-                policy,
-                currentExecutable,
-                exactArgs,
-                launchCwd,
-                scratch,
-                request.TimeoutMs);
-            var configPath = Path.Combine(scratch, "mxc-config.json");
-            await File.WriteAllTextAsync(
-                configPath,
-                SerializeMxcConfig(
-                    config,
-                    allowDaclMutation: string.Equals(
-                        policy.RequestedStrength,
-                        "limited-dacl",
-                        StringComparison.Ordinal)),
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                cancellationToken);
-            currentCwd = policy.RevalidateCwd(request.Cwd, cwd.ApprovalBinding);
-            validatedActivation = activationLease.Revalidate(validatedActivation, request.Argv);
-            currentIdentity = executableLease.Capture(
-                exactArgs,
-                currentCwd.ApprovalBinding,
-                declaredApprovalAccess);
-            if (!DurableApprovalIdentity.Matches(approvedIdentity, currentIdentity))
-                throw new HostPolicyException(
-                    "approval-changed-before-launch",
-                    "The executable, arguments, CWD, or declared access changed at process launch.");
-            if (validatedApproval is not null)
-            {
-                PowerShellFilesystemScope.ValidateTarget(request.ProviderInitialization, request.DeclaredAccess);
-                approvalProof!.Revalidate(validatedApproval);
-                if (consentExecution is not null)
-                    await commandConsent!.RevalidateAsync(consentExecution, cancellationToken);
-            }
-            if (validatedReadiness is not null)
-            {
-                readinessProof!.Revalidate(validatedReadiness);
-                var preparationToLaunchMs = _readinessPreparation.ValidateAndConsume(
-                    validatedReadiness.ProbeKind,
-                    currentIdentity);
-                Console.Error.WriteLine(
-                    $"[readiness-probe] launch prepared kind={validatedReadiness.ProbeKind} preparationToLaunchMs={preparationToLaunchMs}");
-            }
-            if (requireDurableRecheck && !DurableApprovalIdentity.Load(approvalsPath)
-                .Any(entry => DurableApprovalIdentity.Matches(entry, currentIdentity)))
-                throw new HostPolicyException(
-                    "approval-changed-before-launch",
-                    "The durable approval is no longer current.");
-            var result = await MxcProcessRunner.RunAsync(
-                wxcExecutableLease.CanonicalPath, configPath, launchCwd, scratch, cancellationToken);
+                    "mxc-host-fallback", "MXC unexpectedly selected host execution; sandbox activation is blocked.");
             if (validatedReadiness is not null)
                 Console.Error.WriteLine(
                     $"[readiness-probe] completed internal fixed probe kind={validatedReadiness.ProbeKind} exitCode={result.ExitCode} timedOut={result.TimedOut}");
@@ -473,111 +459,16 @@ internal sealed class BundledSystemCapability(
                 policy.RequestedStrength,
                 policy.EffectiveTier);
         }
-
         finally
         {
-            try { Directory.Delete(scratch, recursive: true); } catch { }
+            await executor.WaitForOwnedOperationsAsync();
         }
     }
 
-    private Task EnsureAmbientAccessAsync(CancellationToken cancellationToken) =>
-        policy.RequestedStrength == "off" ? Task.CompletedTask :
-        ambientGuard?.Invoke(cancellationToken)
-        ?? AmbientAccessAssessment.RevalidateAsync(policy, cancellationToken);
-
-    internal static string SerializeMxcConfig(MxcConfig config, bool allowDaclMutation = false)
-    {
-        var root = JsonSerializer.SerializeToNode(config, MxcConfigJsonOptions)?.AsObject()
-            ?? throw new HostPolicyException(
-                "mxc-config-serialization-failed",
-                "The MXC launch policy could not be serialized.");
-        root["fallback"] = new JsonObject { ["allowDaclMutation"] = allowDaclMutation };
-        return root.ToJsonString(MxcConfigJsonOptions);
-    }
-
-    private Task EnsureFilesystemIsolationAsync(
-        CancellationToken cancellationToken,
-        ExecutableApprovalLease? wxcExecutableLease = null) =>
+    private Task EnsureFilesystemIsolationAsync(CancellationToken cancellationToken) =>
         policy.RequestedStrength == "off" ? Task.CompletedTask : isolationGuard?.Invoke(cancellationToken)
-        ?? (wxcExecutableLease is null
-            ? MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
-                policy.WxcExecPath,
-                policy.RequestedStrength,
-                policy.EffectiveTier,
-                cancellationToken)
-            : MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
-                wxcExecutableLease,
-                policy.RequestedStrength,
-                policy.EffectiveTier,
-                cancellationToken));
-
-    internal static MxcConfig BuildMxcConfig(
-        HostPolicy policy,
-        string executable,
-        IReadOnlyList<string> arguments,
-        string launchCwd,
-        string scratch,
-        int timeoutMs)
-    {
-        if (policy.ApprovedRoots.Any(root => policy.DeniedRoots.Any(denied =>
-            WindowsPathCanonicalizer.IsEqualOrNested(root.Path, denied)
-            || WindowsPathCanonicalizer.IsEqualOrNested(denied, root.Path))))
-            throw new HostPolicyException(
-                "approved-root-overlaps-sensitive-root",
-                "Denied roots override approved filesystem roots.");
-        var readOnly = policy.ApprovedRoots
-            .Where(root => root.Access == FolderAccess.ReadOnly)
-            .Select(root => root.Path)
-            .ToArray();
-        var readWrite = policy.ApprovedRoots
-            .Where(root => root.Access == FolderAccess.ReadWrite)
-            .Select(root => root.Path)
-            .Append(scratch)
-            .ToArray();
-        var argv = MxcCmdSerializer.ForContainer(new[] { executable }.Concat(arguments).ToArray());
-        return new MxcConfig
-        {
-            Version = "0.7.0-alpha",
-            ContainerId = Guid.NewGuid().ToString("N"),
-            Process = new MxcProcess
-            {
-                CommandLine = MxcConfigBuilder.Build(
-                    new SandboxExecutionRequest(
-                        "system.run",
-                        JsonSerializer.SerializeToElement(new { argv }),
-                        new SandboxPolicy("0.7.0-alpha", Ui: new UiPolicy(AllowWindows: policy.AllowWindowsUi)),
-                        timeoutMs,
-                        launchCwd),
-                    scratch).Process.CommandLine,
-                Cwd = launchCwd,
-                TimeoutMs = timeoutMs,
-            },
-            ProcessContainer = new MxcProcessContainer
-            {
-                LeastPrivilege = false,
-                Capabilities = policy.NetworkAllowed ? ["internetClient"] : [],
-                Ui = new MxcBaseProcessUi
-                {
-                    Isolation = "desktop",
-                    DesktopSystemControl = false,
-                    SystemSettings = "none",
-                    Ime = false,
-                },
-            },
-            Filesystem = new MxcFilesystem
-            {
-                ReadonlyPaths = readOnly,
-                ReadwritePaths = readWrite,
-            },
-            Network = new MxcNetwork
-            {
-                DefaultPolicy = policy.NetworkAllowed ? "allow" : "block",
-                EnforcementMode = "capabilities",
-            },
-            Ui = new MxcUi { Disable = false, Clipboard = "none", Injection = false },
-            Lifecycle = new MxcLifecycle { DestroyOnExit = true, PreservePolicy = false },
-        };
-    }
+        ?? MxcIsolationTierGuard.EnsureFilesystemIsolationAsync(
+            policy.RequestedStrength, policy.EffectiveTier, cancellationToken);
 
     internal RunRequest ParseRun(JsonElement args, bool allowMissingGrants = false)
     {
@@ -854,31 +745,32 @@ internal static partial class DeclaredAccessParser
                     throw new HostPolicyException(
                         "declare-access-malformed",
                         "Declare-access supports only ro and rw access.");
-                if (!Path.IsPathFullyQualified(requestedPath)
-                    || Path.GetPathRoot(requestedPath)?.Length != 3)
+                if (requestedPath.Length == 0
+                    || (policy.RequestedStrength != "off"
+                        && (!Path.IsPathFullyQualified(requestedPath)
+                            || Path.GetPathRoot(requestedPath)?.Length != 3)))
                     throw new HostPolicyException(
                         "declare-access-path-invalid",
-                        "Declared access paths must be absolute local drive paths.");
+                        "Declared access requires a path; MXC paths must be absolute local drive paths.");
 
-                var canonical = WindowsPathCanonicalizer.CanonicalizeDirectory(requestedPath);
-                if (policy.DeniedRoots.Any(root =>
-                    WindowsPathCanonicalizer.IsEqualOrNested(canonical, root)
-                    || (allowMissingGrants && WindowsPathCanonicalizer.IsEqualOrNested(root, canonical))))
-                    throw new HostPolicyException(
-                        "declare-access-sensitive-root",
-                        "Declared access overlaps a protected root.");
-                var approved = policy.ApprovedRoots
-                    .Where(root => WindowsPathCanonicalizer.IsEqualOrNested(canonical, root.Path))
-                    .OrderByDescending(root => root.Path.Length)
-                    .FirstOrDefault();
-                if (approved is null && !allowMissingGrants)
-                    throw new HostPolicyException(
-                        "declare-access-outside-approved-roots",
-                        "Declared access is outside the globally approved folder policy.");
-                if (!allowMissingGrants && access == "rw" && approved?.Access != FolderAccess.ReadWrite)
-                    throw new HostPolicyException(
-                        "declare-access-exceeds-approved-root",
-                        "Declared read-write access exceeds the globally approved folder policy.");
+                var canonical = policy.RequestedStrength == "off"
+                    ? requestedPath
+                    : WindowsPathCanonicalizer.CanonicalizeDirectory(requestedPath);
+                if (policy.RequestedStrength != "off")
+                {
+                    var approved = policy.ApprovedRoots
+                        .Where(root => WindowsPathCanonicalizer.IsEqualOrNested(canonical, root.Path))
+                        .OrderByDescending(root => root.Path.Length)
+                        .FirstOrDefault();
+                    if (approved is null && !allowMissingGrants)
+                        throw new HostPolicyException(
+                            "declare-access-outside-approved-roots",
+                            "Declared access is outside the globally approved folder policy.");
+                    if (!allowMissingGrants && access == "rw" && approved?.Access != FolderAccess.ReadWrite)
+                        throw new HostPolicyException(
+                            "declare-access-exceeds-approved-root",
+                            "Declared read-write access exceeds the globally approved folder policy.");
+                }
 
                 if (!declarations.TryGetValue(canonical, out var existing)
                     || (existing.Access == "ro" && access == "rw"))

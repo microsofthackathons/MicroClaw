@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
-import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import {
+  planWindowsNodeMxcFolderUpsert,
+  type WindowsNodeMxcGatewayApproval,
+} from "./windows-node-mxc";
 import {
   migrateWeixinRemoteApprovalConfiguration,
   normalizeWeixinRemoteApprovalOwner,
@@ -316,7 +319,10 @@ describe("automatic WeChat approval authority", () => {
 });
 
 describe("actual Main WeChat resolution fencing", () => {
-  function resolutionFixture(folderChanges = false) {
+  function resolutionFixture(
+    folderChanges = false,
+    currentFolders: { ro: string[]; rw: string[] } = { ro: [], rw: [] },
+  ) {
     const state = fixture(folderChanges);
     const challengeId = state.createResolvingChallenge();
     const client = { connected: true, request: vi.fn().mockResolvedValue({}) };
@@ -331,6 +337,14 @@ describe("actual Main WeChat resolution fencing", () => {
         assertCurrent();
       },
     );
+    const planFolders = createMainFunctionFixture("planRequestedWindowsNodeMxcFolders", {
+      getWindowsNodeMxcFolderPolicy: () => currentFolders,
+      validateWindowsNodeMxcUserDir: async (folder: string) => ({
+        ok: true,
+        canonicalPath: folder,
+      }),
+      planWindowsNodeMxcFolderUpsert,
+    });
     const commit = createMainFunctionFixture("commitPendingWindowsNodeMxcGatewayApproval", {
       exactWeixinApprovalSource,
       getWindowsNodeMxcWeixinRemoteApprovalConfiguration: state.readConfiguration,
@@ -352,15 +366,7 @@ describe("actual Main WeChat resolution fencing", () => {
       currentWindowsNodeMxcWeixinRemoteApprovalSecurity: () => security,
       sendToWindow: vi.fn(),
       mainWindow: {},
-      getWindowsNodeMxcFolderPolicy: () => ({ ro: [], rw: [] }),
-      validateWindowsNodeMxcUserDir: async (folder: string) => ({
-        ok: true,
-        canonicalPath: folder,
-      }),
-      planWindowsNodeMxcFolderUpsert: (_policy: unknown, folder: string) => ({
-        ok: true,
-        dirs: { ro: [], rw: [folder] },
-      }),
+      planRequestedWindowsNodeMxcFolders: planFolders.handle,
       applyRunningWindowsNodeMxcFolders: applyFolders,
       commitMxcApprovalDecision,
       windowsNodeMxcGatewayApprovalResolutionTarget: null,
@@ -426,6 +432,21 @@ describe("actual Main WeChat resolution fencing", () => {
     expect(state.client.request).toHaveBeenCalledExactlyOnceWith("exec.approval.resolve", {
       id: state.request.id,
       decision: "allow-once",
+    });
+  });
+
+  it("preserves existing child grants when an approved request adds their parent", async () => {
+    const state = resolutionFixture(true, {
+      rw: ["C:\\Approved\\Work"],
+      ro: ["C:\\Approved\\Reference"],
+    });
+    await expect(
+      state.resolve.handle(state.request.id, "allow-once", true, security),
+    ).resolves.toBeUndefined();
+    expect(state.applyFolders).toHaveBeenCalledOnce();
+    expect(state.applyFolders.mock.calls[0][0]).toEqual({
+      rw: ["C:\\Approved", "C:\\Approved\\Work"],
+      ro: ["C:\\Approved\\Reference"],
     });
   });
 

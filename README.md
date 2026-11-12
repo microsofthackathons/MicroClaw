@@ -32,9 +32,9 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Built-In Trust
 
 - **Transparent, permission-controlled actions**: file and tool access requests are surfaced to the user instead of being silently granted
-- **MXC is the only execution sandbox**: explicitly select Full or Limited containment; there is no legacy AppContainer backend
-- **Honest Off mode**: tools run directly with your Windows account's permissions when MXC is Off; no execution sandbox is active
-- **Mode-bound native enforcement**: Full uses an exclusive folder ceiling; Limited uses additional grants and assesses ambient access before activation
+- **MXC command sandbox**: turn Full containment on or off; there is no legacy DACL or AppContainer backend
+- **Honest Off mode**: Windows Node commands run directly with your Windows account's permissions when MXC is Off
+- **Mode-bound native enforcement**: Full uses selected folder grants and upstream protected-path denies; failed activation remains locked
 
 ---
 
@@ -95,7 +95,7 @@ graph TB
 | Component | Path | Stack | Description |
 |---|---|---|---|
 | **Desktop App** | `desktop/` | Electron 44 + TypeScript + Vue 3 + Element Plus | Chat UI, Gateway lifecycle management, system tray |
-| **Native MXC host** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | Native Windows tool execution with exact approvals and Full/Limited containment |
+| **Native MXC host** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | Native Windows command execution with exact approvals and optional Full containment |
 | **Installer** | `deploy.py` + `deployer/` | Python 3 + pywebview | Wizard-style graphical installer (can be packaged as a single exe) |
 | **Skill Packs** | `skills/` | Markdown + JSON + Python/Node | Office, search, browser automation managed skills |
 | **WeChat Plugin** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | WeChat channel integration |
@@ -294,17 +294,16 @@ npm run lint:sarif    # outputs eslint-results.sarif
 
 ## Sandbox Isolation
 
-**Settings → Security** offers MXC Full, MXC Limited (DACL), and Off. MXC is the only tool
-execution sandbox. Full requires an attested exclusive filesystem boundary; Limited requires
-explicit acknowledgement of additive grants and possible ambient Windows ACL access. Failed
-activation stays locked and never silently falls back to unsandboxed execution.
+**Settings → Security** enables or disables MXC Full containment for Windows Node commands.
+Full is the default and requires an attested filesystem boundary; failed or uncertain activation
+stays locked rather than silently falling back to unsandboxed execution. Only a positively
+unsupported installation starts with sandboxing Off and the switch unavailable.
 
-**Off intentionally runs agent tools without an execution sandbox**, with the permissions of
-your Windows account. Fresh installs and retired AppContainer settings migrate to Off; explicit
-native MXC selections and folder policies are preserved. Switching Off restores the saved Gateway
-policy, revokes native execution authority, and keeps scheduled tasks fenced until explicit resume.
-The old launcher, preload hooks, provisioning and renderer controls are removed. MXC may itself
-use Windows AppContainer primitives; those are not a second selectable backend.
+**Off intentionally runs Windows Node commands without MXC**, with your Windows account's
+permissions. Gateway-native tools, plugins, channels, Cron, Hooks, and Canvas are outside this
+sandbox in either mode. Security changes apply live without restarting the Gateway, and saved
+folder grants are retained when sandboxing is Off. The old DACL and AppContainer launcher
+backends are no longer available.
 
 See [native Windows Node + MXC](docs/experimental-windows-node-mxc.md) for the containment model.
 
@@ -367,7 +366,7 @@ when their owning specialist agent is added:
 | **Skill Integrity Checks** | SHA-256 hashes + Ed25519 signatures — detects tampering of all skill files at startup |
 | **Device Authentication** | Each device generates an Ed25519 key pair; Gateway connections are signature-authenticated |
 | **Skill Allowlist** | `allowBundled` / `allowManaged` control the available skill scope |
-| **Sandbox Isolation** | Native MXC Full or Limited containment; explicit Off runs unsandboxed |
+| **Sandbox Isolation** | Native MXC Full containment for Windows Node commands; Off runs them unsandboxed |
 | **Local Gateway** | Binds to loopback only — does not accept remote connections |
 
 ---

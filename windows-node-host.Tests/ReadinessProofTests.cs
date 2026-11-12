@@ -37,10 +37,10 @@ public sealed class ReadinessProofTests
 
         Assert.Equal("execution", validated.ProbeKind);
         Assert.Equal(
-            "35fc1fc5eb08a374a0247f7dde073db0ca0578d26158bbd6fdc5110ac6e50bda",
+            "5418872bcea032cc306dc751f879db4842ed0d7afca7c777c15fa28f6439558c",
             validated.PlanSha256);
         Assert.Equal(
-            "223e2c971807546fe05478ebf9e28790b3b6339a92504e7f9fd6a559aab167c7",
+            "e50c01fe2ff92f1a0ba2e66a7b75cae83a17e8bd6b3a76cb3a5d388ec40d9c31",
             proof.Signature);
         Assert.Equal("readiness-proof-replayed", replay.Code);
     }

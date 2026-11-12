@@ -59,11 +59,30 @@ test("preserves every existing file when an active directory cannot be moved", (
         rename() {
           throw Object.assign(new Error("in use"), { code: "EPERM" });
         },
+        sleep() {},
       }),
     /previous resources were preserved/,
   );
   assert.equal(fs.readFileSync(path.join(setup.destination, "host.exe"), "utf8"), "previous host");
   assert.equal(fs.existsSync(setup.staging), true);
+});
+
+test("retries a transient Windows sharing violation before publishing", (context) => {
+  const setup = fixture(context);
+  let attempts = 0;
+  assert.equal(
+    publishPreparedResource(setup.staging, setup.destination, {
+      rename(source, destination) {
+        attempts++;
+        if (process.platform === "win32" && attempts === 1)
+          throw Object.assign(new Error("temporarily in use"), { code: "EPERM" });
+        fs.renameSync(source, destination);
+      },
+      sleep() {},
+    }),
+    "published",
+  );
+  assert.equal(attempts, process.platform === "win32" ? 2 : 1);
 });
 
 test("rolls back the previous directory if publishing staging fails", (context) => {

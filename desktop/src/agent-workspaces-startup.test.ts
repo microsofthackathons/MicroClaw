@@ -72,8 +72,8 @@ describe("workspace startup wiring", () => {
 
   it("fails closed when the normal folder validator rejects the parent", async () => {
     const { settings, validate, initialize } = grantHarness();
-    validate.mockResolvedValue({ ok: false, reason: "path-sensitive" });
-    await expect(initialize()).rejects.toThrow("path-sensitive");
+    validate.mockResolvedValue({ ok: false, reason: "path-reparse-point" });
+    await expect(initialize()).rejects.toThrow("path-reparse-point");
     expect(settings.windowsNodeMxcWorkspaceGrantVersion).toBeUndefined();
     expect(settings.windowsNodeMxcFolders).toEqual({ rw: [], ro: [] });
   });
@@ -86,20 +86,16 @@ describe("workspace startup wiring", () => {
     expect(settings.windowsNodeMxcWorkspaceGrantVersion).toBeUndefined();
   });
 
-  it("uses the global parent for every agent CWD but leaves protected state denied", () => {
+  it("uses the global parent for every agent CWD but rejects outside folders", () => {
     const roots = [{ path: parent, access: "rw" as const }];
     const protectedRoot = "C:\\Users\\alice\\.openclaw";
     for (const id of ["main", "coder", "master-archive"]) {
       expect(
-        canonicalizeApprovedCwd(path.win32.join(parent, id), roots, (value) => value, [
-          protectedRoot,
-        ]),
+        canonicalizeApprovedCwd(path.win32.join(parent, id), roots, (value) => value),
       ).toMatchObject({ allowed: true, access: "rw" });
     }
     expect(
-      canonicalizeApprovedCwd(`${protectedRoot}\\workspace`, roots, (value) => value, [
-        protectedRoot,
-      ]),
+      canonicalizeApprovedCwd(`${protectedRoot}\\workspace`, roots, (value) => value),
     ).toMatchObject({ allowed: false });
   });
 

@@ -32,9 +32,9 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 内建信任
 
 - **动作透明、权限可控**：文件和工具访问需要明确向用户申请，而不是静默放行
-- **MXC 是唯一的工具执行沙箱**：明确选择 Full 或 Limited；不再提供旧 AppContainer 后端
-- **关闭即不使用沙箱**：MXC Off 时，工具直接使用当前 Windows 账号的权限执行
-- **原生模式边界**：Full 强制独占目录权限上限；Limited 采用附加授权，并在激活前评估环境访问权限
+- **MXC 命令沙箱**：可启用或关闭 Full 隔离；不再提供旧 DACL 或 AppContainer 后端
+- **关闭即不使用沙箱**：MXC Off 时，Windows Node 命令直接使用当前 Windows 账号的权限执行
+- **原生模式边界**：Full 使用所选文件夹授权和上游受保护路径限制；激活失败时保持锁定
 
 ---
 
@@ -43,7 +43,7 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 | 组件 | 路径 | 技术栈 | 说明 |
 |---|---|---|---|
 | **桌面应用** | `desktop/` | Electron 44 + TypeScript + Vue 3 + Element Plus | 聊天界面、Gateway 生命周期管理、托盘菜单 |
-| **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及 Full/Limited 原生隔离 |
+| **原生 MXC 主机** | `windows-node-host/` + `third_party/openclaw-windows-node/` | .NET + MXC SDK | 精确命令审批及可选的 Full 原生隔离 |
 | **安装器** | `deploy.py` + `deployer/` | Python 3 + pywebview | 向导式图形化安装器（可打包为单文件 exe） |
 | **技能包** | `skills/` | Markdown + JSON + Python/Node | Office、搜索、浏览器自动化等托管技能 |
 | **微信插件** | `plugins/openclaw-weixin/` | TypeScript + OpenClaw Plugin SDK | 微信频道接入 |
@@ -272,8 +272,11 @@ npm run dev
 | **技能完整性校验** | SHA-256 哈希 + Ed25519 签名，启动时检测所有技能文件是否被篡改 |
 | **设备认证** | 每台设备生成 Ed25519 密钥对，Gateway 连接时签名认证 |
 | **技能白名单** | `allowBundled` / `allowManaged` 控制可用技能范围 |
-| **沙盒隔离** | 原生 MXC Full/Limited；明确关闭后不使用执行沙箱 |
+| **沙盒隔离** | Windows Node 命令使用原生 MXC Full 隔离；关闭后不使用沙箱 |
 | **本地 Gateway** | 仅绑定 loopback，不接受远程连接 |
+
+Gateway 原生工具、插件、频道、Cron、Hooks 和 Canvas 在两种模式下都位于此沙箱之外。
+安全设置可即时应用，无需重启 Gateway；关闭沙箱时仍会保留已保存的文件夹授权。
 
 ---
 

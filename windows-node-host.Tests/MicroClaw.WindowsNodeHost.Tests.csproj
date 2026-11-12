@@ -13,5 +13,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\windows-node-host\MicroClaw.WindowsNodeHost.csproj" />
+    <ProjectReference
+      Include="..\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
+      AdditionalProperties="ImportDirectoryBuildProps=false;ImportDirectoryBuildTargets=false;CustomAfterMicrosoftCommonTargets=$(MSBuildThisFileDirectory)..\windows-node-host\OpenClaw.Shared.MicroClaw.targets;IntermediateOutputPath=$(MSBuildThisFileDirectory)..\windows-node-host\obj\openclaw-shared\$(Configuration)\;OutputPath=$(MSBuildThisFileDirectory)..\windows-node-host\bin\openclaw-shared\$(Configuration)\" />
   </ItemGroup>
 </Project>

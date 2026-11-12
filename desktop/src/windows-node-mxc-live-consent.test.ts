@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
-import { applyCommandConsentChange, type CommandConsentMode } from "./command-consent";
+import { applyLiveSecurityPolicyChange, type CommandConsentMode } from "./command-consent";
 import { WindowsNodeMxcLifecycleOperationCoordinator } from "./windows-node-mxc-lifecycle-operation";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
@@ -12,7 +12,8 @@ const start = source.indexOf("async function applyRunningCommandConsent(");
 const end = source.indexOf("async function requireEffectiveWindowsNodeMxc(", start);
 if (start < 0 || end < 0) throw new Error("Cannot locate the live consent transition");
 const transition = ts.transpileModule(
-  `${source.slice(start, end)}\nglobalThis.testApplyRunningCommandConsent = applyRunningCommandConsent;`,
+  `${source.slice(start, end)}
+  globalThis.testApplyRunningCommandConsent = applyRunningCommandConsent;`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
 ).outputText;
 
@@ -117,7 +118,7 @@ function harness(requestedMode: WindowsNodeMxcRequestedMode) {
     isManagedGatewayProcessAlive: () => true,
     getWindowsNodeMxcRequestedMode: () => requestedMode,
     windowsNodeMxcLifecycleOperations: new WindowsNodeMxcLifecycleOperationCoordinator(),
-    applyCommandConsentChange,
+    applyLiveSecurityPolicyChange,
     setWindowsNodeMxcLifecycleState: (phase: string) => events.push(`phase:${phase}`),
     allPendingWindowsNodeMxcGatewayApprovals: () =>
       gatewayApprovalPending
@@ -137,13 +138,16 @@ function harness(requestedMode: WindowsNodeMxcRequestedMode) {
     releaseWindowsNodeMxcIngress: (released: string) => events.push(`ingress:release:${released}`),
     settingsStore: {
       get: (key: string) => {
-        if (key !== "commandConsentMode") throw new Error(`Unexpected setting: ${key}`);
-        return savedMode;
+        if (key === "commandConsentMode") return savedMode;
+        throw new Error(`Unexpected setting: ${key}`);
       },
-      set: (key: string, value: CommandConsentMode) => {
-        if (key !== "commandConsentMode") throw new Error(`Unexpected setting: ${key}`);
-        events.push(`save:${value}`);
-        savedMode = value;
+      set: (key: string, value: CommandConsentMode | string[]) => {
+        if (key === "commandConsentMode" && !Array.isArray(value)) {
+          events.push(`save:${value}`);
+          savedMode = value;
+        } else {
+          throw new Error(`Unexpected setting: ${key}`);
+        }
       },
     },
     getWindowsNodeMxcStatus: status,
@@ -189,7 +193,9 @@ describe("desktop live command consent", () => {
         "save:allow-always",
         "policy:allow-always",
         "lease:active",
-        ...(mode === "off" ? [] : ["status", "ingress:release:gateway-generation"]),
+        ...(mode === "off"
+          ? ["ingress:release:gateway-generation"]
+          : ["status", "ingress:release:gateway-generation"]),
         `phase:${mode === "off" ? "idle" : "active"}`,
         "end",
         "mutation-lock:false",

@@ -107,10 +107,19 @@ class InstallerArchiveTests(unittest.TestCase):
         self.archive = self.work / "dist" / "MicroClawInstaller.zip"
         source = (Path(__file__).parents[1] / "build.ps1").read_text(encoding="utf-8-sig")
         parameters = source[: source.index("Set-StrictMode")]
+        archive_function = source[
+            source.index("function New-BuildArchive {") : source.index(
+                "Start-BuildStage 'Step 4/7: create portable zip'"
+            )
+        ]
         archive_step = source[source.index("# Step 6:") : source.index("# Step 7:")]
         self.harness = self.work / "archive-step.ps1"
         self.harness.write_text(
-            parameters + "$ErrorActionPreference = 'Stop'\n$root = $PSScriptRoot\n" + archive_step,
+            parameters
+            + "$ErrorActionPreference = 'Stop'\n$root = $PSScriptRoot\n"
+            + "function Start-BuildStage { param($Name) }\n"
+            + archive_function
+            + archive_step,
             encoding="utf-8-sig",
         )
 

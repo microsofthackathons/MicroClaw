@@ -38,8 +38,8 @@ const security = {
   policyFingerprint: "b".repeat(64),
   nodeId: "public-node",
   activationLeaseHash: "d".repeat(64),
-  requestedMode: "limited-dacl" as const,
-  effectiveMode: "appcontainer-dacl",
+  requestedMode: "full" as const,
+  effectiveMode: "base-container",
 };
 const scripts = [
   ["exists", `Test-Path -LiteralPath '${file}'`],
@@ -121,7 +121,7 @@ function fixture(script: string, nested = false, initialized = false) {
     envelope,
     security.nodeId,
     security.gatewayGeneration,
-    "limited-dacl",
+    "full",
   );
   if (!approval) throw new Error("Canonical public fixture was rejected");
   return { approval, plan, envelope };
@@ -276,7 +276,7 @@ describe("canonical v2 exec presentation independent of command names", () => {
       { ...envelope, request: { ...envelope.request, systemRunPlan: plan } },
       security.nodeId,
       security.gatewayGeneration,
-      "limited-dacl",
+      "full",
     );
     expect(approval).not.toBeNull();
     if (!approval) throw new Error("Valid generic arguments rejected");

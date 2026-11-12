@@ -41,7 +41,11 @@ export function migrateMxcOnlySecuritySettings<T extends Record<string, unknown>
     ...settings,
     windowsNodeMxcSelection: migrateWindowsNodeMxcSelection(
       settings.windowsNodeMxcSelection,
-      settings.securityMode === "windows-node-mxc",
+      settings.securityMode === "windows-node-mxc"
+        ? true
+        : typeof settings.sandboxEnabled === "boolean"
+          ? settings.sandboxEnabled
+          : undefined,
     ),
     windowsNodeMxcFolders: {
       rw: folderPaths(current ? current.rw : settings.sandboxUserDirsRW, "rw"),

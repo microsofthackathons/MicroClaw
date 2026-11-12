@@ -2,9 +2,14 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { ElImageViewer } from "element-plus";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ref } from "vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { setLocale } from "@/i18n";
 import { useChatStore } from "@/stores/chat";
+import {
+  windowsNodeMxcLifecycleStateKey,
+  type WindowsNodeMxcLifecycleState,
+} from "@/windows-node-mxc-lifecycle";
 import ChatMessageList from "./ChatMessageList.vue";
 
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -152,6 +157,39 @@ describe("chat waiting feedback", () => {
     expect((wrapper.get(".chat-edit-input").element as HTMLTextAreaElement).value).toBe(
       "Follow-up question",
     );
+    wrapper.unmount();
+  });
+
+  it("preserves an edited message while execution is locked", async () => {
+    const pinia = createPinia();
+    const store = useChatStore(pinia);
+    store.wsConnected = true;
+    store.messages = [{ role: "user", content: "Original question" }];
+    const send = vi.spyOn(store, "sendMessage").mockResolvedValue(true);
+    const state = ref<WindowsNodeMxcLifecycleState | null>({
+      phase: "locking",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const wrapper = shallowMount(ChatMessageList, {
+      global: {
+        plugins: [pinia],
+        provide: { [windowsNodeMxcLifecycleStateKey as symbol]: state },
+      },
+    });
+    await wrapper.get(".chat-bubble.user").trigger("dblclick");
+    const input = wrapper.get(".chat-edit-input");
+    await input.setValue("Edited question");
+    expect(wrapper.get(".chat-edit-btn.confirm").attributes("disabled")).toBeDefined();
+    await input.trigger("keydown", { key: "Enter" });
+    expect(send).not.toHaveBeenCalled();
+    expect((input.element as HTMLTextAreaElement).value).toBe("Edited question");
+
+    state.value = { ...state.value!, phase: "idle" };
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".chat-edit-btn.confirm").attributes("disabled")).toBeUndefined();
+    await input.trigger("keydown", { key: "Enter" });
+    expect(send).toHaveBeenCalledWith("Edited question");
     wrapper.unmount();
   });
 

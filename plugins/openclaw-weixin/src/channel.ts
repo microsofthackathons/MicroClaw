@@ -44,11 +44,7 @@ import { sendMessageWeixin, StreamingMarkdownFilter } from "./messaging/send.js"
 import { downloadRemoteImageToTemp } from "./cdn/upload.js";
 import {
   assertMxcWeixinIngressReleased,
-  assertMxcWeixinOutboundMediaSource,
-  authorizeMxcWeixinOutboundMedia,
-  isMxcManagedWeixin,
   resolveWeixinLocalMediaPath,
-  resolveWeixinOutboundTempRoot,
 } from "./security/mxc-policy.js";
 
 function writeMicroClawActivationOutcome(
@@ -235,14 +231,10 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
   },
   agentPrompt: {
     messageToolHints: () => {
-      const mediaHints = isMxcManagedWeixin()
-        ? [
-            "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a broker-approved local file path. Remote HTTP(S) media URLs are blocked in MXC mode. You do not need to specify 'to' — the current conversation recipient is used automatically.",
-          ]
-        : [
-            "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a local file path or a remote URL. You do not need to specify 'to' — the current conversation recipient is used automatically.",
-            "When the user asks you to find an image from the web, use a web search or browser tool to find a suitable image URL, then send it using the message tool with 'media' set to that HTTPS image URL — do NOT download the image first.",
-          ];
+      const mediaHints = [
+        "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a local file path or a remote URL. You do not need to specify 'to' — the current conversation recipient is used automatically.",
+        "When the user asks you to find an image from the web, use a web search or browser tool to find a suitable image URL, then send it using the message tool with 'media' set to that HTTPS image URL — do NOT download the image first.",
+      ];
       return [
         ...mediaHints,
         "IMPORTANT: When generating or saving a file to send, always use an absolute path (e.g. /tmp/photo.png), never a relative path like ./photo.png. Relative paths cannot be resolved and the file will not be delivered.",
@@ -291,7 +283,6 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       }
 
       const mediaUrl = ctx.mediaUrl;
-      if (mediaUrl) assertMxcWeixinOutboundMediaSource(mediaUrl);
       let text = ctx.text ?? "";
 
       const sendingResult = await applyWeixinMessageSendingHook({
@@ -317,11 +308,10 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           aLog.debug(`sendMedia: downloading remote mediaUrl=${mediaUrl.slice(0, 80)}...`);
           filePath = await downloadRemoteImageToTemp(
             mediaUrl,
-            resolveWeixinOutboundTempRoot(LEGACY_MEDIA_OUTBOUND_TEMP_DIR),
+            LEGACY_MEDIA_OUTBOUND_TEMP_DIR,
           );
           aLog.debug(`sendMedia: remote image downloaded to ${filePath}`);
         }
-        filePath = await authorizeMxcWeixinOutboundMedia(filePath);
         const contextToken = getContextToken(account.accountId, ctx.to);
         try {
           assertMxcWeixinIngressReleased();
