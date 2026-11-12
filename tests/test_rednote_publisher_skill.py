@@ -149,12 +149,8 @@ class RednotePublisherSkillTests(unittest.TestCase):
         material_hash = hashlib.sha256(
             (self.package_dir / "material-kit.json").read_bytes()
         ).hexdigest()
-        package = json.loads(
-            (self.package_dir / "package.json").read_text(encoding="utf-8-sig")
-        )
-        manifest = json.loads(
-            (self.package_dir / "manifest.json").read_text(encoding="utf-8-sig")
-        )
+        package = json.loads((self.package_dir / "package.json").read_text(encoding="utf-8-sig"))
+        manifest = json.loads((self.package_dir / "manifest.json").read_text(encoding="utf-8-sig"))
         material = json.loads(
             (self.package_dir / "material-kit.json").read_text(encoding="utf-8-sig")
         )
@@ -168,7 +164,7 @@ class RednotePublisherSkillTests(unittest.TestCase):
         self.assertLessEqual(
             max(
                 abs(actual - expected)
-                for actual, expected in zip(actual_background, expected_background)
+                for actual, expected in zip(actual_background, expected_background, strict=True)
             ),
             1,
         )

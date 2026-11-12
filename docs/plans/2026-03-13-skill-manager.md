@@ -45,58 +45,58 @@ class SkillInfo(TypedDict):
 # Complete catalog of the 52 bundled skills shipped with OpenClaw.
 # Keep alphabetically sorted by key.
 SKILL_CATALOG: dict[str, SkillInfo] = {
-    "1password":          {"description": "1Password 密码管理集成",               "certified": False},
-    "apple-notes":        {"description": "Apple 备忘录管理",                     "certified": True},
-    "apple-reminders":    {"description": "Apple 提醒事项管理",                   "certified": True},
-    "bear-notes":         {"description": "Bear 笔记管理（需 API 密钥）",         "certified": False},
-    "blogwatcher":        {"description": "博客和 RSS 订阅监控",                  "certified": True},
-    "blucli":             {"description": "BluOS 音响控制",                       "certified": True},
-    "bluebubbles":        {"description": "iMessage 集成（需 API 密钥）",         "certified": False},
-    "camsnap":            {"description": "RTSP/ONVIF 摄像头抓帧",               "certified": True},
-    "canvas":             {"description": "HTML 内容展示到 OpenClaw 节点",        "certified": True},
-    "clawhub":            {"description": "搜索安装 AgentSkill 市场技能",         "certified": True},
-    "coding-agent":       {"description": "委派编码任务给子代理",                 "certified": True},
-    "discord":            {"description": "Discord 消息操作（需 API 密钥）",      "certified": False},
-    "eightctl":           {"description": "Eight Sleep 床垫控制（需 API 密钥）",  "certified": False},
-    "gemini":             {"description": "Google Gemini AI（需 API 密钥）",      "certified": False},
-    "gh-issues":          {"description": "GitHub Issue 修复代理（需 Token）",    "certified": False},
-    "gifgrep":            {"description": "GIF 搜索工具（需 API 密钥）",          "certified": False},
-    "github":             {"description": "GitHub CLI 操作（需 Token）",          "certified": False},
-    "gog":                {"description": "Google Workspace 集成（需 API 密钥）", "certified": False},
-    "goplaces":           {"description": "Google Places API（需 API 密钥）",     "certified": False},
-    "healthcheck":        {"description": "主机安全加固与风险配置",               "certified": True},
-    "himalaya":           {"description": "CLI 邮件客户端（需 IMAP 配置）",       "certified": False},
-    "imsg":               {"description": "iMessage/SMS 收发",                    "certified": True},
-    "mcporter":           {"description": "MCP 服务器管理",                       "certified": True},
-    "model-usage":        {"description": "模型用量与成本统计",                   "certified": True},
-    "nano-banana-pro":    {"description": "Gemini 图像生成（需 API 密钥）",       "certified": False},
-    "nano-pdf":           {"description": "自然语言编辑 PDF",                     "certified": True},
-    "notion":             {"description": "Notion 页面与数据库（需 API 密钥）",   "certified": False},
-    "obsidian":           {"description": "Obsidian 笔记库管理",                  "certified": True},
-    "openai-image-gen":   {"description": "OpenAI 图像生成（需 API 密钥）",       "certified": True},
-    "openai-whisper":     {"description": "本地语音转文字（离线）",               "certified": True},
-    "openai-whisper-api": {"description": "OpenAI 语音转文字 API",               "certified": True},
-    "openhue":            {"description": "Philips Hue 灯光控制",                "certified": True},
-    "oracle":             {"description": "AI 代码分析最佳实践",                  "certified": True},
-    "ordercli":           {"description": "Foodora 订单查询（需 API 密钥）",      "certified": False},
-    "peekaboo":           {"description": "macOS UI 自动化与截图",               "certified": True},
-    "sag":                {"description": "ElevenLabs TTS（需 API 密钥）",       "certified": False},
-    "session-logs":       {"description": "搜索分析会话日志",                     "certified": True},
-    "sherpa-onnx-tts":    {"description": "本地文本转语音（离线）",               "certified": True},
-    "skill-creator":      {"description": "创建和编辑 AgentSkill",               "certified": True},
-    "slack":              {"description": "Slack 消息管理（需 API 密钥）",        "certified": False},
-    "songsee":            {"description": "音频频谱可视化",                       "certified": True},
-    "sonoscli":           {"description": "Sonos 音响控制",                       "certified": True},
-    "spotify-player":     {"description": "Spotify 播放控制（需 API 密钥）",      "certified": False},
-    "summarize":          {"description": "URL/播客/文件摘要（需 API 密钥）",     "certified": False},
-    "things-mac":         {"description": "Things 3 任务管理（需 API 密钥）",     "certified": False},
-    "tmux":               {"description": "tmux 会话远程控制",                    "certified": True},
-    "trello":             {"description": "Trello 看板管理（需 API 密钥）",       "certified": False},
-    "video-frames":       {"description": "视频帧提取（ffmpeg）",                 "certified": True},
-    "voice-call":         {"description": "语音通话（需 API 密钥）",              "certified": False},
-    "wacli":              {"description": "WhatsApp 消息收发",                    "certified": True},
-    "weather":            {"description": "天气查询（wttr.in/Open-Meteo）",       "certified": True},
-    "xurl":               {"description": "X (Twitter) API 客户端（需 API 密钥）","certified": False},
+    "1password": {"description": "1Password 密码管理集成", "certified": False},
+    "apple-notes": {"description": "Apple 备忘录管理", "certified": True},
+    "apple-reminders": {"description": "Apple 提醒事项管理", "certified": True},
+    "bear-notes": {"description": "Bear 笔记管理（需 API 密钥）", "certified": False},
+    "blogwatcher": {"description": "博客和 RSS 订阅监控", "certified": True},
+    "blucli": {"description": "BluOS 音响控制", "certified": True},
+    "bluebubbles": {"description": "iMessage 集成（需 API 密钥）", "certified": False},
+    "camsnap": {"description": "RTSP/ONVIF 摄像头抓帧", "certified": True},
+    "canvas": {"description": "HTML 内容展示到 OpenClaw 节点", "certified": True},
+    "clawhub": {"description": "搜索安装 AgentSkill 市场技能", "certified": True},
+    "coding-agent": {"description": "委派编码任务给子代理", "certified": True},
+    "discord": {"description": "Discord 消息操作（需 API 密钥）", "certified": False},
+    "eightctl": {"description": "Eight Sleep 床垫控制（需 API 密钥）", "certified": False},
+    "gemini": {"description": "Google Gemini AI（需 API 密钥）", "certified": False},
+    "gh-issues": {"description": "GitHub Issue 修复代理（需 Token）", "certified": False},
+    "gifgrep": {"description": "GIF 搜索工具（需 API 密钥）", "certified": False},
+    "github": {"description": "GitHub CLI 操作（需 Token）", "certified": False},
+    "gog": {"description": "Google Workspace 集成（需 API 密钥）", "certified": False},
+    "goplaces": {"description": "Google Places API（需 API 密钥）", "certified": False},
+    "healthcheck": {"description": "主机安全加固与风险配置", "certified": True},
+    "himalaya": {"description": "CLI 邮件客户端（需 IMAP 配置）", "certified": False},
+    "imsg": {"description": "iMessage/SMS 收发", "certified": True},
+    "mcporter": {"description": "MCP 服务器管理", "certified": True},
+    "model-usage": {"description": "模型用量与成本统计", "certified": True},
+    "nano-banana-pro": {"description": "Gemini 图像生成（需 API 密钥）", "certified": False},
+    "nano-pdf": {"description": "自然语言编辑 PDF", "certified": True},
+    "notion": {"description": "Notion 页面与数据库（需 API 密钥）", "certified": False},
+    "obsidian": {"description": "Obsidian 笔记库管理", "certified": True},
+    "openai-image-gen": {"description": "OpenAI 图像生成（需 API 密钥）", "certified": True},
+    "openai-whisper": {"description": "本地语音转文字（离线）", "certified": True},
+    "openai-whisper-api": {"description": "OpenAI 语音转文字 API", "certified": True},
+    "openhue": {"description": "Philips Hue 灯光控制", "certified": True},
+    "oracle": {"description": "AI 代码分析最佳实践", "certified": True},
+    "ordercli": {"description": "Foodora 订单查询（需 API 密钥）", "certified": False},
+    "peekaboo": {"description": "macOS UI 自动化与截图", "certified": True},
+    "sag": {"description": "ElevenLabs TTS（需 API 密钥）", "certified": False},
+    "session-logs": {"description": "搜索分析会话日志", "certified": True},
+    "sherpa-onnx-tts": {"description": "本地文本转语音（离线）", "certified": True},
+    "skill-creator": {"description": "创建和编辑 AgentSkill", "certified": True},
+    "slack": {"description": "Slack 消息管理（需 API 密钥）", "certified": False},
+    "songsee": {"description": "音频频谱可视化", "certified": True},
+    "sonoscli": {"description": "Sonos 音响控制", "certified": True},
+    "spotify-player": {"description": "Spotify 播放控制（需 API 密钥）", "certified": False},
+    "summarize": {"description": "URL/播客/文件摘要（需 API 密钥）", "certified": False},
+    "things-mac": {"description": "Things 3 任务管理（需 API 密钥）", "certified": False},
+    "tmux": {"description": "tmux 会话远程控制", "certified": True},
+    "trello": {"description": "Trello 看板管理（需 API 密钥）", "certified": False},
+    "video-frames": {"description": "视频帧提取（ffmpeg）", "certified": True},
+    "voice-call": {"description": "语音通话（需 API 密钥）", "certified": False},
+    "wacli": {"description": "WhatsApp 消息收发", "certified": True},
+    "weather": {"description": "天气查询（wttr.in/Open-Meteo）", "certified": True},
+    "xurl": {"description": "X (Twitter) API 客户端（需 API 密钥）", "certified": False},
 }
 
 
@@ -144,11 +144,11 @@ from deployer.skill_catalog import SKILL_CATALOG, get_certified_skills
 
 
 # ── Colours (match deploy.py palette) ──
-BG       = "#ffffff"
-BG_CARD  = "#f7f8fa"
-FG       = "#222222"
-FG_DIM   = "#999999"
-ACCENT   = "#4a90d9"
+BG = "#ffffff"
+BG_CARD = "#f7f8fa"
+FG = "#222222"
+FG_DIM = "#999999"
+ACCENT = "#4a90d9"
 TAG_CERT = "#34c759"
 TAG_WARN = "#ff9500"
 
@@ -191,28 +191,38 @@ class SkillManagerDialog(tk.Toplevel):
 
     def _build_ui(self, preselected: list[str]):
         # Title
-        tk.Label(self, text="选择允许安装的内置技能", font=("Segoe UI", 14, "bold"),
-                 bg=BG, fg=FG).pack(pady=(12, 4))
-        tk.Label(self, text="未勾选的技能将在运行时被禁用",
-                 font=("Segoe UI", 9), bg=BG, fg=FG_DIM).pack(pady=(0, 8))
+        tk.Label(
+            self, text="选择允许安装的内置技能", font=("Segoe UI", 14, "bold"), bg=BG, fg=FG
+        ).pack(pady=(12, 4))
+        tk.Label(
+            self, text="未勾选的技能将在运行时被禁用", font=("Segoe UI", 9), bg=BG, fg=FG_DIM
+        ).pack(pady=(0, 8))
 
         # Toolbar
         toolbar = tk.Frame(self, bg=BG)
         toolbar.pack(fill="x", padx=16, pady=(0, 8))
 
         for text, cmd in [
-            ("仅认证",  self._select_certified),
-            ("全选",    self._select_all),
-            ("全不选",  self._select_none),
+            ("仅认证", self._select_certified),
+            ("全选", self._select_all),
+            ("全不选", self._select_none),
         ]:
-            tk.Button(toolbar, text=text, command=cmd,
-                      font=("Segoe UI", 9), bg=BG_CARD, fg=FG,
-                      bd=1, relief="solid", padx=10, pady=2,
-                      cursor="hand2").pack(side="left", padx=(0, 6))
+            tk.Button(
+                toolbar,
+                text=text,
+                command=cmd,
+                font=("Segoe UI", 9),
+                bg=BG_CARD,
+                fg=FG,
+                bd=1,
+                relief="solid",
+                padx=10,
+                pady=2,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 6))
 
         # Selection count label
-        self._count_label = tk.Label(toolbar, text="", font=("Segoe UI", 9),
-                                     bg=BG, fg=FG_DIM)
+        self._count_label = tk.Label(toolbar, text="", font=("Segoe UI", 9), bg=BG, fg=FG_DIM)
         self._count_label.pack(side="right")
 
         # Scrollable checklist
@@ -233,6 +243,7 @@ class SkillManagerDialog(tk.Toplevel):
         # Mouse wheel scrolling
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Populate skills — certified first, then uncertified
@@ -241,7 +252,9 @@ class SkillManagerDialog(tk.Toplevel):
         uncertified = sorted(k for k, v in SKILL_CATALOG.items() if not v["certified"])
 
         self._add_section(inner, "✓ 已认证技能", TAG_CERT, certified, pre_set)
-        self._add_section(inner, "⚠ 未认证技能（需要外部 API 密钥或第三方服务）", TAG_WARN, uncertified, pre_set)
+        self._add_section(
+            inner, "⚠ 未认证技能（需要外部 API 密钥或第三方服务）", TAG_WARN, uncertified, pre_set
+        )
 
         self._update_count()
 
@@ -249,20 +262,40 @@ class SkillManagerDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=BG)
         btn_frame.pack(fill="x", padx=16, pady=(0, 12))
 
-        tk.Button(btn_frame, text="确认", command=self._on_ok,
-                  bg=ACCENT, fg="#ffffff", font=("Segoe UI", 11, "bold"),
-                  bd=0, padx=24, pady=6, cursor="hand2",
-                  relief="flat").pack(side="right", padx=(6, 0))
+        tk.Button(
+            btn_frame,
+            text="确认",
+            command=self._on_ok,
+            bg=ACCENT,
+            fg="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            bd=0,
+            padx=24,
+            pady=6,
+            cursor="hand2",
+            relief="flat",
+        ).pack(side="right", padx=(6, 0))
 
-        tk.Button(btn_frame, text="取消", command=self._on_cancel,
-                  bg=BG_CARD, fg=FG, font=("Segoe UI", 11),
-                  bd=1, relief="solid", padx=24, pady=6,
-                  cursor="hand2").pack(side="right")
+        tk.Button(
+            btn_frame,
+            text="取消",
+            command=self._on_cancel,
+            bg=BG_CARD,
+            fg=FG,
+            font=("Segoe UI", 11),
+            bd=1,
+            relief="solid",
+            padx=24,
+            pady=6,
+            cursor="hand2",
+        ).pack(side="right")
 
-    def _add_section(self, parent: tk.Frame, title: str, color: str,
-                     skills: list[str], preselected: set[str]):
-        tk.Label(parent, text=title, font=("Segoe UI", 10, "bold"),
-                 bg=BG, fg=color, anchor="w").pack(fill="x", pady=(8, 4))
+    def _add_section(
+        self, parent: tk.Frame, title: str, color: str, skills: list[str], preselected: set[str]
+    ):
+        tk.Label(
+            parent, text=title, font=("Segoe UI", 10, "bold"), bg=BG, fg=color, anchor="w"
+        ).pack(fill="x", pady=(8, 4))
 
         for name in skills:
             info = SKILL_CATALOG[name]
@@ -273,15 +306,18 @@ class SkillManagerDialog(tk.Toplevel):
             row = tk.Frame(parent, bg=BG)
             row.pack(fill="x", pady=1)
 
-            cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
-                                highlightthickness=0, bd=0)
+            cb = tk.Checkbutton(
+                row, variable=var, bg=BG, activebackground=BG, highlightthickness=0, bd=0
+            )
             cb.pack(side="left")
 
-            tk.Label(row, text=name, font=("Consolas", 10), bg=BG, fg=FG,
-                     width=22, anchor="w").pack(side="left")
+            tk.Label(
+                row, text=name, font=("Consolas", 10), bg=BG, fg=FG, width=22, anchor="w"
+            ).pack(side="left")
 
-            tk.Label(row, text=info["description"], font=("Segoe UI", 9),
-                     bg=BG, fg=FG_DIM, anchor="w").pack(side="left", fill="x")
+            tk.Label(
+                row, text=info["description"], font=("Segoe UI", 9), bg=BG, fg=FG_DIM, anchor="w"
+            ).pack(side="left", fill="x")
 
     # ── Toolbar actions ──
 
@@ -347,34 +383,44 @@ Add instance variable in `__init__` (after line 53 `self._failed = False`):
 
 After the mirror selector frame (after line 92), add a new frame with the advanced options button:
 ```python
-        # Advanced options button
-        adv_frame = tk.Frame(container, bg=BG)
-        adv_frame.pack(pady=(0, 16))
+# Advanced options button
+adv_frame = tk.Frame(container, bg=BG)
+adv_frame.pack(pady=(0, 16))
 
-        self._adv_btn = tk.Button(
-            adv_frame, text="⚙ 高级选项：技能管理", command=self._on_skill_manager,
-            bg=BG_CARD, fg=FG_DIM, activebackground="#e8e8e8",
-            font=("Segoe UI", 10), bd=1, relief="solid",
-            padx=16, pady=4, cursor="hand2")
-        self._adv_btn.pack()
+self._adv_btn = tk.Button(
+    adv_frame,
+    text="⚙ 高级选项：技能管理",
+    command=self._on_skill_manager,
+    bg=BG_CARD,
+    fg=FG_DIM,
+    activebackground="#e8e8e8",
+    font=("Segoe UI", 10),
+    bd=1,
+    relief="solid",
+    padx=16,
+    pady=4,
+    cursor="hand2",
+)
+self._adv_btn.pack()
 
-        self._skill_status = tk.Label(
-            adv_frame, text="", font=("Segoe UI", 9), bg=BG, fg=FG_DIM)
-        self._skill_status.pack(pady=(4, 0))
+self._skill_status = tk.Label(adv_frame, text="", font=("Segoe UI", 9), bg=BG, fg=FG_DIM)
+self._skill_status.pack(pady=(4, 0))
 ```
 
 **Step 3: Add the `_on_skill_manager` handler**
 
 Add new method to the `DeployerApp` class:
 ```python
-    def _on_skill_manager(self):
-        preselected = self._selected_skills if self._selected_skills is not None else get_certified_skills()
-        dialog = SkillManagerDialog(self, preselected=preselected)
-        self.wait_window(dialog)
-        if dialog.result is not None:
-            self._selected_skills = dialog.result
-            n = len(dialog.result)
-            self._skill_status.config(text=f"已选择 {n} 个技能")
+def _on_skill_manager(self):
+    preselected = (
+        self._selected_skills if self._selected_skills is not None else get_certified_skills()
+    )
+    dialog = SkillManagerDialog(self, preselected=preselected)
+    self.wait_window(dialog)
+    if dialog.result is not None:
+        self._selected_skills = dialog.result
+        n = len(dialog.result)
+        self._skill_status.config(text=f"已选择 {n} 个技能")
 ```
 
 **Step 4: Wire skill selection into `_on_install`**
