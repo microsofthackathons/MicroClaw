@@ -1095,13 +1095,11 @@ class OpenClawUpgradeTransactionTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows extended path behavior")
     def test_backup_and_rollback_support_package_paths_beyond_max_path(self) -> None:
-        relative = (
-            Path("node_modules")
-            / ("dependency-" + "a" * 70)
-            / "node_modules"
-            / ("dependency-" + "b" * 70)
-            / "payload.d.ts.map"
-        )
+        relative = Path("node_modules")
+        # Hosted runners can have a much shorter temporary root than developer machines.
+        while len(str(self.package / relative / "payload.d.ts.map")) <= 260:
+            relative = relative / ("dependency-" + "a" * 70) / "node_modules"
+        relative = relative / "payload.d.ts.map"
         package_file = self.package / relative
         io_package_file = upgrade._native_io_path(package_file)
         io_package_file.parent.mkdir(parents=True)
