@@ -7,7 +7,7 @@ const RUNTIME_MANIFEST_CONTRACT = "microclaw.weixin-runtime.v1";
 const WEIXIN_EXTENSION_DIRECTORY = "openclaw-weixin";
 const WEIXIN_PACKAGE_NAME = "@tencent-weixin/openclaw-weixin";
 const WEIXIN_PACKAGE_VERSION = "2.4.6";
-const OPENCLAW_SDK_VERSION = "2026.10.5";
+const OPENCLAW_SDK_VERSION = "2026.10.10";
 
 interface RuntimeManifestFile {
   path: string;

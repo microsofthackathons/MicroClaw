@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { WindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
+import { renderMxcPermissionResult } from "./windows-node-mxc-approval-lifecycle";
 import { createCanonicalExecPresentation } from "./windows-node-mxc-exec-presentation";
 import {
   renderCanonicalWeixinExecPrompt,
@@ -419,20 +420,14 @@ function createCode(): string {
   return result;
 }
 
-function acknowledgement(locale: "en-US" | "zh-CN", result: string): string {
-  const zh: Record<string, string> = {
-    approved: "MicroClaw 安全审批：已批准一次。",
-    denied: "MicroClaw 安全审批：已拒绝。",
-    expired: "MicroClaw 安全审批：已过期，未接受新决策。",
-    invalid: "MicroClaw 安全审批：无效或已失效，未接受新决策。",
-  };
-  const en: Record<string, string> = {
-    approved: "MicroClaw Security Approval: approved once.",
-    denied: "MicroClaw Security Approval: denied.",
-    expired: "MicroClaw Security Approval: expired; no new decision accepted.",
-    invalid: "MicroClaw Security Approval: invalid or no longer active; no new decision accepted.",
-  };
-  return (locale === "zh-CN" ? zh : en)[result] ?? en.invalid;
+function acknowledgement(
+  locale: "en-US" | "zh-CN",
+  result: "approved" | "denied" | "expired" | "invalid",
+): string {
+  if (result !== "invalid") return renderMxcPermissionResult(result, locale);
+  return locale === "zh-CN"
+    ? "MicroClaw 安全审批：无效或已失效，未接受新决策。"
+    : "MicroClaw Security Approval: invalid or no longer active; no new decision accepted.";
 }
 
 export type WeixinRemoteApprovalRejectionReason =
@@ -633,6 +628,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
       code,
       locale: input.locale,
       bareReplies: true,
+      nowUnixMs: now,
     });
     if (presentation.status === "unsupported") {
       return {

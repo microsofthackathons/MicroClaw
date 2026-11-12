@@ -25,14 +25,15 @@ The runner registry in `scripts/performance/results.mjs` is the source of truth.
 Omitting `--scenario`, or using `--scenario all`, selects every built-in case;
 new built-in registry entries are included automatically. Entries marked
 `requiresExternalFixture` are opt-in and must be explicitly selected. Currently
-the built-in suite contains `app.restart` and `chat.new-session`; `install.clean`
-is an external-VM adapter contract, not a third built-in installation backend.
+the built-in suite contains `app.first-launch`, `app.restart` and `chat.new-session`;
+`install.clean` is an external-VM adapter contract, not a built-in installation backend.
 
 ## Scenario boundaries
 
 | ID | Start | End | Metrics |
 | --- | --- | --- | --- |
-| `install.clean` | Confirm installation in a disposable clean fixture | Installer completes successfully after first application service readiness and final validation | `totalMs`, installer step timings, first-launch milestones when available |
+| `install.clean` (v2) | Confirm installation in a disposable clean fixture | Installation completes with final validation; no automatic app launch | `totalMs`, structured installer step/runtime timings, human wait |
+| `app.first-launch` | Launch packaged Electron in a new isolated profile for each sample | Chat surface is usable | `totalMs`, runtime preparation and Gateway startup details |
 | `app.restart` | Request normal exit from the ready fixture | Relaunched app's chat surface is usable | `totalMs`, `shutdownMs`, `launchToChatReadyMs`, startup stages |
 | `chat.new-session` | Activate the new-conversation action in a ready app | The matching response finishes and its final nonempty text is rendered | `totalMs`, `sessionReadyMs`, `sendToFirstTextMs`, `sendToFinalRenderedMs` |
 
@@ -54,6 +55,13 @@ start separately. A failure is an unsuccessful attempt, not a successful install
 whose duration can be compared with completed installations.
 
 ### Restart
+
+`app.first-launch` uses a different fresh profile per sample without a setup launch.
+Its `--first-launch-timeout-ms` is separate from restart/chat and setup timeouts.
+It includes runtime extraction when the profile cache is empty, but does not restore
+an installed VM or clear OS file caches. Do not describe it as post-installer readiness
+or an OS cold boot. Missing detailed timing records are reported separately from
+whole-scenario outcome; keep failures and retries as individual evidence.
 
 Start from an installed, configured, ready application. Wait for the owned desktop
 and managed Gateway processes to exit before relaunching. Record whether a Gateway

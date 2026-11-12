@@ -106,44 +106,41 @@ describe("automatic Windows Node + MXC transition", () => {
     "smoke-active",
     "lease",
     "verify",
-  ])(
-    "fails locked without releasing ingress when %s fails",
-    async (failure) => {
-      const releaseIngress = vi.fn();
-      const lockAfterFailure = vi.fn();
-      const phases: Array<{ phase: string; detail?: string | null }> = [];
-      const fail = (step: string) => {
-        if (failure === step) throw new Error(`${step} failed`);
-      };
+  ])("fails locked without releasing ingress when %s fails", async (failure) => {
+    const releaseIngress = vi.fn();
+    const lockAfterFailure = vi.fn();
+    const phases: Array<{ phase: string; detail?: string | null }> = [];
+    const fail = (step: string) => {
+      if (failure === step) throw new Error(`${step} failed`);
+    };
 
-      await expect(
-        runWindowsNodeMxcAutomaticTransition({
-          setPhase: (phase, detail) => phases.push({ phase, detail }),
-          closeIngress: vi.fn(),
-          preflightExactBackend: async () => fail("preflight"),
-          startLockedGeneration: async () => {
-            fail("start-locked");
-            return "locked";
-          },
-          smokeLockedGeneration: async () => fail("smoke-locked"),
-          promoteActivePolicy: async () => {
-            fail("promote-active");
-            return "active";
-          },
-          smokeActivePolicy: async () => fail("smoke-active"),
-          mintActivationLease: async () => fail("lease"),
-          verifyActiveGeneration: async () => {
-            fail("verify");
-            return "verified";
-          },
-          releaseIngress,
-          lockAfterFailure,
-        }),
-      ).rejects.toThrow(`${failure} failed`);
+    await expect(
+      runWindowsNodeMxcAutomaticTransition({
+        setPhase: (phase, detail) => phases.push({ phase, detail }),
+        closeIngress: vi.fn(),
+        preflightExactBackend: async () => fail("preflight"),
+        startLockedGeneration: async () => {
+          fail("start-locked");
+          return "locked";
+        },
+        smokeLockedGeneration: async () => fail("smoke-locked"),
+        promoteActivePolicy: async () => {
+          fail("promote-active");
+          return "active";
+        },
+        smokeActivePolicy: async () => fail("smoke-active"),
+        mintActivationLease: async () => fail("lease"),
+        verifyActiveGeneration: async () => {
+          fail("verify");
+          return "verified";
+        },
+        releaseIngress,
+        lockAfterFailure,
+      }),
+    ).rejects.toThrow(`${failure} failed`);
 
-      expect(releaseIngress).not.toHaveBeenCalled();
-      expect(phases.at(-1)).toEqual({ phase: "locked", detail: `${failure} failed` });
-      expect(lockAfterFailure).toHaveBeenCalledTimes(1);
-    },
-  );
+    expect(releaseIngress).not.toHaveBeenCalled();
+    expect(phases.at(-1)).toEqual({ phase: "locked", detail: `${failure} failed` });
+    expect(lockAfterFailure).toHaveBeenCalledTimes(1);
+  });
 });

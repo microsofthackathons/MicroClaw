@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FIXED_PROMPT, FIXED_TEXT } from "./model-service.mjs";
+import { collectStartupTiming } from "./startup.mjs";
 
 export class UnavailableError extends Error {}
 
@@ -227,6 +228,7 @@ export class DesktopDriver {
       gatewayMode: summary?.mode ?? "unknown",
       shutdown: { ...this.lastShutdown, receiptsObserved: shutdownObserved },
       startup: { mainProcessId: this.mainProcessId, gateways: spawned, observed: startupObserved },
+      startupTiming: collectStartupTiming(records, this.mainProcessId),
       failure: complete
         ? null
         : {
@@ -241,6 +243,44 @@ export class DesktopDriver {
               "A normal full restart requires clean graceful shutdown and an observed newly spawned Gateway",
           },
     };
+  }
+
+  async firstLaunch() {
+    if (this.application || (await readLifecycle(this.fixture)).length)
+      throw new Error("First launch requires an unused fixture with no previous process epoch");
+    const started = performance.now();
+    const readiness = await this.launch({ timeoutMs: this.options.firstLaunchTimeoutMs });
+    const completed = performance.now();
+    const records = await readLifecycle(this.fixture);
+    const startupTiming = collectStartupTiming(records, this.mainProcessId);
+    const summary = startupTiming.summaries.at(-1);
+    const spawned = records.filter((event) => event.event === "gateway-spawned");
+    const observed =
+      summary?.mode === "spawned" &&
+      this.isProcessAlive(this.mainProcessId) &&
+      spawned.some(
+        (event) =>
+          Number.isInteger(event.gatewayPid) &&
+          event.gatewayPid > 0 &&
+          event.gatewayGeneration === summary.gatewayGeneration &&
+          this.isProcessAlive(event.gatewayPid),
+      );
+    return {
+      outcome: observed ? "success" : "incomplete-startup",
+      metrics: { totalMs: completed - started },
+      readiness,
+      startupTiming,
+      failure: observed
+        ? null
+        : {
+            classification: "startup-not-observed",
+            message: "First launch requires timing v2 and an observed newly spawned Gateway",
+          },
+    };
+  }
+
+  async startupTiming() {
+    return collectStartupTiming(await readLifecycle(this.fixture), this.mainProcessId);
   }
 
   async waitForSession() {

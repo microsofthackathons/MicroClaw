@@ -1,55 +1,137 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
-import { createPackage, listPackage } from "@electron/asar";
+import { createPackage } from "@electron/asar";
+import {
+  readOpenClawTarget,
+  verifyOpenClawArchive,
+  verifyOpenClawResources,
+  verifyNodeVersion,
+} from "./openclaw-resource.mjs";
+import { validatePinnedOpenClawApprovalPackage } from "../src/openclaw-approval-replay-compat.mjs";
 
 const desktopDir = path.resolve(import.meta.dirname, "..");
 const repositoryDir = path.resolve(desktopDir, "..");
 const resourcesDir = path.join(desktopDir, "resources");
-const openClawDir = path.join(resourcesDir, "openclaw");
 const openClawArchive = path.join(resourcesDir, "openclaw.asar");
-const registry = process.env.MSIX_NPM_REGISTRY || "https://registry.npmjs.org";
-const versionSource = readFileSync(
-  path.join(repositoryDir, "deployer", "openclaw_version.py"),
-  "utf8",
-);
-const version = versionSource.match(/^OPENCLAW_TARGET_VERSION = "([^"]+)"$/m)?.[1];
-
-if (!version) {
-  throw new Error("Could not resolve OPENCLAW_TARGET_VERSION from deployer/openclaw_version.py");
-}
+const registry =
+  process.env.MICROCLAW_NPM_REGISTRY ||
+  process.env.MSIX_NPM_REGISTRY ||
+  process.env.npm_config_registry ||
+  "https://registry.npmjs.org";
+const version = readOpenClawTarget(repositoryDir);
 if (process.platform !== "win32" || path.basename(process.execPath).toLowerCase() !== "node.exe") {
-  throw new Error("MSIX resources must be prepared on Windows with node.exe");
+  throw new Error("Packaged resources must be prepared on Windows with node.exe");
+}
+verifyNodeVersion(process.version);
+mkdirSync(resourcesDir, { recursive: true });
+
+let coreReady = false;
+try {
+  verifyOpenClawResources(resourcesDir, version);
+  coreReady = true;
+} catch (error) {
+  console.log(`[resources] Preparing OpenClaw ${version}: ${error.message}`);
 }
 
-rmSync(resourcesDir, { recursive: true, force: true });
-mkdirSync(openClawDir, { recursive: true });
-copyFileSync(process.execPath, path.join(resourcesDir, "node.exe"));
-
-const npmCli = process.env.npm_execpath;
-const npm = npmCli?.endsWith(".js")
-  ? process.execPath
-  : path.join(path.dirname(process.execPath), "npm.cmd");
-const npmArguments = npmCli?.endsWith(".js") ? [npmCli] : [];
-const result = spawnSync(
-  npm,
-  [
-    ...npmArguments,
-    "install",
-    "--prefix",
-    openClawDir,
-    "--omit=dev",
-    "--ignore-scripts=false",
-    "--no-package-lock",
-    "--no-save",
-    "--registry",
-    registry,
-    `openclaw@${version}`,
-  ],
-  { stdio: "inherit" },
-);
-if (result.error) throw result.error;
-if (result.status !== 0) process.exit(result.status ?? 1);
+if (!coreReady) {
+  const staging = path.resolve(resourcesDir, `.openclaw-staging-${randomUUID()}`);
+  const relative = path.relative(resourcesDir, staging);
+  if (relative.startsWith("..") || path.isAbsolute(relative) || path.dirname(relative) !== ".") {
+    throw new Error("OpenClaw staging escaped the resource directory");
+  }
+  const prefix = path.join(staging, "prefix");
+  const archive = path.join(staging, "openclaw.asar");
+  mkdirSync(prefix, { recursive: true });
+  try {
+    writeFileSync(
+      path.join(prefix, "package.json"),
+      JSON.stringify({
+        private: true,
+        allowScripts: {
+          [`openclaw@${version}`]: true,
+          "esbuild@0.28.2": true,
+          "protobufjs@7.6.6": true,
+        },
+      }),
+    );
+    const npmCli =
+      process.env.npm_execpath ||
+      path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
+    const result = spawnSync(
+      process.execPath,
+      [
+        npmCli,
+        "install",
+        "--prefix",
+        prefix,
+        "--omit=dev",
+        "--ignore-scripts=false",
+        "--no-package-lock",
+        "--no-save",
+        "--registry",
+        registry,
+        "--replace-registry-host=always",
+        `openclaw@${version}`,
+      ],
+      {
+        stdio: "inherit",
+        windowsHide: true,
+        env: { ...process.env, NODE_LLAMA_CPP_SKIP_DOWNLOAD: "true" },
+      },
+    );
+    if (result.error) throw result.error;
+    if (result.status !== 0)
+      throw new Error(`OpenClaw resource installation exited ${result.status}`);
+    const packageDir = path.join(prefix, "node_modules/openclaw");
+    const metadata = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
+    if (metadata.name !== "openclaw" || metadata.version !== version)
+      throw new Error("Staged OpenClaw version mismatch");
+    const targets = validatePinnedOpenClawApprovalPackage(packageDir, {
+      approval: true,
+      cronPause: true,
+      cronResume: true,
+      hooksPause: true,
+      canvasPhase1: true,
+    });
+    for (const target of targets) {
+      const checked = spawnSync(process.execPath, ["--check", "--input-type=module"], {
+        input: target.patch(target.original.toString("utf8")),
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      if (checked.error) throw checked.error;
+      if (checked.status !== 0)
+        throw new Error(
+          `Invalid OpenClaw compatibility transform ${target.module}: ${checked.stderr}`,
+        );
+    }
+    await createPackage(prefix, archive);
+    verifyOpenClawArchive(archive, version);
+    copyFileSync(process.execPath, path.join(resourcesDir, "node.exe"));
+    const previous = path.join(resourcesDir, `openclaw.asar.previous-${randomUUID()}`);
+    const present = existsSync(openClawArchive);
+    if (present) renameSync(openClawArchive, previous);
+    try {
+      renameSync(archive, openClawArchive);
+    } catch (error) {
+      if (present) renameSync(previous, openClawArchive);
+      throw error;
+    }
+    if (present) console.log(`[resources] Previous core retained at ${previous}`);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
 
 const windowsNodeResult = spawnSync(
   process.execPath,
@@ -67,17 +149,6 @@ const weixinPluginResult = spawnSync(
 if (weixinPluginResult.error) throw weixinPluginResult.error;
 if (weixinPluginResult.status !== 0) process.exit(weixinPluginResult.status ?? 1);
 
-const entry = path.join(openClawDir, "node_modules", "openclaw", "openclaw.mjs");
-try {
-  readFileSync(entry);
-} catch {
-  throw new Error(`OpenClaw ${version} staging did not produce ${entry}`);
-}
-
-await createPackage(openClawDir, openClawArchive);
-const archiveFiles = listPackage(openClawArchive).map((file) => file.replaceAll("\\", "/"));
-if (!archiveFiles.includes("/node_modules/openclaw/openclaw.mjs")) {
-  throw new Error(`OpenClaw ${version} archive is missing openclaw.mjs`);
-}
-rmSync(openClawDir, { recursive: true, force: true });
-console.log(`[msix] Staged Node ${process.version} and OpenClaw ${version} as openclaw.asar`);
+console.log(
+  `[resources] Verified ${JSON.stringify(verifyOpenClawResources(resourcesDir, version))}`,
+);

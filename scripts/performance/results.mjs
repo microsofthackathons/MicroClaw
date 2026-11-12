@@ -2,9 +2,13 @@ import { reportText } from "./report-zh.mjs";
 
 export const SCENARIOS = {
   "install.clean": {
-    version: 1,
+    version: 2,
     requiresExternalFixture: true,
-    endpoints: { totalMs: "installation-confirmed -> service-ready-and-final-validation" },
+    endpoints: { totalMs: "installation-confirmed -> installation-complete-and-final-validation" },
+  },
+  "app.first-launch": {
+    version: 1,
+    endpoints: { totalMs: "electron-launch-call -> observed-chat-ready" },
   },
   "app.restart": {
     version: 2,
@@ -262,7 +266,7 @@ function renderSummary(result) {
   }
   lines.push(
     "",
-    "平均耗时为成功采样总耗时（totalMs）的算术平均值；不计失败采样、首次环境准备和报告生成。",
+    "平均耗时为成功采样总耗时（totalMs）的算术平均值；不计失败采样、测试夹具生成和报告生成。首次启动场景包含运行时准备，重启场景单独列出退出与启动时间。",
     "聊天错误检查仅覆盖被测会话的模型错误、取消、空回复及采样失败，不代表全量日志无错误。",
     "",
   );
@@ -316,6 +320,71 @@ export function renderReport(result) {
         `  - 原始指标：${cell(JSON.stringify(sample.metrics))}`,
         `  - 证据文件：${sample.evidence.map(cell).join("、") || "无"}`,
       );
+      if (sample.cleanupFailure)
+        lines.push(`  - 测试进程清理失败：${cell(sample.cleanupFailure)}；后续采样停止。`);
+      if (sample.startupTiming) {
+        const detail = sample.startupTiming;
+        lines.push(
+          "",
+          `启动细分覆盖：${cell(detail.coverage)}；缺少：${detail.missing.map(cell).join("、") || "无"}。`,
+          "",
+          "| 分组 | 尝试 | 阶段 | 状态 | 耗时（ms） | 缓存 |",
+          "| --- | ---: | --- | --- | ---: | --- |",
+        );
+        for (const [group, events] of [
+          ["Gateway", detail.phases],
+          ["运行时", detail.runtime],
+          ["MXC", detail.mxc],
+        ]) {
+          for (const event of events.filter((event) => event.status !== "started"))
+            lines.push(
+              `| ${group}${event.scope || event.owner ? `/${cell(event.scope ?? event.owner)}` : ""}${event.kind === "summary" ? "（汇总）" : ""} | ${cell(event.attempt ?? "—")} | ${cell(event.phase)} | ${cell(event.status ?? "observed")} | ${timing(event.durationMs)} | ${cell(event.cache ?? "—")} |`,
+            );
+        }
+        lines.push(
+          "",
+          "主进程里程碑（进程启动后的单调时钟，非阶段耗时）：",
+          "",
+          "| 里程碑 | 进程内时间（ms） |",
+          "| --- | ---: |",
+        );
+        for (const event of detail.milestones)
+          lines.push(`| ${cell(event.phase)} | ${timing(event.appElapsedMs)} |`);
+        lines.push(
+          "",
+          "阶段汇总与子阶段存在包含关系；worker 与主进程使用各自时钟，不跨时钟相减或重复相加。",
+          "",
+        );
+        for (const outcome of detail.outcomes ?? [])
+          lines.push(
+            `- 启动尝试 ${outcome.attempt}：${cell(outcome.status)}，${cell(outcome.phase)}，${timing(outcome.attemptElapsedMs)} ms。`,
+          );
+      }
+      if (sample.installTiming) {
+        lines.push(
+          "",
+          `安装细分覆盖：${cell(sample.installTiming.coverage)}。`,
+          "",
+          "| 安装阶段 | 类型 | 尝试 | 状态 | 耗时（ms） | 缓存 |",
+          "| --- | --- | ---: | --- | ---: | --- |",
+        );
+        for (const event of sample.installTiming.events.filter(
+          (event) => event.status !== "started",
+        )) {
+          lines.push(
+            `| ${cell(event.scope)}/${cell(event.stageId)}/${cell(event.phase)} | ${cell(event.kind)} | ${cell(event.attempt ?? "—")} | ${cell(event.status)} | ${timing(event.durationMs)} | ${cell(event.cache ?? "—")} |`,
+          );
+        }
+        const total = sample.installTiming.events.findLast(
+          (event) => event.phase === "installation-total" && event.kind === "summary",
+        );
+        if (total)
+          lines.push(
+            "",
+            `安装执行耗时：${timing(total.activeMs)} ms；人工确认等待：${timing(total.humanWaitMs)} ms。`,
+          );
+        lines.push("", "安装步骤包含内部尝试和重试等待，不能重复相加。", "");
+      }
     }
     const stages = Object.entries(summary.metrics)
       .filter(([name, stats]) => name.startsWith("stage.") && stats.count)

@@ -117,8 +117,14 @@ export default {
   "chat.stopGeneration": "停止生成",
   "chat.stopTask": "停止任务",
   "chat.addAttachment": "添加附件",
+  "chat.dropImages": "松开以添加图片",
+  "chat.attachment.unsupportedImage":
+    "不支持图片 {file}，请使用 PNG、JPEG、GIF、WebP、BMP、TIFF、AVIF 或 HEIF 格式。",
   "chat.attachment": "附件",
   "chat.image": "图片",
+  "chat.previewImage": "放大查看图片",
+  "chat.imageLoading": "正在加载图片…",
+  "chat.imageUnavailable": "图片暂时无法预览，点击打开原图",
   "chat.removeAttachment": "移除 {file}",
   "chat.attachment.fileTooLarge": "{file} 超过了单个附件 {limit} 的大小限制。",
   "chat.attachment.totalTooLarge": "{file} 会导致本条消息的附件总大小超过 {limit}。",
@@ -326,7 +332,7 @@ export default {
   "settings.commandConsentLiveUpdate": "更改会即时生效，无需重启网关。请先等待当前任务完成。",
   "settings.windowsNodeMxcOn": "开启",
   "settings.windowsNodeMxcAutomatic": "MicroClaw 会自动使用此电脑支持的保护方式。",
-  "settings.windowsNodeMxcLearnMore": "了解更多 MXC 信息",
+  "settings.windowsNodeMxcLearnMore": "了解有关沙盒隔离的更多信息",
   "settings.windowsNodeMxcToggleUnavailable": "沙箱保护不可用或无法验证。请修复内置运行时后重试。",
   "settings.windowsNodeMxcStatusRefreshing": "正在后台刷新 MXC 状态...",
   "settings.windowsNodeMxcStatusVerified": "上次验证时间：{time}",
@@ -492,10 +498,20 @@ export default {
     "请先禁用 Windows Node + MXC，再添加、更改或移除批准的文件夹。",
   "settings.windowsNodeMxcFoldersStaged":
     "更改仅处于暂存状态。应用时将更新权限，网关保持运行。待处理的批准和运行中的受控命令将被取消。",
-  "settings.windowsNodeMxcApplyFolders": "应用文件夹更改",
-  "settings.windowsNodeMxcApplyFoldersWarning":
-    "新命令启动将短暂暂停。待处理的批准和运行中的受控命令将被取消，Canvas 将关闭。网关不会重启；如果更新失败，执行将保持锁定。",
-  "settings.windowsNodeMxcApplyFoldersComplete": "文件夹权限已更新，网关未重启。",
+  "settings.windowsNodeMxcApplyChanges": "应用更改",
+  "settings.windowsNodeMxcApplyFoldersImpact":
+    "更新文件夹权限时，新命令启动将短暂暂停。待处理的批准和运行中的受控命令将被取消，Canvas 将关闭。如果更新失败，执行将保持锁定。",
+  "settings.windowsNodeMxcSaveFoldersImpact": "文件夹权限将保存，供启用沙盒隔离时使用。",
+  "settings.commandConsentApplyImpact":
+    "命令审批设置将更改为“{mode}”。应用新策略期间，新命令启动将短暂暂停。",
+  "settings.windowsNodeMxcApplyFoldersBeforeRestart":
+    "将先应用文件夹更改，然后重启网关以更改沙盒隔离设置。运行中的任务将被中断。",
+  "settings.windowsNodeMxcApplyRestart": "更改沙盒隔离设置将重启网关并中断运行中的任务。",
+  "settings.windowsNodeMxcApplyWithoutRestart": "网关不会重启。",
+  "settings.windowsNodeMxcApplyComplete": "安全设置更改已应用。",
+  "settings.windowsNodeMxcChangesStale":
+    "确认期间，安全设置或正在运行的任务发生了变化。请检查待应用的更改，然后重新应用。",
+  "settings.windowsNodeMxcChangesNotApplied": "无法验证请求的安全设置更改。请检查当前状态后重试。",
   "settings.windowsNodeMxcStagePreviousFolders": "暂存以前的策略",
   "settings.windowsNodeMxcLifecycle": "策略生命周期",
   "settings.windowsNodeMxcLifecyclePhase.updating-folders": "正在更新文件夹权限",
@@ -1090,7 +1106,7 @@ export default {
   "perm.title": "授予权限以继续",
   "perm.titleRead": "需要读取权限",
   "perm.titleWrite": "文件访问授权",
-  "perm.titleCommand": "需要确认命令执行",
+  "perm.titleCommand": "你的智能体希望运行以下命令",
   "perm.titleApp": "需要确认外部应用启动",
   "perm.titleMxc": "MXC 沙箱命令授权",
   "perm.titleMxcLimited": "有限文件系统隔离",

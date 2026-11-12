@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -6,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from deploy import main
+from deployer.install_timing import INSTALL_TIMING_PREFIX
 from deployer.webview_bridge import (
     _STRINGS,
     InstallationCancelled,
@@ -81,7 +83,39 @@ class WebInstallerBridgeTests(unittest.TestCase):
                 self.assertEqual(webview.create_window.call_args.args[0], expected)
                 self.assertNotEqual(expected, "MicroClaw")
                 self.assertEqual(webview.create_window.call_args.kwargs["focus"], background != "1")
+                self.assertFalse(webview.create_window.call_args.kwargs["easy_drag"])
+                # Transparent surfaces skip pywebview's native Windows shadow.
+                self.assertEqual(
+                    webview.create_window.call_args.kwargs["transparent"], mode == "uninstall"
+                )
+                self.assertTrue(webview.create_window.call_args.kwargs["shadow"])
                 webview.start.assert_called_once()
+
+    def test_explicit_drag_regions_exclude_interactive_controls_in_both_templates(self):
+        from html.parser import HTMLParser
+
+        class DragRegionParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.regions = []
+
+            def handle_starttag(self, tag, attrs):
+                attributes = dict(attrs)
+                if "pywebview-drag-region" in attributes.get("class", "").split():
+                    self.regions.append((tag, self.get_starttag_text()))
+
+        for name in ("installer_template.html", "uninstall_template.html"):
+            with self.subTest(template=name):
+                markup = (Path(__file__).parents[1] / "deployer" / "assets" / name).read_text(
+                    encoding="utf-8"
+                )
+                parser = DragRegionParser()
+                parser.feed(markup)
+                self.assertEqual(len(parser.regions), 1)
+                self.assertEqual(parser.regions[0][0], "div")
+                # The title drag surface is empty, so clicks on native form
+                # controls and buttons cannot bubble through a drag ancestor.
+                self.assertIn(parser.regions[0][1] + "</div>", markup)
 
     def test_native_centering_does_not_activate_the_window(self):
         user32 = unittest.mock.Mock()
@@ -273,6 +307,7 @@ class WebInstallerBridgeTests(unittest.TestCase):
             unittest.mock.patch.object(self.bridge, "_build_install_steps", return_value=[]),
             unittest.mock.patch("subprocess.Popen") as popen,
             unittest.mock.patch("os.startfile") as startfile,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
         ):
             self.bridge._install_thread()
 
@@ -287,6 +322,139 @@ class WebInstallerBridgeTests(unittest.TestCase):
         )
         popen.assert_not_called()
         startfile.assert_not_called()
+        window.destroy.assert_not_called()
+
+    def test_completion_page_launches_normal_desktop_once_and_leaves_close_to_the_ui(self):
+        desktop = Path(self.temp.name) / "Desktop with spaces"
+        desktop.mkdir()
+        executable = desktop / "MicroClawDesktop.exe"
+        executable.write_bytes(b"fixture")
+        self.bridge._state["status"] = "success"
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", desktop),
+            unittest.mock.patch("deployer.webview_bridge.subprocess.Popen") as launch,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
+            unittest.mock.patch.dict("os.environ", {"ELECTRON_RUN_AS_NODE": "1"}),
+        ):
+            self.assertEqual(self.bridge.open_desktop(), {"ok": True})
+            self.assertEqual(self.bridge.open_desktop(), {"ok": True})
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args[0], [str(executable)])
+        options = launch.call_args.kwargs
+        self.assertEqual(options["cwd"], str(desktop))
+        self.assertNotIn("ELECTRON_RUN_AS_NODE", options["env"])
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
+        self.assertEqual(options["stdout"], subprocess.DEVNULL)
+        self.assertEqual(options["stderr"], subprocess.DEVNULL)
+        self.assertEqual(
+            options["creationflags"],
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        window.destroy.assert_not_called()
+
+    def test_desktop_cannot_launch_before_successful_installation(self):
+        for status, running in (
+            ("idle", False),
+            ("running", True),
+            ("failed", False),
+            ("cancelled", False),
+            ("success", True),
+        ):
+            with self.subTest(status=status), unittest.mock.patch("subprocess.Popen") as launch:
+                self.bridge._state.update(status=status, running=running)
+                result = self.bridge.open_desktop()
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], _STRINGS["en"]["desktopLaunchUnavailable"])
+                launch.assert_not_called()
+
+    def test_missing_desktop_preserves_success_page_and_does_not_launch_another_exe(self):
+        desktop = Path(self.temp.name)
+        (desktop / "unrelated.exe").write_bytes(b"fixture")
+        self.bridge._state["status"] = "success"
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", desktop),
+            unittest.mock.patch("subprocess.Popen") as launch,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
+        ):
+            result = self.bridge.open_desktop()
+        self.assertEqual(result, {"ok": False, "error": _STRINGS["en"]["desktopLaunchFailed"]})
+        self.assertEqual(self.bridge.get_state()["status"], "success")
+        launch.assert_not_called()
+        window.destroy.assert_not_called()
+
+    def test_launch_failure_allows_retry_without_rerunning_installation(self):
+        desktop = Path(self.temp.name)
+        (desktop / "MicroClawDesktop.exe").write_bytes(b"fixture")
+        self.bridge._state["status"] = "success"
+        self.bridge.set_language("zh")
+        with (
+            unittest.mock.patch("deployer.webview_bridge.DEFAULT_DESKTOP_DIR", desktop),
+            unittest.mock.patch(
+                "subprocess.Popen", side_effect=[OSError("failed"), object()]
+            ) as launch,
+            unittest.mock.patch("deployer.webview_bridge._ACTIVE_WINDOW") as window,
+        ):
+            result = self.bridge.open_desktop()
+            self.assertEqual(result, {"ok": False, "error": _STRINGS["zh"]["desktopLaunchFailed"]})
+            self.assertEqual(self.bridge.open_desktop(), {"ok": True})
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(self.bridge.get_state()["status"], "success")
+        window.destroy.assert_not_called()
+
+    def test_installation_logs_distinct_steps_retries_and_final_completion(self):
+        log = unittest.mock.Mock()
+        self.bridge._logger = log
+        self.bridge._state["running"] = True
+        retry = unittest.mock.Mock(side_effect=[False, True])
+        label = _STRINGS["en"]["steps"]["prepareUpgrade"]
+        with (
+            unittest.mock.patch("deployer.webview_bridge.WindowsSetup"),
+            unittest.mock.patch.object(
+                self.bridge,
+                "_build_install_steps",
+                return_value=[
+                    (18, label, retry, 1),
+                    (52, label, lambda: True, 0),
+                ],
+            ),
+            unittest.mock.patch("deployer.webview_bridge.time.sleep"),
+        ):
+            self.bridge._install_thread()
+        events = [
+            json.loads(call.args[0][len(INSTALL_TIMING_PREFIX) :])
+            for call in log.info.call_args_list
+            if call.args[0].startswith(INSTALL_TIMING_PREFIX)
+        ]
+        self.assertIn("prepareUpgrade-18", [event["stageId"] for event in events])
+        self.assertIn("prepareUpgrade-52", [event["stageId"] for event in events])
+        self.assertEqual(
+            [
+                event["status"]
+                for event in events
+                if event["phase"] == "attempt"
+                and event["stageId"] == "prepareUpgrade-18"
+                and event["status"] != "started"
+            ],
+            ["failed", "success"],
+        )
+        self.assertTrue(any(event["phase"] == "retry-wait" for event in events))
+        self.assertEqual(events[-1]["phase"], "installation-total")
+        self.assertEqual(events[-1]["status"], "success")
+
+    def test_unexpected_setup_error_preserves_failed_summary(self):
+        log = unittest.mock.Mock()
+        self.bridge._logger = log
+        with (
+            unittest.mock.patch(
+                "deployer.webview_bridge.WindowsSetup", side_effect=ValueError("setup failed")
+            ),
+            self.assertRaisesRegex(ValueError, "setup failed"),
+        ):
+            self.bridge._install_thread()
+        summary = json.loads(log.info.call_args.args[0][len(INSTALL_TIMING_PREFIX) :])
+        self.assertEqual(summary["phase"], "installation-total")
+        self.assertEqual(summary["status"], "failed")
 
     def test_final_step_failure_rolls_back_without_launching_desktop(self):
         for failed_step in ("begin_openclaw_upgrade_validation", "commit_openclaw_upgrade"):

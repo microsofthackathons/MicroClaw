@@ -85,13 +85,7 @@ describe("live provider model registration", () => {
     setup.config().agents.defaults.model.primary = "github-copilot/keep";
     const original = structuredClone(setup.config());
     await expect(
-      selectDefaultModel(
-        {
-          ...setup.deps,
-          prepareModel: (ref, expected) => registerProviderCatalogModel(setup.deps, ref, expected),
-        },
-        { modelRef: "qwen/live-one", expectedConfig: original },
-      ),
+      selectDefaultModel(setup.deps, { modelRef: "qwen/live-one", expectedConfig: original }),
     ).resolves.toEqual({ modelRef: "qwen/live-one" });
     expect(setup.config().models.providers.qwen.models).toEqual([
       { id: "live-one", name: "live-one", input: ["text"] },
@@ -102,8 +96,13 @@ describe("live provider model registration", () => {
     );
     expect(setup.config().agents.entries).toEqual(original.agents.entries);
     expect(setup.request.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(
-      2,
+      1,
     );
+    expect(setup.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "config.patch",
+      "config.get",
+    ]);
   });
 
   it("preserves an explicit revision-bound restart requirement without replaying registration", async () => {
@@ -171,19 +170,153 @@ describe("live provider model registration", () => {
   it("hot-selects a newly discovered default and preserves agent overrides and policy", async () => {
     const f = fixture();
     await expect(
-      selectDefaultModel(
-        {
-          ...f.deps,
-          prepareModel: (ref, expected) => registerProviderCatalogModel(f.deps, ref, expected),
-        },
-        { modelRef: "qwen/live-one", expectedConfig: f.before },
-      ),
+      selectDefaultModel(f.deps, { modelRef: "qwen/live-one", expectedConfig: f.before }),
     ).resolves.toEqual({ modelRef: "qwen/live-one" });
     expect(f.config().agents.entries).toEqual(f.before.agents.entries);
     expect(f.config().agents.defaults.modelPolicy).toEqual(f.before.agents.defaults.modelPolicy);
-    expect(
-      f.request.mock.calls.every(([method]) => ["config.get", "config.patch"].includes(method)),
-    ).toBe(true);
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "config.patch",
+      "config.get",
+    ]);
+    const patch = JSON.parse(String(f.request.mock.calls[1]?.[1]?.raw));
+    expect(patch).toEqual({
+      models: {
+        providers: {
+          qwen: {
+            models: [
+              ...f.before.models.providers.qwen.models,
+              { id: "live-one", name: "live-one", input: ["text"] },
+            ],
+          },
+        },
+      },
+      agents: { defaults: { model: { primary: "qwen/live-one" } } },
+    });
+    expect(f.config().models.providers.qwen.apiKey).toBe("fixture");
+    expect(f.deps.discover).toHaveBeenCalledOnce();
+  });
+
+  it("does not rediscover a registered default model", async () => {
+    const setup = fixture();
+    await expect(
+      selectDefaultModel(setup.deps, { modelRef: "qwen/old", expectedConfig: setup.before }),
+    ).resolves.toEqual({ modelRef: "qwen/old" });
+    expect(setup.deps.discover).not.toHaveBeenCalled();
+    expect(setup.request.mock.calls.every(([method]) => method === "config.get")).toBe(true);
+  });
+
+  it.each([
+    { ok: false, error: "authentication" },
+    { ok: true, models: ["unrelated"] },
+  ] as const)(
+    "does not register or select a default absent from an authenticated catalog",
+    async (result) => {
+      const setup = fixture();
+      setup.deps.discover.mockResolvedValue(
+        result.ok ? { ok: true, models: [...result.models] } : result,
+      );
+      await expect(
+        selectDefaultModel(setup.deps, {
+          modelRef: "qwen/live-one",
+          expectedConfig: setup.before,
+        }),
+      ).rejects.toThrow(/catalog/);
+      expect(setup.request).not.toHaveBeenCalled();
+      expect(setup.config()).toEqual(setup.before);
+    },
+  );
+
+  it.each(["config", "connection", "permissions"])(
+    "rejects a %s change during default discovery before registering or selecting anything",
+    async (change) => {
+      const setup = fixture();
+      setup.deps.discover.mockImplementation(async () => {
+        if (change === "config") setup.config().models.providers.qwen.apiKey = "changed";
+        if (change === "connection") setup.gateway.connectionGeneration++;
+        if (change === "permissions")
+          setup.deps.assertMutable.mockImplementation(() => {
+            throw new Error("Configuration is locked");
+          });
+        return { ok: true, models: ["live-one"] };
+      });
+      await expect(
+        selectDefaultModel(setup.deps, {
+          modelRef: "qwen/live-one",
+          expectedConfig: setup.before,
+        }),
+      ).rejects.toThrow(/changed|locked/);
+      expect(setup.request).not.toHaveBeenCalled();
+      expect(setup.config().agents).toEqual(setup.before.agents);
+      expect(setup.config().models.providers.qwen.models).toEqual(
+        setup.before.models.providers.qwen.models,
+      );
+    },
+  );
+
+  it("waits for one applied revision after atomically registering and selecting a default", async () => {
+    vi.useFakeTimers();
+    const setup = fixture();
+    setup.setApplied(false);
+    let completed = false;
+    const pending = selectDefaultModel(setup.deps, {
+      modelRef: "qwen/live-one",
+      expectedConfig: setup.before,
+    }).then(() => {
+      completed = true;
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(completed).toBe(false);
+    expect(setup.config().agents.defaults.model.primary).toBe("qwen/live-one");
+    expect(setup.config().models.providers.qwen.models.at(-1)?.id).toBe("live-one");
+    setup.setApplied(true);
+    await vi.advanceTimersByTimeAsync(500);
+    await pending;
+    expect(completed).toBe(true);
+    expect(setup.request.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(
+      1,
+    );
+  });
+
+  it("does not retry or roll back an uncertain combined default-model write", async () => {
+    const setup = fixture();
+    const original = setup.request.getMockImplementation()!;
+    setup.request.mockImplementation(async (method, params) => {
+      const result = await original(method, params);
+      if (method === "config.patch") throw new Error("Lost response after commit");
+      return result;
+    });
+    await expect(
+      selectDefaultModel(setup.deps, {
+        modelRef: "qwen/live-one",
+        expectedConfig: setup.before,
+      }),
+    ).rejects.toThrow(/may have been saved/);
+    expect(setup.config().agents.defaults.model.primary).toBe("qwen/live-one");
+    expect(setup.config().models.providers.qwen.models.at(-1)?.id).toBe("live-one");
+    expect(setup.request.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(
+      1,
+    );
+  });
+
+  it("does not confirm a combined write that omitted the registered model", async () => {
+    const setup = fixture();
+    const original = setup.request.getMockImplementation()!;
+    setup.request.mockImplementation(async (method, params) => {
+      const result = await original(method, params);
+      if (method === "config.patch") {
+        const config = structuredClone(setup.config());
+        config.models.providers.qwen.models = [];
+        return { ...result, config };
+      }
+      return result;
+    });
+    await expect(
+      selectDefaultModel(setup.deps, {
+        modelRef: "qwen/live-one",
+        expectedConfig: setup.before,
+      }),
+    ).rejects.toThrow(/registered default model could not be confirmed/);
   });
 
   it("does not rediscover or patch registered and non-managed models", async () => {

@@ -122,8 +122,14 @@ export default {
   "chat.stopGeneration": "Stop Generating",
   "chat.stopTask": "Stop task",
   "chat.addAttachment": "Add attachment",
+  "chat.dropImages": "Drop images to attach",
+  "chat.attachment.unsupportedImage":
+    "{file} is not a supported image. Use PNG, JPEG, GIF, WebP, BMP, TIFF, AVIF or HEIF.",
   "chat.attachment": "Attachment",
   "chat.image": "Image",
+  "chat.previewImage": "Preview image",
+  "chat.imageLoading": "Loading image…",
+  "chat.imageUnavailable": "Preview unavailable. Click to open the original.",
   "chat.removeAttachment": "Remove {file}",
   "chat.attachment.fileTooLarge": "{file} exceeds the {limit} per-file attachment limit.",
   "chat.attachment.totalTooLarge":
@@ -349,7 +355,7 @@ export default {
   "settings.windowsNodeMxcOn": "On",
   "settings.windowsNodeMxcAutomatic":
     "MicroClaw automatically uses the supported protection on this PC.",
-  "settings.windowsNodeMxcLearnMore": "Learn more about MXC",
+  "settings.windowsNodeMxcLearnMore": "Learn more about sandboxing",
   "settings.windowsNodeMxcToggleUnavailable":
     "Sandboxing is unavailable or could not be verified. Repair the bundled runtime and retry.",
   "settings.windowsNodeMxcStatusLoading": "Checking MXC status...",
@@ -522,11 +528,23 @@ export default {
     "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
   "settings.windowsNodeMxcFoldersStaged":
     "Changes are staged only. Applying them updates permissions while the Gateway stays running. Pending approvals and running contained commands are canceled.",
-  "settings.windowsNodeMxcApplyFolders": "Apply folder changes",
-  "settings.windowsNodeMxcApplyFoldersWarning":
-    "New execution launches will pause briefly. Pending approvals and running contained commands will be canceled, and Canvas will close. The Gateway will not restart. Execution remains locked if the update fails.",
-  "settings.windowsNodeMxcApplyFoldersComplete":
-    "Folder permissions were updated without restarting the Gateway.",
+  "settings.windowsNodeMxcApplyChanges": "Apply changes",
+  "settings.windowsNodeMxcApplyFoldersImpact":
+    "Updating folder permissions will briefly pause new execution launches. Pending approvals and running contained commands will be canceled, and Canvas will close. Execution remains locked if the update fails.",
+  "settings.windowsNodeMxcSaveFoldersImpact":
+    "Folder permissions will be saved for use when sandboxing is enabled.",
+  "settings.commandConsentApplyImpact":
+    "Command consent will change to {mode}. New execution launches will pause briefly while the new policy is applied.",
+  "settings.windowsNodeMxcApplyFoldersBeforeRestart":
+    "Folder changes will be applied first, then the Gateway will restart to change sandboxing. Running work will be interrupted.",
+  "settings.windowsNodeMxcApplyRestart":
+    "Changing sandboxing will restart the Gateway and interrupt running work.",
+  "settings.windowsNodeMxcApplyWithoutRestart": "The Gateway will not restart.",
+  "settings.windowsNodeMxcApplyComplete": "Security changes applied.",
+  "settings.windowsNodeMxcChangesStale":
+    "Security settings or active work changed while you were confirming. Review the pending changes and apply again.",
+  "settings.windowsNodeMxcChangesNotApplied":
+    "The requested security changes could not be verified. Review the current status before trying again.",
   "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
   "settings.windowsNodeMxcLifecycle": "Policy lifecycle",
   "settings.windowsNodeMxcLifecyclePhase.updating-folders": "Updating folder permissions",
@@ -1167,7 +1185,7 @@ export default {
   "perm.title": "Grant Permission to Continue",
   "perm.titleRead": "Read access required",
   "perm.titleWrite": "File access permission",
-  "perm.titleCommand": "Command approval required",
+  "perm.titleCommand": "Your agent wants to run the following command",
   "perm.titleApp": "External app approval required",
   "perm.titleMxc": "MXC sandbox command approval",
   "perm.titleMxcLimited": "Limited filesystem containment",

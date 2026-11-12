@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -15,9 +15,90 @@ INSTALLER_EXE = "MicroClawInstaller.exe"
 INTERNAL_DIR = "_internal"
 _HASH_WORKERS = 8
 
+# PyInstaller runtime dependencies used by deploy.py / WebUninstallBridge.
+# Installation payloads (desktop ZIP, scripts, skills, installer UI) are not
+# part of the persisted uninstaller. Keep this policy shared with backup/restore.
+_RUNTIME_DIRECTORIES = frozenset(
+    {"_tcl_data", "_tk_data", "tcl8", "clr_loader", "pythonnet", "webview", "setuptools", "yaml"}
+)
+_UNINSTALLER_ASSETS = frozenset(
+    {"uninstall_template.html", "microclaw.ico", "microclaw-uninstall.ico"}
+)
+# openclaw_version reads this manifest during import, including --uninstall.
+_RUNTIME_ROOT_FILES = frozenset({"base_library.zip", "install-manifest.json"})
+
 
 class UninstallerBundleError(RuntimeError):
     """Raised when the persistent uninstaller cannot be safely published."""
+
+
+def _runtime_directory(relative: Path) -> bool:
+    parts = tuple(part.casefold() for part in relative.parts)
+    return bool(parts) and (
+        parts[0] in _RUNTIME_DIRECTORIES or parts in (("deployer",), ("deployer", "assets"))
+    )
+
+
+def _runtime_file(relative: Path) -> bool:
+    parts = tuple(part.casefold() for part in relative.parts)
+    if len(parts) == 1:
+        return parts[0] in _RUNTIME_ROOT_FILES or relative.suffix.casefold() in {".dll", ".pyd"}
+    return parts[0] in _RUNTIME_DIRECTORIES or (
+        len(parts) == 3 and parts[:2] == ("deployer", "assets") and parts[2] in _UNINSTALLER_ASSETS
+    )
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+def _runtime_walk_error(error: OSError) -> None:
+    raise UninstallerBundleError(f"Could not enumerate uninstaller runtime: {error}") from error
+
+
+def _runtime_files(internal: Path) -> Iterator[Path]:
+    if _is_link(internal):
+        raise UninstallerBundleError(f"Uninstaller runtime cannot be a link: {internal}")
+    for directory, names, files in os.walk(internal, onerror=_runtime_walk_error):
+        parent = Path(directory)
+        names[:] = [
+            name for name in names if _runtime_directory((parent / name).relative_to(internal))
+        ]
+        for name in names:
+            if _is_link(parent / name):
+                raise UninstallerBundleError(
+                    f"Uninstaller runtime cannot contain links: {parent / name}"
+                )
+        for name in files:
+            source = parent / name
+            if _runtime_file(source.relative_to(internal)):
+                if _is_link(source):
+                    raise UninstallerBundleError(
+                        f"Uninstaller runtime cannot contain links: {source}"
+                    )
+                yield source
+
+
+def copy_uninstaller_runtime(source: Path, destination: Path) -> None:
+    """Copy only the runtime allowlist, including when reading a legacy bundle."""
+    if not source.is_dir():
+        raise UninstallerBundleError(f"Uninstaller runtime directory is missing: {source}")
+    destination.mkdir(parents=True)
+    for path in _runtime_files(source):
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+
+
+def _has_extra_runtime_payload(internal: Path) -> bool:
+    # Do not let a legacy destination with installation payloads hit the fast path.
+    for directory, names, files in os.walk(internal, onerror=_runtime_walk_error):
+        parent = Path(directory)
+        if any(not _runtime_directory((parent / name).relative_to(internal)) for name in names):
+            return True
+        if any(not _runtime_file((parent / name).relative_to(internal)) for name in files):
+            return True
+    return False
 
 
 def validate_uninstaller_bundle(root: Path) -> None:
@@ -27,7 +108,7 @@ def validate_uninstaller_bundle(root: Path) -> None:
         raise UninstallerBundleError(f"Uninstaller executable is missing: {exe}")
     if not internal.is_dir():
         raise UninstallerBundleError(f"Uninstaller _internal directory is missing: {internal}")
-    if not any(path.is_file() for path in internal.rglob("*")):
+    if next(_runtime_files(internal), None) is None:
         raise UninstallerBundleError(f"Uninstaller _internal directory is empty: {internal}")
 
 
@@ -45,7 +126,7 @@ def resolve_uninstaller_bundle(
 def bundle_manifest(root: Path) -> dict[str, int]:
     validate_uninstaller_bundle(root)
     files = [root / INSTALLER_EXE]
-    files.extend(path for path in (root / INTERNAL_DIR).rglob("*") if path.is_file())
+    files.extend(_runtime_files(root / INTERNAL_DIR))
     return {
         path.relative_to(root).as_posix(): path.stat().st_size
         for path in sorted(files, key=lambda path: path.relative_to(root).as_posix())
@@ -64,6 +145,8 @@ def bundles_match(source: Path, destination: Path) -> bool:
     try:
         source_manifest = bundle_manifest(source)
         if source_manifest != bundle_manifest(destination):
+            return False
+        if _has_extra_runtime_payload(destination / INTERNAL_DIR):
             return False
 
         def files_match(relative: str) -> bool:
@@ -155,7 +238,7 @@ def publish_uninstaller_bundle(
 
     try:
         shutil.copy2(source / INSTALLER_EXE, staged / INSTALLER_EXE)
-        shutil.copytree(source / INTERNAL_DIR, staged / INTERNAL_DIR)
+        copy_uninstaller_runtime(source / INTERNAL_DIR, staged / INTERNAL_DIR)
         if bundle_manifest(staged) != bundle_manifest(source):
             raise UninstallerBundleError("Staged uninstaller manifest does not match source")
 

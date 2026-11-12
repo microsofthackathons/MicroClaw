@@ -198,7 +198,7 @@ export function validateLocalModelUrl(value: unknown): string {
 }
 
 export function supportsLocalModelVersion(version: string | null, minimumPatch = 3): boolean {
-  if (/^2026\.10\.5(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")) return true;
+  if (/^2026\.10\.(?:5|10)(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")) return true;
   const match = /^2026\.9\.(\d+)(?:\+[a-zA-Z0-9.-]+)?$/.exec(version ?? "");
   return Boolean(match && Number(match[1]) >= minimumPatch);
 }
@@ -211,7 +211,7 @@ export function supportsLocalModelGatewayVersion(version: string | null): boolea
 }
 
 function providerVersionForGateway(version: string | null): string {
-  return /^2026\.10\.5(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
+  return /^2026\.10\.(?:5|10)(?:\+[a-zA-Z0-9.-]+)?$/.test(version ?? "")
     ? LOCAL_MODEL_PLUGIN_VERSION
     : "2026.9.3";
 }

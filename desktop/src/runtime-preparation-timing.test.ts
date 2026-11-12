@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   measureRuntimePhase,
+  parseRuntimeTiming,
   RUNTIME_PREPARATION_TIMING_PREFIX,
   RuntimePreparationTiming,
   type RuntimePreparationTimingEvent,
@@ -21,6 +22,37 @@ function fixture() {
 }
 
 describe("runtime preparation timing", () => {
+  it("only forwards valid timing fields without rewriting worker clocks", () => {
+    const { timing, events } = fixture();
+    timing.forward("unrelated output");
+    timing.forward(RUNTIME_PREPARATION_TIMING_PREFIX + "malformed");
+    timing.forward(
+      RUNTIME_PREPARATION_TIMING_PREFIX +
+        JSON.stringify({
+          scope: "worker",
+          phase: "archive-extract",
+          kind: "phase",
+          status: "failed",
+          elapsedMs: 17,
+          durationMs: 10,
+          secret: "not-forwarded",
+        }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      scope: "worker",
+      phase: "archive-extract",
+      kind: "phase",
+      status: "failed",
+      elapsedMs: 17,
+      durationMs: 10,
+    });
+    expect(
+      parseRuntimeTiming(
+        RUNTIME_PREPARATION_TIMING_PREFIX + JSON.stringify({ ...events[0], durationMs: -1 }),
+      ),
+    ).toBeNull();
+  });
   it("records a monotonic phase duration without changing its result", () => {
     const { timing, events, clock } = fixture();
     const result = timing.measure("archive-extract", () => {

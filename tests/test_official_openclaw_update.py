@@ -59,7 +59,7 @@ class OfficialOpenClawUpdateTests(unittest.TestCase):
 
     def test_previous_releases_upgrade_to_10_5_without_the_official_updater(self):
         package = self._write_package(self.appdata / "npm", "2026.9.3")
-        for version in ("2026.9.3", "2026.10.3"):
+        for version in ("2026.9.3", "2026.10.3", "2026.10.5"):
             with self.subTest(version=version):
                 (package / "package.json").write_text(json.dumps({"version": version}))
                 self.ws._run_official_update.reset_mock()

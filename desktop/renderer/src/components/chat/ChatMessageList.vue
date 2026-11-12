@@ -177,6 +177,10 @@
             :data-perf-run-id="performanceEnabled ? msg.performanceRunId : undefined"
             :class="[
               group.normalizedRole,
+              {
+                'chat-bubble--image-only':
+                  group.normalizedRole === 'user' && isImageOnlyMessage(msg),
+              },
               { editable: group.normalizedRole === 'user' && !isEditingMessage(group, idx) },
             ]"
             @dblclick.prevent="
@@ -705,6 +709,15 @@ function getMessageText(msg: unknown): string {
   return stripAnsi(collapseInlineJson(stripPlanMarkers(text)));
 }
 
+function isImageOnlyMessage(msg: unknown): boolean {
+  const attachments = chatStore.getMessageAttachments(msg);
+  return (
+    !getMessageText(msg) &&
+    attachments.length > 0 &&
+    attachments.every((attachment) => attachment.type === "image")
+  );
+}
+
 /** Wrap top-level inline JSON objects/arrays in a collapsible <details> block. */
 function collapseInlineJson(text: string): string {
   const result: string[] = [];
@@ -1096,6 +1109,20 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 .chat-bubble.user .chat-message-attachments {
   margin-bottom: 8px;
+}
+
+.chat-bubble.user.chat-bubble--image-only {
+  padding: 0;
+  background: transparent;
+  border-radius: 14px;
+}
+
+.chat-bubble.user.chat-bubble--image-only .chat-message-attachments {
+  margin-bottom: 0;
+}
+
+.chat-bubble.user.chat-bubble--image-only.editable:hover {
+  filter: none;
 }
 
 .chat-bubble.user.editable {

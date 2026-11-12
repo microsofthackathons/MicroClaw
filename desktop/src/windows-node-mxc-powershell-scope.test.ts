@@ -267,7 +267,11 @@ describe("exact contained PowerShell prepared initialization", () => {
       expect(result.status).toBe("created");
       if (result.status !== "created")
         throw new Error(`Phone presentation rejected: ${result.reason}`);
-      expect(result.delivery.text).toContain("Verified folder initialization");
+      expect(result.delivery.text.split("\n\n")[1]).toBe(
+        `Your agent wants to run the following command:\n${windowsCommand(initialization.originalArgv)}`,
+      );
+      expect(result.delivery.text).not.toContain("Verified folder initialization");
+      expect(result.delivery.text).not.toContain(POWERSHELL_FILESYSTEM_INITIALIZER);
       expect(result.delivery.text).toContain("Remove-Item");
       expect(result.delivery.text).not.toContain("filesystem initialization failed");
       expect(approval.command).toBe(plan.commandText);

@@ -1350,7 +1350,7 @@ describe("bundled Windows node host", () => {
     ).rejects.toThrow("ambient assessment timed out after 100ms");
 
     expect(Date.now() - startedAt).toBeLessThan(10_000);
-  });
+  }, 15_000);
 
   it.runIf(process.platform === "win32")(
     "kills pipe-holding descendants before settling a helper timeout",

@@ -41,6 +41,24 @@ export function resolveInboundMediaPath(stateDir: string, mediaPath: string): st
   return candidate;
 }
 
+export async function resolveInboundMediaFile(
+  stateDir: string,
+  mediaPath: string,
+): Promise<string> {
+  const mediaFile = resolveInboundMediaPath(stateDir, mediaPath);
+  const inboundDir = path.resolve(stateDir, "media", "inbound");
+  const [realInboundDir, realMediaFile] = await Promise.all([
+    realpath(inboundDir),
+    realpath(mediaFile),
+  ]);
+  if (!realMediaFile.startsWith(`${realInboundDir}${path.sep}`)) {
+    throw new Error("Inbound media file escaped its root");
+  }
+  const mediaStat = await stat(realMediaFile);
+  if (!mediaStat.isFile()) throw new Error("Inbound media reference is not a file");
+  return realMediaFile;
+}
+
 export async function prepareAttachmentForOpen(
   request: unknown,
   tempDir: string,
@@ -75,17 +93,7 @@ export async function prepareAttachmentForOpen(
   }
 
   if (typeof attachment.mediaPath === "string") {
-    const mediaFile = resolveInboundMediaPath(stateDir, attachment.mediaPath);
-    const inboundDir = path.resolve(stateDir, "media", "inbound");
-    const [realInboundDir, realMediaFile] = await Promise.all([
-      realpath(inboundDir),
-      realpath(mediaFile),
-    ]);
-    if (!realMediaFile.startsWith(`${realInboundDir}${path.sep}`)) {
-      throw new Error("Inbound media file escaped its root");
-    }
-    const mediaStat = await stat(realMediaFile);
-    if (!mediaStat.isFile()) throw new Error("Inbound media reference is not a file");
+    const realMediaFile = await resolveInboundMediaFile(stateDir, attachment.mediaPath);
     if (path.extname(realMediaFile)) return realMediaFile;
 
     const outputDir = path.join(tempDir, "MicroClaw", "attachments");

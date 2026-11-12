@@ -24,6 +24,7 @@ export default tseslint.config(
         Buffer: "readonly",
         setImmediate: "readonly",
         AbortController: "readonly",
+        fetch: "readonly",
       },
     },
   },

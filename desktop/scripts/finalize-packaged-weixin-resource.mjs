@@ -15,9 +15,7 @@ export default async function finalizePackagedWeixinResource(context) {
   const destinationRoot = path.join(context.appOutDir, "resources", "openclaw-weixin");
   fs.cpSync(sourceRoot, destinationRoot, { recursive: true, force: true });
 
-  const manifest = JSON.parse(
-    fs.readFileSync(path.join(destinationRoot, manifestName), "utf8"),
-  );
+  const manifest = JSON.parse(fs.readFileSync(path.join(destinationRoot, manifestName), "utf8"));
   const expectedFiles = manifest.files.map((file) => file.path).sort();
   const actualFiles = [];
   const visit = (directory) => {

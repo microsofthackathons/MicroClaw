@@ -1,6 +1,8 @@
 import { createServer, type RequestListener } from "node:http";
-import { describe, expect, it } from "vitest";
-import { discoverProviderModels } from "./provider-model-catalog";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createProviderModelCatalog, discoverProviderModels } from "./provider-model-catalog";
+
+afterEach(() => vi.restoreAllMocks());
 
 async function withEndpoint(handler: RequestListener, run: (base: string) => Promise<void>) {
   const server = createServer(handler);
@@ -111,6 +113,124 @@ describe("provider model catalog", () => {
           ok: false,
           error: "network",
         });
+      },
+    );
+  });
+});
+
+describe("shared provider model catalog", () => {
+  it("shares in-flight discovery and reuses a fresh catalog without exposing mutable results", async () => {
+    let requests = 0;
+    const catalog = createProviderModelCatalog();
+    await withEndpoint(
+      (_request, response) => {
+        requests++;
+        response.end(JSON.stringify({ data: [{ id: "live" }] }));
+      },
+      async (baseUrl) => {
+        const [first, second] = await Promise.all([
+          catalog({ baseUrl, apiKey: "fixture" }, {}),
+          catalog({ baseUrl: `${baseUrl}/`, apiKey: " fixture " }, {}),
+        ]);
+        expect(first).toEqual({ ok: true, models: ["live"] });
+        expect(second).toEqual(first);
+        if (first.ok) first.models.push("untrusted");
+        expect(await catalog({ baseUrl, apiKey: "fixture" }, {})).toEqual({
+          ok: true,
+          models: ["live"],
+        });
+        expect(requests).toBe(1);
+      },
+    );
+  });
+
+  it("refreshes successful catalogs after one minute", async () => {
+    let requests = 0;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const catalog = createProviderModelCatalog();
+    await withEndpoint(
+      (_request, response) => {
+        requests++;
+        response.end(JSON.stringify({ data: [{ id: `live-${requests}` }] }));
+      },
+      async (baseUrl) => {
+        const input = { baseUrl, apiKey: "fixture" };
+        await catalog(input, {});
+        clock.mockReturnValue(60_999);
+        expect(await catalog(input, {})).toEqual({ ok: true, models: ["live-1"] });
+        clock.mockReturnValue(61_000);
+        expect(await catalog(input, {})).toEqual({ ok: true, models: ["live-2"] });
+        expect(requests).toBe(2);
+      },
+    );
+  });
+
+  it("isolates endpoints and resolved credentials, including environment-key rotation", async () => {
+    const requests: string[] = [];
+    const catalog = createProviderModelCatalog();
+    await withEndpoint(
+      (request, response) => {
+        requests.push(`${request.url} ${request.headers.authorization}`);
+        response.end(JSON.stringify({ data: [{ id: "live" }] }));
+      },
+      async (baseUrl) => {
+        const input = { baseUrl, apiKey: "${CATALOG_KEY}" };
+        await catalog(input, { CATALOG_KEY: "first" });
+        await catalog({ baseUrl, apiKey: "first" }, {});
+        await catalog(input, { CATALOG_KEY: "second" });
+        await catalog(
+          { ...input, baseUrl: baseUrl.replace("/v1", "/other") },
+          {
+            CATALOG_KEY: "second",
+          },
+        );
+        expect(requests).toEqual([
+          "/v1/models Bearer first",
+          "/v1/models Bearer second",
+          "/other/models Bearer second",
+        ]);
+        expect(await catalog(input, {})).toEqual({ ok: false, error: "credentials" });
+        expect(await catalog({ baseUrl, apiKey: "*****" }, {})).toEqual({
+          ok: false,
+          error: "maskedKey",
+        });
+        expect(requests).toHaveLength(3);
+      },
+    );
+  });
+
+  it("does not cache failed discovery", async () => {
+    let requests = 0;
+    const catalog = createProviderModelCatalog();
+    await withEndpoint(
+      (_request, response) => {
+        requests++;
+        response.writeHead(requests === 1 ? 401 : 200);
+        response.end(JSON.stringify({ data: [{ id: "live" }] }));
+      },
+      async (baseUrl) => {
+        const input = { baseUrl, apiKey: "fixture" };
+        expect(await catalog(input, {})).toEqual({ ok: false, error: "authentication" });
+        expect(await catalog(input, {})).toEqual({ ok: true, models: ["live"] });
+        expect(requests).toBe(2);
+      },
+    );
+  });
+
+  it("bounds the number of cached credential scopes", async () => {
+    let requests = 0;
+    const catalog = createProviderModelCatalog();
+    await withEndpoint(
+      (_request, response) => {
+        requests++;
+        response.end(JSON.stringify({ data: [{ id: "live" }] }));
+      },
+      async (baseUrl) => {
+        for (let index = 0; index < 17; index++) {
+          await catalog({ baseUrl, apiKey: `fixture-${index}` }, {});
+        }
+        await catalog({ baseUrl, apiKey: "fixture-0" }, {});
+        expect(requests).toBe(18);
       },
     );
   });

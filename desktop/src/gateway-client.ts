@@ -45,7 +45,13 @@ export type GatewayResponseFrame = {
   id: string;
   ok: boolean;
   payload?: unknown;
-  error?: { code: string; message: string; details?: unknown };
+  error?: {
+    code: string;
+    message: string;
+    details?: unknown;
+    retryAfterMs?: number;
+    retryable?: boolean;
+  };
 };
 
 export class GatewayRequestError extends Error {
@@ -53,10 +59,30 @@ export class GatewayRequestError extends Error {
     message: string,
     readonly code?: string,
     readonly details?: unknown,
+    readonly retryAfterMs?: number,
+    readonly retryable?: boolean,
   ) {
     super(message);
     this.name = "GatewayRequestError";
   }
+}
+
+/** OpenClaw's startup-sidecars response is a short readiness retry, not a disconnect backoff. */
+export function gatewayStartupRetryAfterMs(error: unknown): number | null {
+  if (
+    !(error instanceof GatewayRequestError) ||
+    error.code !== "UNAVAILABLE" ||
+    error.retryable !== true ||
+    !error.details ||
+    typeof error.details !== "object" ||
+    (error.details as Record<string, unknown>).reason !== "startup-sidecars"
+  )
+    return null;
+  const delay = error.retryAfterMs;
+  return Math.min(
+    2000,
+    Math.max(100, Math.floor(typeof delay === "number" && Number.isFinite(delay) ? delay : 500)),
+  );
 }
 
 export type ChatEventPayload = {
@@ -205,6 +231,8 @@ export type GatewayClientOptions = {
   onDisconnected?: (reason: string) => void;
   /** Called when the connect handshake fails due to an auth/token error. */
   onAuthError?: (message: string) => void;
+  /** Observes the bounded startup-sidecars retry without exposing authentication data. */
+  onStartupRetry?: (retryAfterMs: number) => void;
 };
 
 export function extractMainSessionKey(hello: Record<string, unknown>): string | null {
@@ -237,6 +265,7 @@ export class GatewayClient {
   private connectNonce: string | null = null;
   private connectSent = false;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private deviceIdentity: DeviceIdentity;
   private _mainSessionKey: string | null = null;
   private agentWarmupPromise: Promise<AgentWarmupResult> | null = null;
@@ -274,11 +303,15 @@ export class GatewayClient {
 
   start() {
     this.closed = false;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.connect();
   }
 
   stop() {
     this.closed = true;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this._connected = false;
     this.sessionObserver.disconnect();
     if (this.connectTimer) {
@@ -813,12 +846,38 @@ export class GatewayClient {
       })
       .catch((err) => {
         console.error("[gateway-client] connect handshake failed:", err.message);
-        // Don't reconnect for auth errors — they won't resolve on retry.
-        // Instead, notify the caller so it can kill the stale gateway and restart.
-        const isAuthError = /unauthorized|token.*mismatch|rate.limited/i.test(err.message);
-        if (isAuthError) {
+        const details =
+          err instanceof GatewayRequestError && err.details && typeof err.details === "object"
+            ? (err.details as Record<string, unknown>)
+            : undefined;
+        const isRateLimited =
+          (err instanceof GatewayRequestError && err.code === "AUTH_RATE_LIMITED") ||
+          details?.code === "AUTH_RATE_LIMITED" ||
+          details?.authReason === "rate_limited" ||
+          /rate[ _-]?limited|too many failed authentication attempts/i.test(err.message);
+        if (isRateLimited) {
+          const retryAfterMs = err instanceof GatewayRequestError ? err.retryAfterMs : undefined;
+          this.setReconnectDelay(
+            Math.max(
+              this.backoffMs,
+              typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+                ? Math.min(Math.ceil(retryAfterMs), 2_147_483_647)
+                : WS_RECONNECT_MAX_MS,
+            ),
+          );
+        } else if (/unauthorized|token.*mismatch/i.test(err.message)) {
           this.closed = true; // prevent auto-reconnect
           this.opts.onAuthError?.(err.message);
+        } else {
+          const startupRetry = gatewayStartupRetryAfterMs(err);
+          if (startupRetry !== null) {
+            this.setReconnectDelay(startupRetry);
+            try {
+              this.opts.onStartupRetry?.(startupRetry);
+            } catch {
+              // Diagnostics must not interrupt the reconnect.
+            }
+          }
         }
         this.ws?.close();
       });
@@ -826,9 +885,22 @@ export class GatewayClient {
 
   private scheduleReconnect() {
     if (this.closed) return;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * WS_RECONNECT_MULTIPLIER, WS_RECONNECT_MAX_MS);
-    setTimeout(() => this.connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private setReconnectDelay(delay: number) {
+    this.backoffMs = delay;
+    // A close frame can be processed before the rejected handshake's promise.
+    // Apply the server's hint to that pending retry too, without adding a timer.
+    if (this.reconnectTimer !== null && this.reconnectTimer !== undefined) {
+      this.scheduleReconnect();
+    }
   }
 
   private flushPending(reason: string) {
@@ -923,6 +995,8 @@ export class GatewayClient {
             res.error?.message ?? "request failed",
             res.error?.code,
             res.error?.details,
+            res.error?.retryAfterMs,
+            res.error?.retryable,
           ),
         );
       }

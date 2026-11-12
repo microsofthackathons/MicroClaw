@@ -6,6 +6,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+from deployer.lightweight_backup import BACKUP_SCOPE, verify_lightweight_archive
 from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
 from deployer.openclaw_upgrade import UpgradeInProgressError
 from deployer.windows_setup import _ProcessInfo
@@ -49,7 +50,6 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         self.backup_verified = True
         self.backup_overrides = {}
         self.npm_exit = 0
-        self.doctor_exit = 0
 
     def _set_version(self, version):
         self.package.mkdir(parents=True, exist_ok=True)
@@ -60,27 +60,41 @@ class PackageManagerUpgradeTests(unittest.TestCase):
 
     def _command(self, command, **_options):
         if "backup" in command:
-            archive = Path(command[command.index("--output") + 1])
-            archive.write_bytes(b"verified state and workspace archive")
+            plan = Path(command[command.index("--output") + 1])
+            plan.write_text(
+                json.dumps(
+                    {
+                        "scope": BACKUP_SCOPE,
+                        "verifiedSqlite": self.backup_verified,
+                        "sourceVersion": self.ws._detect_openclaw_installation().version,
+                        "stateDir": str(self.state),
+                        "desktopDir": str(self.appdata / "MicroClaw"),
+                        "workspaceDirs": [],
+                        "entries": [
+                            {
+                                "sourcePath": str(self.config),
+                                "stagedPath": str(self.config),
+                                "kind": "config",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             result = {
-                "verified": self.backup_verified,
-                "includeWorkspace": True,
-                "onlyConfig": False,
-                "archivePath": str(archive),
-                "assets": [{"kind": "state", "sourcePath": str(self.state)}],
+                "scope": BACKUP_SCOPE,
+                "verifiedSqlite": self.backup_verified,
+                "planPath": str(plan),
+                "stateDir": str(self.state),
             }
             result.update(self.backup_overrides)
             return subprocess.CompletedProcess(command, 0, json.dumps(result), "")
         if "install" in command:
             self._set_version(self.target_version)
             return subprocess.CompletedProcess(command, self.npm_exit, "npm output", "")
-        if "doctor" in command:
-            return subprocess.CompletedProcess(
-                command, self.doctor_exit, "OpenClaw doctor finished", ""
-            )
         raise AssertionError(command)
 
-    def test_upgrade_backs_up_before_npm_then_runs_doctor_exactly_once(self):
+    def test_upgrade_backs_up_before_npm_without_running_doctor(self):
         artifact = self.prefix / "node_modules" / ".openclaw-retained.restore"
         artifact.mkdir()
         (artifact / "evidence").write_text("keep")
@@ -88,23 +102,19 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.prepare_openclaw_update())
         self.assertTrue(self.ws.install_openclaw_windows())
         commands = [call.args[0] for call in self.ws._run_official_update.call_args_list]
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 2)
         self.assertIn("backup", commands[0])
-        self.assertIn("--verify", commands[0])
-        self.assertNotIn("--no-include-workspace", commands[0])
+        self.assertIn("upgrade-backup.mjs", commands[0][1])
+        self.assertNotIn("create", commands[0])
         self.assertEqual(commands[1][:4], ["npm.cmd", "install", "-g", "openclaw@2026.10.5"])
         self.assertIn("--allow-scripts=openclaw", commands[1])
         self.assertEqual(commands[1][commands[1].index("--prefix") + 1], str(self.prefix))
-        self.assertEqual(
-            commands[2][2:],
-            [
-                "doctor",
-                "--fix",
-                "--non-interactive",
-            ],
+        self.assertFalse(
+            any(
+                "doctor" in command or "update" in command or "repair" in command
+                for command in commands
+            )
         )
-        self.assertEqual(sum("doctor" in command for command in commands), 1)
-        self.assertFalse(any("update" in command or "repair" in command for command in commands))
         self.assertEqual(self.config.read_bytes(), original_config)
         self.assertEqual((artifact / "evidence").read_text(), "keep")
         self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
@@ -119,41 +129,61 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         self.assertEqual(self.ws._run_official_update.call_count, 1)
         self.assertEqual(self.ws._detect_openclaw_installation().version, "2026.10.3")
 
+    def test_10_5_to_10_10_preserves_config_without_running_doctor(self):
+        self._set_version("2026.10.5")
+        self.target_version = "2026.10.10"
+        original_config = self.config.read_bytes()
+        with patch("deployer.windows_setup.OPENCLAW_TARGET_VERSION", self.target_version):
+            self.assertTrue(self.ws.prepare_openclaw_update())
+            self.assertTrue(self.ws.install_openclaw_windows())
+            commands = [call.args[0] for call in self.ws._run_official_update.call_args_list]
+            self.assertEqual(len(commands), 2)
+            self.assertIn("backup", commands[0])
+            self.assertIn("openclaw@2026.10.10", commands[1])
+            record = json.loads(
+                (self.microclaw / "upgrade" / "openclaw-package-upgrade.json").read_text()
+            )
+            self.assertEqual(record["sourceVersion"], "2026.10.5")
+            self.assertEqual(record["targetVersion"], "2026.10.10")
+            archive = self.microclaw / "backups" / "openclaw-package" / record["id"] / "state.tar.gz"
+            self.assertEqual(verify_lightweight_archive(archive)["scope"], BACKUP_SCOPE)
+            self.assertEqual(self.config.read_bytes(), original_config)
+            self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
+
     def test_failed_doctor_is_resumed_without_reinstalling_or_replacing_backup(self):
-        self.doctor_exit = 1
+        self.ws._validate_installed_version = Mock(return_value=False)
         self.assertFalse(self.ws.install_openclaw_windows())
         pending = PackageManagerUpgrade.pending(self.microclaw)
-        self.assertEqual(pending.data["phase"], "migrating")
+        pending.save("migrating")
         original_archive = pending.archive
+        original_backup = original_archive.read_bytes()
         self.assertTrue(pending.data["packageReady"])
         self.assertFalse(self.ws.check_openclaw_windows())
         self.assertTrue(self.ws.prepare_openclaw_update())
         self.assertTrue(self.ws._openclaw_upgrade_required)
         self.ws._run_official_update.reset_mock()
-        self.doctor_exit = 0
+        self.ws._validate_installed_version.return_value = True
         self.assertTrue(self.ws.install_openclaw_windows())
-        calls = self.ws._run_official_update.call_args_list
-        self.assertEqual(len(calls), 1)
-        self.assertIn("doctor", calls[0].args[0])
-        self.assertTrue(original_archive.is_file())
+        self.ws._run_official_update.assert_not_called()
+        self.assertEqual(original_archive.read_bytes(), original_backup)
+        self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
 
-    def test_legacy_repairing_phase_resumes_with_doctor_only(self):
-        self.doctor_exit = 1
+    def test_legacy_repairing_phase_resumes_without_running_doctor(self):
+        self.ws._validate_installed_version = Mock(return_value=False)
         self.assertFalse(self.ws.install_openclaw_windows())
         pending = PackageManagerUpgrade.pending(self.microclaw)
         pending.save("repairing")
         self.ws._run_official_update.reset_mock()
-        self.doctor_exit = 0
+        self.ws._validate_installed_version.return_value = True
         self.assertTrue(self.ws.install_openclaw_windows())
-        self.ws._run_official_update.assert_called_once()
-        self.assertIn("doctor", self.ws._run_official_update.call_args.args[0])
+        self.ws._run_official_update.assert_not_called()
         self.assertTrue(pending.archive.is_file())
         self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
 
     def test_same_version_retry_does_not_run_another_doctor(self):
         self.assertTrue(self.ws.install_openclaw_windows())
         self.assertTrue(self.ws.install_openclaw_windows())
-        self.assertEqual(self.ws._run_official_update.call_count, 3)
+        self.assertEqual(self.ws._run_official_update.call_count, 2)
         self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
 
     def test_nonzero_npm_exit_is_not_success_even_if_version_already_changed(self):
@@ -173,11 +203,11 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         self.npm_exit = 0
         self.ws._run_official_update.reset_mock()
         self.assertTrue(self.ws.install_openclaw_windows())
-        self.assertEqual(self.ws._run_official_update.call_count, 2)
+        self.assertEqual(self.ws._run_official_update.call_count, 1)
         self.ws._install_openclaw_with_registry_fallback.assert_not_called()
 
     def test_tampered_backup_blocks_resume_without_any_child_command(self):
-        self.doctor_exit = 1
+        self.ws._validate_installed_version = Mock(return_value=False)
         self.assertFalse(self.ws.install_openclaw_windows())
         pending = PackageManagerUpgrade.pending(self.microclaw)
         pending.archive.write_bytes(b"changed")
@@ -185,33 +215,38 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         self.assertFalse(self.ws.install_openclaw_windows())
         self.ws._run_official_update.assert_not_called()
 
-    def test_nonzero_doctor_exit_keeps_backup_and_pending_marker(self):
-        self.doctor_exit = 1
-        self.assertFalse(self.ws.install_openclaw_windows())
-        pending = PackageManagerUpgrade.pending(self.microclaw)
-        self.assertEqual(pending.data["phase"], "migrating")
-        pending.verify_archive()
-        self.assertFalse(self.ws.check_openclaw_windows())
+    def test_legacy_weixin_allowfrom_is_preserved_without_running_doctor(self):
+        credentials = self.state / "credentials"
+        credentials.mkdir()
+        allow_from = credentials / "openclaw-weixin-test-im-bot-allowFrom.json"
+        allow_from.write_text('{"allowFrom":["test-user@im.wechat"]}')
+        original_allow_from = allow_from.read_bytes()
+        original_config = self.config.read_bytes()
+        self.assertTrue(self.ws.install_openclaw_windows())
+        self.assertEqual(allow_from.read_bytes(), original_allow_from)
+        self.assertEqual(self.config.read_bytes(), original_config)
+        self.assertEqual(self.ws._run_official_update.call_count, 2)
+        self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
 
     def test_version_validation_failure_keeps_backup_and_pending_marker(self):
         self.ws._validate_installed_version = Mock(return_value=False)
         self.assertFalse(self.ws.install_openclaw_windows())
         pending = PackageManagerUpgrade.pending(self.microclaw)
-        self.assertEqual(pending.data["phase"], "migrating")
+        self.assertEqual(pending.data["phase"], "verifying")
         pending.verify_archive()
         self.ws._start_validation_gateway.assert_not_called()
 
-    def test_gateway_restart_during_doctor_keeps_backup_and_pending_marker(self):
+    def test_gateway_restart_during_npm_keeps_backup_and_pending_marker(self):
         def command_with_gateway_restart(command, **options):
             result = self._command(command, **options)
-            if "doctor" in command:
+            if "install" in command:
                 self.ws._gateway_is_stopped_for_upgrade = Mock(return_value=False)
             return result
 
         self.ws._run_official_update.side_effect = command_with_gateway_restart
         self.assertFalse(self.ws.install_openclaw_windows())
         pending = PackageManagerUpgrade.pending(self.microclaw)
-        self.assertEqual(pending.data["phase"], "migrating")
+        self.assertEqual(pending.data["phase"], "package-installed")
         pending.verify_archive()
         self.ws._start_validation_gateway.assert_not_called()
 
@@ -257,13 +292,16 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         original_command = self._command
 
         def command_with_timeout(command, **options):
-            if "doctor" in command:
+            if "install" in command:
                 raise subprocess.TimeoutExpired(command, 900)
             return original_command(command, **options)
 
         self.ws._run_official_update.side_effect = command_with_timeout
         self.assertFalse(self.ws.install_openclaw_windows())
-        self.assertEqual(PackageManagerUpgrade.pending(self.microclaw).data["phase"], "migrating")
+        pending = PackageManagerUpgrade.pending(self.microclaw)
+        self.assertEqual(pending.data["phase"], "package-installing")
+        self.assertFalse(pending.data["packageReady"])
+        pending.verify_archive()
         self.ws._start_validation_gateway.assert_not_called()
 
     def test_invalid_recovery_record_is_preserved_and_blocks_install(self):
@@ -293,27 +331,25 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         self.ws._run_official_update.assert_not_called()
 
     def test_backup_verification_uses_sha_not_timestamp_metadata(self):
-        self.doctor_exit = 1
+        self.ws._validate_installed_version = Mock(return_value=False)
         self.assertFalse(self.ws.install_openclaw_windows())
         pending = PackageManagerUpgrade.pending(self.microclaw)
         digest = pending.archive_digest()
         os.utime(pending.archive, (1000, 1000))
-        with patch.object(Path, "stat", side_effect=AssertionError("No timestamp comparison")):
-            pending.verify_archive()
+        pending.verify_archive()
         self.assertEqual(pending.archive_digest(), digest)
         self.ws._run_official_update.reset_mock()
-        self.doctor_exit = 0
+        self.ws._validate_installed_version.return_value = True
         self.assertTrue(self.ws.install_openclaw_windows())
-        self.ws._run_official_update.assert_called_once()
-        self.assertIn("doctor", self.ws._run_official_update.call_args.args[0])
+        self.ws._run_official_update.assert_not_called()
+        self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
 
     def test_backup_must_cover_state_and_workspaces_before_any_npm_replacement(self):
         for overrides in (
-            {"includeWorkspace": False},
-            {"onlyConfig": True},
-            {"assets": []},
-            {"assets": [{"kind": "state", "sourcePath": str(self.root / "other")}]},
-            {"archivePath": str(self.root / "other.tar.gz")},
+            {"scope": "full"},
+            {"verifiedSqlite": False},
+            {"stateDir": str(self.root / "other")},
+            {"planPath": str(self.root / "other.json")},
         ):
             with self.subTest(overrides=overrides):
                 self.backup_overrides = overrides
@@ -336,23 +372,20 @@ class PackageManagerUpgradeTests(unittest.TestCase):
     def test_inconclusive_registry_probe_does_not_launch_the_old_updater(self):
         self.ws._reachable_npm_registries.return_value = []
         self.assertTrue(self.ws.install_openclaw_windows())
-        self.assertEqual(self.ws._run_official_update.call_count, 3)
+        self.assertEqual(self.ws._run_official_update.call_count, 2)
         self.assertFalse(
             any("update" in call.args[0] for call in self.ws._run_official_update.call_args_list)
         )
 
-    def test_previous_9_3_release_also_uses_backup_npm_and_one_doctor(self):
+    def test_unsupported_snapshot_version_never_falls_back_to_full_archive(self):
         self._set_version("2026.9.3")
-        self.assertTrue(self.ws.install_openclaw_windows())
-        record = json.loads(
-            (self.microclaw / "upgrade" / "openclaw-package-upgrade.json").read_text()
-        )
-        self.assertEqual(record["sourceVersion"], "2026.9.3")
-        self.assertEqual(record["targetVersion"], "2026.10.5")
-        self.assertEqual(record["phase"], "complete")
-        self.assertEqual(self.ws._run_official_update.call_count, 3)
+        self.ws._run_official_update.side_effect = RuntimeError("Unreviewed snapshot version")
+        self.assertFalse(self.ws.install_openclaw_windows())
+        self.ws._run_official_update.assert_called_once()
+        self.assertIn("upgrade-backup.mjs", self.ws._run_official_update.call_args.args[0][1])
+        self.assertEqual(self.ws._detect_openclaw_installation().version, "2026.9.3")
 
-    def test_legacy_9_3_to_10_3_repair_record_can_resume_with_doctor(self):
+    def test_legacy_9_3_to_10_3_repair_record_can_resume_without_running_doctor(self):
         upgrade = PackageManagerUpgrade.create(
             self.microclaw, self.prefix, source_version="2026.9.3", target_version="2026.10.3"
         )
@@ -360,8 +393,7 @@ class PackageManagerUpgradeTests(unittest.TestCase):
         upgrade.save("repairing", archiveSha256=upgrade.archive_digest(), packageReady=True)
         with patch("deployer.windows_setup.OPENCLAW_TARGET_VERSION", "2026.10.3"):
             self.assertTrue(self.ws.install_openclaw_windows())
-        self.ws._run_official_update.assert_called_once()
-        self.assertIn("doctor", self.ws._run_official_update.call_args.args[0])
+        self.ws._run_official_update.assert_not_called()
         self.assertTrue(upgrade.archive.exists())
         self.assertIsNone(PackageManagerUpgrade.pending(self.microclaw))
 
@@ -399,14 +431,17 @@ class PackageManagerUpgradeTests(unittest.TestCase):
 
     def test_final_health_check_does_not_run_more_doctor_or_plugin_rpcs(self):
         self.assertTrue(self.ws.install_openclaw_windows())
-        archive_command = self.ws._run_official_update.call_args_list[0].args[0]
-        archive = Path(archive_command[archive_command.index("--output") + 1])
+        record = json.loads(
+            (self.microclaw / "upgrade" / "openclaw-package-upgrade.json").read_text()
+        )
+        archive = self.microclaw / "backups" / "openclaw-package" / record["id"] / "state.tar.gz"
+        self.assertEqual(verify_lightweight_archive(archive)["scope"], BACKUP_SCOPE)
         self.ws._run_openclaw_json = Mock(side_effect=AssertionError("No post-install RPC"))
         self.ws._validate_gateway_health = Mock(return_value=True)
         self.assertTrue(self.ws.validate_running_gateway())
         self.ws._validate_gateway_health.return_value = False
         self.assertFalse(self.ws.validate_running_gateway())
-        self.assertEqual(self.ws._run_official_update.call_count, 3)
+        self.assertEqual(self.ws._run_official_update.call_count, 2)
         self.ws._run_openclaw_json.assert_not_called()
         self.assertTrue(archive.is_file())
 

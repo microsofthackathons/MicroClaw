@@ -18,6 +18,7 @@ import { collectArtifact, inspectFile } from "./provenance.mjs";
 import { FIXED_TEXT, startModelService } from "./model-service.mjs";
 import { validateInstallFixture, validateInstallResult } from "./install.mjs";
 import { runPerformance } from "./runner.mjs";
+import { DesktopDriver } from "./desktop.mjs";
 
 const roots = [];
 async function temporary() {
@@ -47,11 +48,72 @@ test("CLI validates scope and keeps compare explicit", () => {
 
 test("CLI defaults to every built-in case and accepts the all selector", () => {
   const defaults = parseOptions([]);
-  assert.deepEqual(defaults.scenarios, ["app.restart", "chat.new-session"]);
+  assert.deepEqual(defaults.scenarios, ["app.first-launch", "app.restart", "chat.new-session"]);
   assert.equal(defaults.samples, 3);
   assert.equal(defaults.profile, "fixed-response");
+  assert.equal(defaults.firstLaunchTimeoutMs, 600000);
+  assert.throws(() => parseOptions(["--first-launch-timeout-ms", "0"]), /positive/);
   assert.deepEqual(parseOptions(["--scenario", "all"]).scenarios, defaults.scenarios);
   assert.deepEqual(parseOptions(["--scenario", "all,app.restart"]).scenarios, defaults.scenarios);
+});
+
+test("first-launch runner creates a fresh profile for every sample without a setup launch", async (t) => {
+  const root = await temporary();
+  const app = path.join(root, "MicroClaw.exe");
+  await writeFile(app, "synthetic-test-only");
+  await mkdir(path.join(root, "resources"));
+  await writeFile(path.join(root, "resources", "app.asar"), "microclaw.performance.fixture.v1");
+  const fixtures = [];
+  let closed = 0;
+  t.mock.method(DesktopDriver, "create", async (_options, fixture) => {
+    fixtures.push(fixture);
+    return {
+      launch() {
+        assert.fail("No unmeasured launch is allowed for first-launch samples");
+      },
+      async firstLaunch() {
+        assert.equal(
+          await readFile(path.join(fixture.root, "userData", "settings.json"), "utf8")
+            .then(JSON.parse)
+            .then((value) => value.autoStart),
+          false,
+        );
+        if (fixtures.length === 2) throw new Error("Timed out waiting for startup");
+        return { outcome: "success", metrics: { totalMs: 42 } };
+      },
+      async startupTiming() {
+        return {
+          coverage: "partial",
+          missing: ["service-ready"],
+          phases: [],
+          runtime: [],
+          summaries: [],
+          milestones: [],
+          mxc: [],
+        };
+      },
+      async close() {
+        closed++;
+      },
+    };
+  });
+  const { result } = await runPerformance({
+    ...parseOptions(["--scenario", "app.first-launch", "--samples", "3", "--app", app]),
+    root,
+    output: root,
+  });
+  assert.equal(fixtures.length, 2);
+  assert.notEqual(fixtures[0].root, fixtures[1].root);
+  assert.notEqual(fixtures[0].token, fixtures[1].token);
+  assert.equal(closed, 2);
+  assert.deepEqual(
+    result.samples.map((sample) => sample.outcome),
+    ["success", "timeout", "skipped"],
+  );
+  assert.equal(result.samples[1].metrics.totalMs, null);
+  assert.equal(result.samples[1].startupTiming.coverage, "partial");
+  assert.ok(result.samples[0].evidence.includes("app.first-launch-1.lifecycle.json"));
+  assert.ok(result.samples[1].evidence.includes("app.first-launch-2.lifecycle.json"));
 });
 
 test("the built-in suite discovers new registered cases without a separate allowlist", () => {
@@ -275,21 +337,30 @@ test("old packaged artifacts are rejected before launch", async () => {
   assert.equal((await inspectFile(app)).sha256.length, 64);
 });
 
-test("install adapter cannot claim a clean success without all readiness gates", () => {
+test("install adapter requires installation completion without claiming service readiness", () => {
   assert.throws(() => validateInstallFixture({ disposable: true }), /VM/);
   const request = { runId: "run", sampleId: "sample" };
   const result = {
     ...request,
-    schemaVersion: 1,
+    schemaVersion: 2,
     outcome: "success",
     restored: true,
     clean: true,
-    serviceReady: true,
+    installationComplete: true,
     finalValidation: true,
     elapsedMs: 100,
     metrics: { totalMs: 100 },
   };
   assert.equal(validateInstallResult(result, request), result);
+  assert.throws(() => validateInstallResult({ ...result, schemaVersion: 1 }, request), /identity/);
+  assert.throws(
+    () =>
+      validateInstallResult(
+        { ...result, installationComplete: false, serviceReady: true },
+        request,
+      ),
+    /completion/,
+  );
   assert.throws(() => validateInstallResult({ ...result, clean: false }, request), /clean/);
   assert.throws(() => validateInstallResult({ ...result, sampleId: "old" }, request), /identity/);
   assert.throws(
@@ -343,7 +414,7 @@ test("VM adapter integration uses per-attempt request identities and external ti
   await writeFile(
     adapter,
     JSON.stringify({
-      kind: "microclaw.performance.install-vm.v1",
+      kind: "microclaw.performance.install-vm.v2",
       disposable: true,
       restorePerSample: true,
       imageId: "fixture-image-v1",
@@ -366,5 +437,7 @@ test("VM adapter integration uses per-attempt request identities and external ti
   assert.equal(result.summary.coverage, "measured");
   assert.equal(result.samples[0].metrics.totalMs, 123);
   assert.equal(result.samples[1].metrics.totalMs, 123);
+  assert.equal(result.samples[0].installTiming.coverage, "complete");
+  assert.equal(result.samples[1].installTiming.events.at(-1).activeMs, 123);
   assert.notEqual(result.samples[0].sampleId, result.samples[1].sampleId);
 });

@@ -64,9 +64,23 @@ describe("asynchronous bundled runtime preparation", () => {
       events.some((event) => event.phase === "worker-startup" && event.status === "success"),
     ).toBe(false);
     worker.emit("message", { type: "runtime-preparation-ready" });
+    worker.emit("message", { type: "runtime-preparation-timing", message: "unrelated output" });
+    const workerEvent = {
+      scope: "worker",
+      phase: "archive-extract",
+      kind: "phase",
+      status: "success",
+      elapsedMs: 200,
+      durationMs: 90,
+    };
+    worker.emit("message", {
+      type: "runtime-preparation-timing",
+      message: RUNTIME_PREPARATION_TIMING_PREFIX + JSON.stringify(workerEvent),
+    });
     materializeRuntimeArchive("archive", runtimeRoot, "current", extract);
     worker.emit("exit", 0);
     await expect(preparation).resolves.toBe(runtimeRoot);
+    expect(events).toContainEqual(workerEvent);
     expect(events).toContainEqual(expect.objectContaining({ phase: "cache-check", cache: "miss" }));
     expect(events).toContainEqual(
       expect.objectContaining({ phase: "worker-startup", status: "success" }),

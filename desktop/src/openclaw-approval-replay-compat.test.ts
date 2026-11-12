@@ -1,5 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -60,7 +70,75 @@ const {
   patchPinnedOpenClawSystemRun,
   shouldInitializeApprovalPreload,
   validatePinnedOpenClawApprovalPackage,
+  createPinnedApprovalLoadHook,
 } = replayCompat;
+
+describe("pinned approval module load boundaries", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function fixture() {
+    const root = mkdtempSync(join(tmpdir(), "microclaw-approval-load-"));
+    roots.push(root);
+    const directory = join(root, "pinned");
+    mkdirSync(directory);
+    const modulePath = join(directory, "module.mjs");
+    writeFileSync(modulePath, "export const value = 'original';");
+    const target = {
+      module: "module.mjs",
+      modulePath,
+      targetPath: (process.platform === "win32" ? realpathSync.native : realpathSync)(modulePath),
+      original: readFileSync(modulePath),
+      patch: vi.fn((source: string) => source.replace("original", "patched")),
+    };
+    return { root, directory, target };
+  }
+
+  it("patches the validated source while passing unrelated modules and builtins through", () => {
+    const { root, target } = fixture();
+    const hook = createPinnedApprovalLoadHook([target]);
+    const loaded = { format: "module", source: "untrusted loaded bytes" };
+    const next = vi.fn(() => loaded);
+    const result = hook(pathToFileURL(target.modulePath).href, {}, next);
+    expect(result.source).toBe("export const value = 'patched';");
+    const unrelated = join(root, "other.mjs");
+    writeFileSync(unrelated, "export const other = true;");
+    expect(hook(pathToFileURL(unrelated).href, {}, next)).toBe(loaded);
+    expect(hook("node:fs", {}, next)).toBe(loaded);
+    expect(target.patch).toHaveBeenCalledOnce();
+  });
+
+  it("recognizes directory aliases without bypassing the pinned transform", () => {
+    const { root, directory, target } = fixture();
+    const alias = join(root, "alias");
+    symlinkSync(directory, alias, process.platform === "win32" ? "junction" : "dir");
+    const hook = createPinnedApprovalLoadHook([target]);
+    expect(
+      hook(pathToFileURL(join(alias, "module.mjs")).href, {}, () => ({ format: "module" })).source,
+    ).toBe("export const value = 'patched';");
+  });
+
+  it("rejects a validated lexical path redirected to a different file", () => {
+    const { root, directory, target } = fixture();
+    const alias = join(root, "alias");
+    symlinkSync(directory, alias, process.platform === "win32" ? "junction" : "dir");
+    const hook = createPinnedApprovalLoadHook([
+      { ...target, modulePath: join(alias, "module.mjs") },
+    ]);
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "module.mjs"), "throw new Error('redirected');");
+    if (process.platform === "win32") rmdirSync(alias);
+    else unlinkSync(alias);
+    symlinkSync(outside, alias, process.platform === "win32" ? "junction" : "dir");
+    expect(() =>
+      hook(pathToFileURL(join(alias, "module.mjs")).href, {}, () => ({ format: "module" })),
+    ).toThrow("changed after validation");
+    expect(target.patch).not.toHaveBeenCalled();
+  });
+});
 
 describe("pinned OpenClaw package validation", () => {
   const temporaryPackages: string[] = [];
@@ -95,13 +173,14 @@ describe("pinned OpenClaw package validation", () => {
     "toString",
   ])("rejects an unpinned OpenClaw version: %s", (version) => {
     expect(() => validatePinnedOpenClawApprovalPackage(createPackage(version))).toThrow(
-      /requires OpenClaw 2026\.10\.5/,
+      /requires OpenClaw 2026\.10\.10/,
     );
   });
 
   it.each([
     ["2026.10.3", "nodes-Cl-Air2F.mjs"],
     ["2026.10.5", "nodes-50M4rpyG.mjs"],
+    ["2026.10.10", "nodes-CXMBO_AM.mjs"],
   ])("rejects modified %s approval bundles", (version, module) => {
     const packageDir = createPackage(version);
     writeFileSync(join(packageDir, "dist", module), "// changed");
@@ -122,39 +201,56 @@ describe("pinned OpenClaw package validation", () => {
         readFileSync(join(publishedPackage!, "package.json"), "utf8"),
       ).version;
       expect(targets.map((target: { module: string }) => target.module)).toEqual(
-        version === "2026.10.5"
+        version === "2026.10.10"
           ? [
-              "nodes-50M4rpyG.mjs",
-              "node-invoke-plugin-policy-C3OHtaj0.mjs",
-              "node-registry-private-Cy7k5cze.mjs",
-              "system-run-approval-plan-B2O_CKga.mjs",
-              "exec-approval-DbnOAIQO.mjs",
-              "bash-tools-BpD5km6h.mjs",
-              "openclaw-tools-BzG0r_Mx.mjs",
-              "service-BlXGdNfC.mjs",
-              "cron-CtU5MS3t.mjs",
-              "server-start-D9FwRIP_.mjs",
-              "internal-hooks-u9Bo9D-Q.mjs",
+              "nodes-CXMBO_AM.mjs",
+              "node-invoke-plugin-policy-D_JIgmYG.mjs",
+              "node-registry-private-Cf6NE86i.mjs",
+              "system-run-approval-plan-BzxkNWfX.mjs",
+              "exec-approval-DuJx32oo.mjs",
+              "bash-tools-B7jTXO_k.mjs",
+              "openclaw-tools-Wz412ubE.mjs",
+              "service-pOwE_Xvo.mjs",
+              "cron-lew_v2Zj.mjs",
+              "gateway-prewarm.js",
+              "internal-hooks-DctcXTPi.mjs",
               "extensions/canvas/index.js",
-              "tool-DjtevMZn.mjs",
-              "node-eligibility-Cv0dWQeV.mjs",
+              "tool-D69ini3D.mjs",
+              "node-eligibility-C74eN94Z.mjs",
             ]
-          : [
-              "nodes-Cl-Air2F.mjs",
-              "node-invoke-plugin-policy-GeGCY71G.mjs",
-              "node-registry-private-CyaYRwVd.mjs",
-              "system-run-approval-plan-Cu-Ftdkp.mjs",
-              "exec-approval-BKqqOMdp.mjs",
-              "bash-tools-DQS9-f8q.mjs",
-              "openclaw-tools-BA3mvtXt.mjs",
-              "service-B3JlUlHg.mjs",
-              "cron-Bz6F4quM.mjs",
-              "server-start-CZZFIc7j.mjs",
-              "internal-hooks-C3ju7znI.mjs",
-              "extensions/canvas/index.js",
-              "tool-QdensQdF.mjs",
-              "node-eligibility-CYxKvUWR.mjs",
-            ],
+          : version === "2026.10.5"
+            ? [
+                "nodes-50M4rpyG.mjs",
+                "node-invoke-plugin-policy-C3OHtaj0.mjs",
+                "node-registry-private-Cy7k5cze.mjs",
+                "system-run-approval-plan-B2O_CKga.mjs",
+                "exec-approval-DbnOAIQO.mjs",
+                "bash-tools-BpD5km6h.mjs",
+                "openclaw-tools-BzG0r_Mx.mjs",
+                "service-BlXGdNfC.mjs",
+                "cron-CtU5MS3t.mjs",
+                "server-start-D9FwRIP_.mjs",
+                "internal-hooks-u9Bo9D-Q.mjs",
+                "extensions/canvas/index.js",
+                "tool-DjtevMZn.mjs",
+                "node-eligibility-Cv0dWQeV.mjs",
+              ]
+            : [
+                "nodes-Cl-Air2F.mjs",
+                "node-invoke-plugin-policy-GeGCY71G.mjs",
+                "node-registry-private-CyaYRwVd.mjs",
+                "system-run-approval-plan-Cu-Ftdkp.mjs",
+                "exec-approval-BKqqOMdp.mjs",
+                "bash-tools-DQS9-f8q.mjs",
+                "openclaw-tools-BA3mvtXt.mjs",
+                "service-B3JlUlHg.mjs",
+                "cron-Bz6F4quM.mjs",
+                "server-start-CZZFIc7j.mjs",
+                "internal-hooks-C3ju7znI.mjs",
+                "extensions/canvas/index.js",
+                "tool-QdensQdF.mjs",
+                "node-eligibility-CYxKvUWR.mjs",
+              ],
       );
       for (const target of targets) {
         const patched = target.patch(target.original.toString("utf8"));
@@ -190,6 +286,34 @@ describe("pinned OpenClaw package validation", () => {
           if (version === "2026.10.5") {
             expect(patched).toContain("params: invokeParams,\n\t\tturnSource");
           }
+          if (version === "2026.10.10") {
+            expect(patched).toContain("params: invokeParams,\n\t\t\tturnSource");
+            expect(patched).toContain(
+              'return { result: nodeInvokeError("INVALID_REQUEST", "worker launch exceeds the node payload limit") }',
+            );
+            expect(patched).toContain(
+              'nodeInvokeError("PAIRING_CHANGED", "node pairing changed before dispatch")',
+            );
+          }
+        }
+        if (version === "2026.10.10" && target.module.startsWith("bash-tools-")) {
+          expect(patched).toContain('reason: "permission-missing"');
+          expect(patched).toContain("source: assertSourceActive,");
+          expect(patched).toContain('host !== "node"');
+          expect(patched).toContain("microclawUnresolvedRunKey,");
+        }
+        if (version === "2026.10.10" && target.module.startsWith("service-")) {
+          const fence = patched.indexOf(
+            "const microclawCronWorkerResumeFenceRaw",
+            patched.indexOf("async function start(state)"),
+          );
+          expect(fence).toBeGreaterThan(patched.indexOf("return await recoverCronRuns(state)"));
+          expect(fence).toBeLessThan(
+            patched.indexOf("await startCronScheduler(state, skipJobIds)"),
+          );
+          expect(patched.indexOf("const microclawCronResumeAckPath")).toBeGreaterThan(
+            patched.indexOf("await startCronScheduler(state, skipJobIds)"),
+          );
         }
         if (version === "2026.10.5" && target.module.startsWith("exec-approval-")) {
           expect(patched).toContain("const rejectRequest = (message) =>");
@@ -1031,10 +1155,10 @@ describe("pinned OpenClaw node approval proof backport", () => {
 describe("Windows Node MXC approval proof minter", () => {
   const secret = Buffer.from(Array.from({ length: 32 }, (_, index) => index)).toString("base64");
   const plan = {
-    argv: ["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", "echo café"],
+    argv: ["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", "echo caf\u00e9"],
     cwd: "C:\\Users\\Test\\Work",
-    commandText: "echo café",
-    commandPreview: "[declare-access]rw:C:\\Users\\Test\\Work[/declare-access] echo café",
+    commandText: "echo caf\u00e9",
+    commandPreview: "[declare-access]rw:C:\\Users\\Test\\Work[/declare-access] echo caf\u00e9",
     agentId: "main",
     sessionKey: "agent:main:main",
     executablePath: "C:\\Windows\\System32\\cmd.exe",
@@ -1091,7 +1215,7 @@ describe("Windows Node MXC approval proof minter", () => {
         executableSha256: "c".repeat(64),
         cwdBinding: "C:\\Work",
         declaredAccess: [
-          { access: "ro", path: "C:\\ä" },
+          { access: "ro", path: "C:\\\u00e4" },
           { access: "rw", path: "C:\\z" },
         ],
       }),

@@ -51,16 +51,21 @@ Security settings use a single sandboxing On/Off switch. On selects Full when th
 positively attests an exact backend; otherwise it selects Limited only when the runtime positively
 attests `appcontainer-dacl`. Probe errors or no usable tier block activation, rather than choosing
 Limited or silently turning protection off. The main process makes this choice from a fresh probe,
-not the renderer's cached status. A localized "Learn more about MXC" link opens the
-[official Microsoft Execution Containers project](https://github.com/microsoft/mxc) in the system
+not the renderer's cached status. A help icon beside Sandboxing has the localized tooltip
+"Learn more about sandboxing" and opens the
+[official Microsoft Execution Containers documentation](https://learn.microsoft.com/windows/apps/develop/mxc/) in the system
 browser through the existing HTTP(S)-only external-link handler; settings do not include an expanded
 technical explanation or ask the user to select a tier.
 
-When MXC is confirmed Off, Security settings show the switch, official project link, and a concise
-unsandboxed-execution disclosure. Command consent remains available in either mode. Folder policies
-reappear when containment is selected; hiding them does not clear saved settings.
+When MXC is confirmed Off, Security settings show the switch, documentation icon, and a concise
+unsandboxed-execution disclosure. Command consent remains available as a dropdown in either mode.
+Folder controls follow the current applied mode, not the staged switch: they remain visible
+while an Off change is pending and stay hidden while an On change is pending. Hiding them does
+not clear saved settings or pending folder edits.
 Selecting Off alone does not hide an incomplete transition, remaining MXC activity, or unresolved
 lifecycle or folder-policy recovery state.
+The generic red "Off — Action required" heading is omitted; specific failure details and
+in-progress transitions remain visible.
 
 Status refreshes reuse the identity initialized by activation/pairing; reading a host snapshot
 does not launch the native identity helper or hash the Canvas runtime. Fresh runtime checks use
@@ -80,7 +85,13 @@ failures, paused Canvas, and missing or exceptional ambient access remain visibl
 operation failures still use the existing error notifications. This presentation change does not
 disable any containment, policy, approval, or readiness checks.
 
-Explicit sandbox On/Off switches apply directly, without a warning or confirmation popup.
+Sandboxing, folders, and command consent are staged until **Apply changes**, below the consent
+dropdown, is confirmed. **Cancel** restores the latest saved choices. Status messages continue to
+describe actual protection, not the staged switch value. Apply/Cancel also work while MXC is Off.
+The confirmation warns about a Gateway restart only when sandboxing changes. Combined changes apply
+folders first (live while On, saved while Off), then command consent, then the sandboxing change.
+An earlier failure stops subsequent changes; successfully applied settings remain saved, and pending
+edits remain available for retry. Folder-only and consent-only changes do not restart the Gateway.
 MicroClaw's **backend restarts while the window stays open**; Electron is not relaunched.
 On probes and records the automatically selected tier, including the Limited-mode selection
 when that is the supported backend, without accepting renderer-supplied tier or consent flags.
@@ -379,7 +390,7 @@ direct-chat identity, upstream message ID and cursor/order, exact content, and q
 metadata. This trust assumption applies to every WeChat command, not only MXC remote approval.
 MicroClaw does not require an independent WeChat server signature or immutable upstream lookup.
 Compromise of the authenticated WeChat session, the allowlisted plugin, or the Gateway therefore
-remains an explicit product risk; removing the toggle dialog does not change this trust assumption.
+remains an explicit product risk; the Settings confirmation does not change this trust assumption.
 
 Provider message IDs and cursors use canonical nonnegative decimal strings internally. Numeric
 JSON literals are preserved from their original source lexemes before floating-point rounding;
@@ -470,25 +481,29 @@ serialized dispatch queue, allowing an exact approval reply to be consumed while
 agent run is waiting. It persists the cursor only after the covered ordinary dispatches complete,
 so a crash replays rather than drops them.
 
-The reserved plain-text prompt is headed `MicroClaw Security Approval` and presents the exact
-prepared command before its available choices. An internal eight-character code from an unambiguous 32-symbol alphabet (40 bits)
+The reserved plain-text prompt is headed `MicroClaw Security Approval` and shows the prepared
+command, any folders to add or upgrade, available replies, and remaining seconds. An internal
+eight-character code from an unambiguous 32-symbol alphabet (40 bits)
 is still generated with `randomBytes`; coded replies remain supported, but no visible code is required
 by the default phone UX. Each challenge is valid for at most two minutes, one-use, and limited to
 three wrong attempts plus a global attempt window. Multi-request batches stay local-only.
 The actual permission deadline is the earlier of the original 60-second Desktop window and the
-Gateway expiry. The phone prompt and Desktop countdown use that same deadline. One generic
+Gateway expiry. The phone prompt's remaining seconds are calculated when it is created; delivery
+delay does not extend the deadline, and the static message does not count down. Desktop and the
+phone reply authorization use that same absolute deadline. One generic
 presentation covers the normalized `exec` plan rather than an allowlist of commands: ordinary
 inline text, unknown command families, flags, pipelines and the standard `cmd.exe /d /s /c`
 wrapper can be displayed. The exact executable path, reconstructed command and argv, canonical
 working directory or isolated scratch, all declared access, any new folder grants, containment
-tier, expiry and scope remain bound to the original approval. New folder grants are shown as
-persistent until removed in Settings; the command decision itself is once-only. Full technical
+tier, expiry and scope remain bound to the original approval. New folder grants remain in effect
+until removed in Settings; the command decision itself is once-only. Full technical
 identity, executable hash, agent, session, origin, generation, node and security proof remain
 bound internally and available on Desktop.
 
-Text is framed and escaped without silently truncating or rewriting the command. Lines are limited
-to 160 characters, the complete phone message to 6,000 characters, and the bound presentation
-frame to 64 KiB. A validated PowerShell folder initializer can be represented by its independently
+Plain, single-line values remain intact for the phone client to wrap; ambiguous text is framed and
+escaped without silently truncating or rewriting the command. Escaped chunks are limited to 160
+characters, the complete phone message to 6,000 characters, and the bound presentation frame to
+64 KiB. A validated PowerShell folder initializer can be represented by its independently
 verified original argv, while execution still uses the bound final argv; a preview alone is never
 authority. Invalid canonical plans, unrepresentable or oversized messages, unsafe Unicode,
 recognizable sensitive or encoded data and ambiguous redaction remain Desktop-only. These checks
@@ -585,11 +600,11 @@ First resolution wins across local and remote UI. Local resolution, timeout, rel
 restart, policy or lease-authority drift, MXC Off, logout/rebind, feature disable/revoke, shutdown,
 prompt-send failure, and excessive code attempts invalidate the challenge. Timeout calls the actual Gateway
 deny resolver. The authoritative terminal event closes only its matching Desktop request and
-invalidates the phone challenge. A timeout receipt says expired/no timely valid decision, not that
-the operator rejected or a user decision was accepted. Accepted operator decisions are distinguished
-from an externally observed Gateway block, and none proves command execution success. Unknown resolution outcomes
-are reported as unconfirmed, never retried or falsely reported as denied. Overlapping requests
-retain their original deadlines and receive remote authority one at a time.
+invalidates the phone challenge. The concise phone receipt distinguishes approval, denial, expiry,
+failure and cancellation; it describes the permission outcome, not command execution success.
+The origin of an accepted denial remains in the audit rather than the phone message. Unknown
+resolution outcomes are reported as unconfirmed, never retried or falsely reported as denied.
+Overlapping requests retain their original deadlines and receive remote authority one at a time.
 
 **Pinned SDK limitation:** OpenClaw 2026.10.2 maps every explicit wire `deny` to `user-denied`,
 including the fail-closed deny sent by MicroClaw's timer. Its agent-facing tool result may therefore
@@ -694,11 +709,12 @@ revalidated immediately before launch. Delete-denying directory handles retain e
 a junction during launch.
 
 Settings > Security presents the sandbox switch and separate Read-only and Read/write lists. In Full,
-these lists define the hard capability ceiling. In Limited, they are labeled as additional grants
-and do not claim to override ambient ACLs. Folder selection uses Electron's trusted native directory
+these lists define the hard capability ceiling. In Limited, they are additional grants
+and do not override ambient ACLs. Folder selection uses Electron's trusted native directory
 picker. Equal paths are deduplicated, redundant nested grants are collapsed, and a narrower RW root
-under a broader RO root remains explicit. While MXC is enabled, edits remain a renderer draft and
-cannot mutate live ACLs or settings until **Apply folder changes**. Apply validates the complete
+under a broader RO root remains explicit. Edits remain a renderer draft and
+cannot mutate live ACLs or settings until **Apply changes** is confirmed. While MXC is enabled,
+applying folders validates the complete
 draft asynchronously, locks new ingress, rejects stale approvals, revokes the old activation lease,
 persists the folder lists, and publishes an Electron-signed, monotonically versioned policy.
 The native node verifies the signature, Gateway generation, policy digest, and unchanged non-folder
@@ -795,8 +811,11 @@ reproduce it. These other commands are not wrapped through CMD solely as a preca
 direct PowerShell directory creation retains its existing initialization.
 
 When Windows Node requires a decision, the normal route has one visible Gateway/MicroClaw prompt.
-It displays executable, exact argv, agent/session scope, canonical CWD, declared folder use, and
-the requested containment strength. Both Full and Limited offer **Allow always** only when Windows
+The Desktop popup is titled **Your agent wants to run the following command** and shows the
+unchanged command section, any **Folders to add or upgrade** with RO/RW access, the auto-deny
+countdown and progress bar, and decision buttons. Other metadata and explanatory text are hidden;
+the approval envelope, exact-command binding, expiry, remote delivery, and decision eligibility
+are unchanged. Both Full and Limited offer **Remember for this agent** only when Windows
 Node marks the command eligible. The Gateway resolves every allowed request as one-use, and the
 separate Windows Node allowlist stores an eligible Desktop remember decision. Commands already
 permitted by Windows Node policy do not produce a visible consent prompt, although the Gateway's
@@ -825,9 +844,9 @@ The helper removes
 the metadata line from the executable shell payload, binds approval to the cleaned argv, and carries
 a canonical declaration only in the approved plan's display preview. Every configured approved root
 is passed into every MXC invocation as a global RO/RW grant; declaration metadata validates and
-communicates intended use but never grants or changes access by itself. MicroClaw renders it as separate
-localized declared folder use and clean command text, and explains that approval authorizes the
-command itself inside MXC. An eligible Windows Node allowlist match suppresses the visible command
+communicates intended use but never grants or changes access by itself. The Desktop popup renders
+the clean command text and displays folder paths only when permissions must be added or upgraded.
+An eligible Windows Node allowlist match suppresses the visible command
 prompt but still requires a fresh proof and launch-time revalidation; it never changes folder grants.
 An unlisted CWD/declaration, or an RW declaration covered only by RO policy, instead receives one
 combined prompt: **Deny** or **Allow**, with the exact folders and RO/RW changes displayed.
@@ -836,14 +855,15 @@ durable command approval or show a second permission prompt. Protected roots, re
 other invalid paths remain non-overridable. The signed update binds the approval ID, original
 prepared-plan digest and expiry, allowing only that approved plan to cross the policy revision.
 Other old prepared plans cannot inherit the expanded grants. Eligible authenticated WeChat prompts
-use **1: Allow / 3: Deny**, explicitly explaining that the displayed RO/RW grants persist until
-removed in Settings while the command is approved once. Option 2 is never available for folder
+show the requested RO/RW folders and use **1: Allow / 3: Deny**; the folder permissions persist
+until removed in Settings while the command is approved once. Option 2 is never available for folder
 grants. The challenge binds the full folder list, access modes, original plan digest and policy
 fingerprint; unsafe or incomplete presentations still require Desktop approval.
 Before revoking ingress for a phone-approved folder update, MicroClaw waits for provider-confirmed
 delivery of an "Allow received; applying folder permissions" notice. Unconfirmed delivery leaves
-the policy unchanged. This notice is not execution success; a separate final receipt reports the
-result and whether folder grants were saved. Only the already-consumed exact approval and its
+the policy unchanged. This notice is not execution success; a separate concise final receipt reports
+the permission outcome. A failed or expired result also warns if folder grants were already saved.
+Only the already-consumed exact approval and its
 current source context survive their own live policy update. All other challenges are invalidated;
 owner, generation and path checks still run before persistence and release.
 The desktop hides its prompt after the main process accepts the decision for processing and shows
@@ -1027,12 +1047,11 @@ Configuration and restart operations that could invalidate an active transaction
 this mode is enabled. Unreviewed external channels, hooks, cron, and plugins remain disabled. The
 loading screen shows the requested mode, attested
 effective strength/tier, failed MXC phase, and recovery detail;
-the user may retry the same serialized transaction or turn MXC off. Toggling either direction
-returns to loading immediately, rejects chat during the transition, and releases ingress only after
+the user may retry the same serialized transaction or turn MXC off. Applying a sandboxing change
+returns to loading when the backend starts the transition, rejects chat during it, and releases ingress only after
 the selected route is ready. Security settings keep the protection state, actionable failures,
-folder policy, and command consent controls visible. Read-only node identity, policy lifecycle,
-generation, lease, containment tier, contracts, fingerprints, and readiness evidence are grouped
-under a **Technical details** disclosure that starts collapsed whenever Settings is opened. The page
+command consent, and (when sandboxing is currently enabled) folder controls visible. Internal identity,
+generation, lease, contracts, fingerprints, and readiness diagnostics are omitted from this page. The page
 does not expose separate refresh, smoke, or activation buttons.
 
 The Gateway can block its event loop for more than a minute during startup. Pairing therefore

@@ -125,7 +125,7 @@ export async function materializeRuntimeArchiveAsync(
   archivePath: string,
   runtimeRoot: string,
   version: string,
-  startWorker: (request: RuntimeArchiveRequest) => Pick<Worker, "once"> = (workerData) =>
+  startWorker: (request: RuntimeArchiveRequest) => Pick<Worker, "once" | "on"> = (workerData) =>
     new Worker(path.join(__dirname, "runtime-archive-worker.js"), { workerData }),
   timing?: RuntimePreparationTiming,
 ): Promise<string> {
@@ -139,7 +139,7 @@ export async function materializeRuntimeArchiveAsync(
   const finishWorker = timing?.start("worker-total", "summary");
   const finishStartup = timing?.start("worker-startup");
   return new Promise((resolve, reject) => {
-    let worker: Pick<Worker, "once">;
+    let worker: Pick<Worker, "once" | "on">;
     try {
       worker = startWorker({
         archivePath,
@@ -153,8 +153,9 @@ export async function materializeRuntimeArchiveAsync(
       reject(error);
       return;
     }
-    worker.once("message", (message) => {
+    worker.on("message", (message) => {
       if (message?.type === "runtime-preparation-ready") finishStartup?.("success");
+      if (message?.type === "runtime-preparation-timing") timing?.forward(message.message);
     });
     worker.once("error", (error) => {
       finishStartup?.("failed");

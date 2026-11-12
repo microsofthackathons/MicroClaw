@@ -374,6 +374,12 @@ contextBridge.exposeInMainWorld("openclaw", {
   },
 
   attachment: {
+    readImage: (mediaPath: string) =>
+      ipcRenderer.invoke("attachment:read-image", mediaPath) as Promise<{
+        ok: boolean;
+        dataUrl?: string;
+        error?: string;
+      }>,
     open: (attachment: OpenAttachmentRequest) =>
       ipcRenderer.invoke("attachment:open", attachment) as Promise<{
         ok: boolean;

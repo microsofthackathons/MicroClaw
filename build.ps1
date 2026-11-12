@@ -1,7 +1,7 @@
 ﻿# One-click build: desktop app + native MXC resources -> portable zip -> installer exe
 param(
-    [ValidateSet('2026.9.3', '2026.10.3', '2026.10.5')]
-    [string]$OpenClawVersion = '2026.10.5',
+    [ValidateSet('2026.10.10')]
+    [string]$OpenClawVersion = '2026.10.10',
     [ValidateSet('zlib', 'lzma')]
     [string]$SetupCompression = 'zlib',
     [ValidateSet('Optimal', 'Fastest', 'NoCompression')]
@@ -220,6 +220,10 @@ if (-not $nativeCache.hit) {
     Save-BuildCache -Cache $nativeCache
 }
 
+Start-BuildStage 'Preflight: verify core resource target'
+& node "$root\desktop\scripts\openclaw-resource.mjs" $OpenClawVersion
+if ($LASTEXITCODE -ne 0) { throw 'Packaged OpenClaw resources do not match the installer target' }
+
 Start-BuildStage 'Preflight: desktop toolchain context'
 $desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString())
 $signingConfigured = [bool]($env:CSC_LINK -or $env:WIN_CSC_LINK -or $env:CSC_NAME -or
@@ -277,6 +281,8 @@ if (Test-Path $desktopAsar) {
         Write-Host "  Verified: app.asar is newer than source files" -ForegroundColor Green
     }
 }
+& node "$root\desktop\scripts\openclaw-resource.mjs" $OpenClawVersion "$root\desktop\release\win-unpacked\resources"
+if ($LASTEXITCODE -ne 0) { throw 'Packed desktop OpenClaw resources do not match the installer target' }
 Start-BuildStage 'Step 3/7: save desktop cache'
 if (-not $desktopCache.hit) { Save-BuildCache -Cache $desktopCache }
 
