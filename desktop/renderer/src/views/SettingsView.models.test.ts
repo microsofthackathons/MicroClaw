@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { useChatStore } from "@/stores/chat";
-import { setLocale } from "@/i18n";
+import { setLocale, t } from "@/i18n";
 import LocalModelSetupDialog from "@/components/LocalModelSetupDialog.vue";
 import SettingsView from "./SettingsView.vue";
 import type { LocalModelOperation } from "../../../src/local-model-types";
@@ -124,6 +124,7 @@ describe("SettingsView model integration", () => {
           ModelProviderGroups: false,
           CascadingModelMenu: false,
           ModelMenuChoices: false,
+          SettingsSectionHeader: false,
           "el-popover": PopoverStub,
         },
       },
@@ -334,10 +335,12 @@ describe("SettingsView model integration", () => {
   it("uses section headings and removes unused compatible API entry points from the overview", async () => {
     config = {};
     const { wrapper } = await open();
-    expect(wrapper.findAll("h2.model-section-title").map((heading) => heading.text())).toEqual([
-      "Model providers",
-      "Web search",
-    ]);
+    expect(wrapper.get("h3.settings-section-title").text()).toBe("Model providers");
+    expect(wrapper.get(".settings-section-description").text()).toBe(
+      t("modelManager.providersHint"),
+    );
+    expect(wrapper.get("h3.sub-label").text()).toBe("Web search");
+    expect(wrapper.find(".settings-section-actions").exists()).toBe(false);
     expect(wrapper.find('[data-testid="configure-cloud-model"]').exists()).toBe(false);
     expect(wrapper.find('[data-provider="custom"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Add compatible API");

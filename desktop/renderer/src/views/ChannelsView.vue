@@ -1,8 +1,6 @@
 <template>
   <div class="channels-view" :class="{ embedded }">
-    <div class="view-header">
-      <h2 :class="{ 'settings-group-title': embedded }">{{ t("channels.title") }}</h2>
-    </div>
+    <SettingsSectionHeader :title="t('channels.title')" />
     <WeixinConnectionCard show-messages />
     <div v-if="otherChannels.length" class="channel-grid">
       <div v-for="channel in otherChannels" :key="channel.id" class="channel-card">
@@ -24,6 +22,7 @@ import { computed, onMounted } from "vue";
 import { t } from "@/i18n";
 import { useChannelStore } from "@/stores/channels";
 import WeixinConnectionCard from "@/components/WeixinConnectionCard.vue";
+import SettingsSectionHeader from "@/components/SettingsSectionHeader.vue";
 
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
 const channelStore = useChannelStore();
@@ -49,10 +48,7 @@ onMounted(() => {
   padding: 0;
   max-width: none;
 }
-.view-header {
-  margin-bottom: 24px;
-}
-.channels-view.embedded .view-header {
+.channels-view.embedded .settings-section-header {
   margin-bottom: 8px;
 }
 .channels-view.embedded :deep(.weixin-header) {
@@ -64,19 +60,6 @@ onMounted(() => {
   height: 24px;
 }
 
-.view-header h2 {
-  font-size: 20px;
-  font-weight: 600;
-}
-.view-header h2.settings-group-title {
-  margin: 0;
-  padding-left: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
 .channel-grid {
   display: grid;
   gap: 12px;

@@ -8,7 +8,7 @@ import {
 } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ElInput, ElMessage, ElMessageBox, ElSelect, ElSwitch } from "element-plus";
-import { setLocale } from "@/i18n";
+import { setLocale, t } from "@/i18n";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import SettingsView from "./SettingsView.vue";
@@ -317,6 +317,12 @@ describe("SettingsView", () => {
 
       const menuItems = wrapper.findAll(".settings-menu-item");
       await menuItems.find((item) => item.text() === general)!.trigger("click");
+      expect(wrapper.get("h3.section-label").text()).toBe(t("settings.application"));
+      expect(wrapper.findAll("h3.sub-label").map((heading) => heading.text())).toEqual([
+        t("settings.theme"),
+        t("settings.gateway"),
+        t("settings.logs"),
+      ]);
       expect(wrapper.get(".sub-label-row .status-indicator").text()).toBe(connected);
       expect(wrapper.find(".sub-label-row .status-indicator--ok").exists()).toBe(true);
       expect(wrapper.find(".settings-content").text()).toContain(restartLabel);
@@ -2425,7 +2431,12 @@ describe("SettingsView", () => {
       };
       const getStats = vi.fn().mockResolvedValue(stats);
       window.openclaw.usage = { ...createBrowserOpenClawMock().usage, getStats };
-      const wrapper = shallowMount(SettingsView, { global: { plugins: [createPinia()] } });
+      const wrapper = shallowMount(SettingsView, {
+        global: {
+          plugins: [createPinia()],
+          stubs: { SettingsSectionHeader: false },
+        },
+      });
       await flushPromises();
       setLocale(locale);
       await wrapper.vm.$nextTick();
@@ -2435,7 +2446,10 @@ describe("SettingsView", () => {
         .trigger("click");
       await flushPromises();
 
-      const refresh = wrapper.get<HTMLButtonElement>(".usage-refresh-btn");
+      const header = wrapper.get(".settings-section-header");
+      expect(header.get("h3").text()).toBe(usageLabel);
+      expect(header.find(".settings-section-description").exists()).toBe(false);
+      const refresh = header.get<HTMLButtonElement>(".settings-section-actions .usage-refresh-btn");
       expect(refresh.attributes("type")).toBe("button");
       expect(refresh.attributes("aria-label")).toBe(refreshLabel);
       expect(refresh.attributes("title")).toBe(refreshLabel);
@@ -2456,6 +2470,8 @@ describe("SettingsView", () => {
       await flushPromises();
       expect(wrapper.find(".settings-content").text()).toContain("Preview usage unavailable");
       expect(wrapper.find(".usage-refresh-btn").exists()).toBe(false);
+      expect(wrapper.get(".settings-section-header h3").text()).toBe(usageLabel);
+      expect(wrapper.find(".settings-section-actions").exists()).toBe(false);
       await wrapper
         .findAll("el-button")
         .find((button) => button.text() === retryLabel)!

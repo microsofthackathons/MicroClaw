@@ -23,7 +23,7 @@
     >
       <!-- General -->
       <div v-if="activeSection === 'general'" class="section">
-        <div class="section-label">{{ t("settings.application") }}</div>
+        <h3 class="section-label">{{ t("settings.application") }}</h3>
         <div class="card-group">
           <div v-show="false" class="card-row">
             <label class="row-label" for="settings-language-select">
@@ -49,7 +49,7 @@
           </div>
         </div>
 
-        <div class="sub-label">{{ t("settings.theme") }}</div>
+        <h3 class="sub-label">{{ t("settings.theme") }}</h3>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.themeMode") }}</span>
@@ -62,7 +62,7 @@
         </div>
 
         <div class="sub-label-row">
-          <span class="sub-label" style="margin-bottom: 0">{{ t("settings.gateway") }}</span>
+          <h3 class="sub-label" style="margin-bottom: 0">{{ t("settings.gateway") }}</h3>
           <span
             class="status-indicator"
             :class="
@@ -84,7 +84,7 @@
           </div>
         </div>
 
-        <div class="sub-label">{{ t("settings.logs") }}</div>
+        <h3 class="sub-label">{{ t("settings.logs") }}</h3>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.gatewayLog") }}</span>
@@ -101,34 +101,34 @@
 
       <!-- Usage -->
       <div v-if="activeSection === 'usage'" class="section">
-        <div class="section-label-row">
-          <span class="section-label">{{ t("settings.usage") }}</span>
-          <button
-            v-if="usageData"
-            class="usage-refresh-btn"
-            type="button"
-            :aria-label="t('settings.refresh')"
-            :title="t('settings.refresh')"
-            :disabled="usageLoading"
-            @click="loadUsage"
-          >
-            <svg
-              viewBox="0 0 20 20"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :class="{ 'is-spinning': usageLoading }"
-              aria-hidden="true"
+        <SettingsSectionHeader :title="t('settings.usage')">
+          <template v-if="usageData" #actions>
+            <button
+              class="usage-refresh-btn"
+              type="button"
+              :aria-label="t('settings.refresh')"
+              :title="t('settings.refresh')"
+              :disabled="usageLoading"
+              @click="loadUsage"
             >
-              <path d="M16 7a6 6 0 0 0-10.2-2.8L4 6" />
-              <path d="M4 3v3h3" />
-              <path d="M4 13a6 6 0 0 0 10.2 2.8L16 14" />
-              <path d="M16 17v-3h-3" />
-            </svg>
-          </button>
-        </div>
+              <svg
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :class="{ 'is-spinning': usageLoading }"
+                aria-hidden="true"
+              >
+                <path d="M16 7a6 6 0 0 0-10.2-2.8L4 6" />
+                <path d="M4 3v3h3" />
+                <path d="M4 13a6 6 0 0 0 10.2 2.8L16 14" />
+                <path d="M16 17v-3h-3" />
+              </svg>
+            </button>
+          </template>
+        </SettingsSectionHeader>
 
         <!-- Loading / Error states -->
         <div v-if="usageLoading" class="card-group">
@@ -179,7 +179,7 @@
 
           <!-- Token usage (from detailed logs) -->
           <template v-if="usageData.hasDetailedLogs">
-            <div class="sub-label">{{ t("settings.tokenUsage30d") }}</div>
+            <h3 class="sub-label">{{ t("settings.tokenUsage30d") }}</h3>
             <div class="card-group">
               <div class="card-row">
                 <span class="row-label">{{ t("settings.sessionCount") }}</span>
@@ -216,7 +216,7 @@
 
           <!-- Per-model breakdown -->
           <template v-if="usageModelList.length">
-            <div class="sub-label">{{ t("settings.modelBreakdown") }}</div>
+            <h3 class="sub-label">{{ t("settings.modelBreakdown") }}</h3>
             <div class="card-group">
               <div
                 v-for="(m, idx) in usageModelList"
@@ -244,11 +244,11 @@
       </div>
 
       <!-- Models -->
-      <div v-if="activeSection === 'models'" class="section model-settings-section">
-        <div class="sub-label-row">
-          <h2 class="model-section-title">{{ t("modelManager.providers") }}</h2>
-        </div>
-        <p class="provider-description">{{ t("modelManager.providersHint") }}</p>
+      <div v-if="activeSection === 'models'" class="section">
+        <SettingsSectionHeader
+          :title="t('modelManager.providers')"
+          :description="t('modelManager.providersHint')"
+        />
         <p v-if="modelStatusError || providerCatalogError" class="provider-error" role="alert">
           {{ [modelStatusError, providerCatalogError].filter(Boolean).join("; ") }}
         </p>
@@ -448,7 +448,7 @@
 
         <!-- Web search -->
         <div class="sub-label-row">
-          <h2 class="model-section-title">{{ t("settings.webSearch") }}</h2>
+          <h3 class="sub-label">{{ t("settings.webSearch") }}</h3>
           <div class="sub-label-actions">
             <span v-if="!searchConfigured" class="search-configuration-state">
               {{ t("settings.searchNotConfigured") }}
@@ -531,7 +531,7 @@
 
       <!-- Security / Sandbox -->
       <div v-if="activeSection === 'security'" class="section">
-        <div class="section-label">{{ t("settings.security") }}</div>
+        <SettingsSectionHeader :title="t('settings.security')" />
         <div class="card-group mxc-card">
           <div
             v-if="windowsNodeMxcStatusLoading || windowsNodeMxcFolderApplying"
@@ -812,7 +812,7 @@
       <!-- Data & Privacy -->
       <div v-if="activeSection === 'privacy'" class="section">
         <!-- Privacy Protection Level -->
-        <div class="section-label">{{ t("settings.privacyProtection") }}</div>
+        <h3 class="section-label">{{ t("settings.privacyProtection") }}</h3>
         <div class="privacy-levels">
           <div
             class="privacy-card"
@@ -846,7 +846,7 @@
         <div class="section-footer">{{ t("settings.privacyProtectionDesc") }}</div>
 
         <!-- PII Detection -->
-        <div class="sub-label">{{ t("settings.piiDetection") }}</div>
+        <h3 class="sub-label">{{ t("settings.piiDetection") }}</h3>
         <div class="card-group">
           <div class="card-row">
             <span class="row-label">{{ t("settings.piiPhone") }}</span>
@@ -892,7 +892,7 @@
         <div class="section-footer">{{ t("settings.piiDetectionDesc") }}</div>
 
         <!-- Sensitive File Guard -->
-        <div class="sub-label">{{ t("settings.sensitiveFiles") }}</div>
+        <h3 class="sub-label">{{ t("settings.sensitiveFiles") }}</h3>
         <div class="card-group">
           <div class="card-row no-border">
             <div class="sensitive-file-info">
@@ -903,7 +903,7 @@
         <div class="section-footer">{{ t("settings.sensitiveFilesDesc") }}</div>
 
         <!-- Chat History (existing) -->
-        <div class="sub-label">{{ t("settings.chatHistory") }}</div>
+        <h3 class="sub-label">{{ t("settings.chatHistory") }}</h3>
         <div class="card-group">
           <div class="card-row no-border">
             <span class="row-label">{{ t("settings.savedChatHistory") }}</span>
@@ -916,7 +916,7 @@
 
       <!-- About -->
       <div v-if="activeSection === 'about'" class="section about-section">
-        <div class="section-label">{{ t("settings.about") }}</div>
+        <SettingsSectionHeader :title="t('settings.about')" />
         <div class="about-main">
           <div class="about-card">
             <div class="about-card-content">
@@ -960,7 +960,7 @@
             </el-button>
           </div>
         </div>
-        <div class="sub-label">{{ t("settings.legal") }}</div>
+        <h3 class="sub-label">{{ t("settings.legal") }}</h3>
         <div class="card-group legal-links">
           <a class="card-row legal-link" :href="eulaUrl" @click.prevent="openExternal(eulaUrl)">
             {{ t("settings.eula") }}
@@ -985,6 +985,7 @@ import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
+import SettingsSectionHeader from "@/components/SettingsSectionHeader.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -2555,21 +2556,6 @@ async function clearChatHistory() {
 </script>
 
 <style scoped>
-.model-settings-section {
-  max-width: 1040px;
-}
-.model-section-title {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.provider-description {
-  color: var(--text-secondary);
-  font-size: 14px;
-  margin: 0 0 16px;
-}
 .provider-error {
   color: var(--el-color-danger);
   font-size: 13px;
@@ -2789,9 +2775,16 @@ async function clearChatHistory() {
 /* ── Right content ── */
 .settings-content {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 28px clamp(16px, 3vw, 32px);
   container-type: inline-size;
+}
+
+.settings-content > .section,
+.settings-content > .channels-view {
+  width: 100%;
+  max-width: 1040px;
 }
 
 .settings-content--skills {
@@ -2802,27 +2795,14 @@ async function clearChatHistory() {
 
 .section-label,
 .sub-label {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  line-height: 1.5;
+  color: var(--text-primary);
 }
 
 .section-label {
-  margin-bottom: 8px;
-  padding-left: 4px;
-}
-
-.section-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.section-label-row .section-label {
-  margin-bottom: 0;
+  margin: 0 0 10px;
 }
 
 /* Grouped card */
@@ -3068,9 +3048,7 @@ async function clearChatHistory() {
 }
 
 .sub-label {
-  margin-bottom: 10px;
-  margin-top: 32px;
-  padding-left: 4px;
+  margin: 32px 0 10px;
 }
 
 .sub-label-row {
@@ -3079,10 +3057,6 @@ async function clearChatHistory() {
   justify-content: space-between;
   margin-top: 32px;
   margin-bottom: 10px;
-}
-
-.section > .sub-label-row:first-child {
-  margin-top: 0;
 }
 
 .sub-label-row .sub-label {
