@@ -291,11 +291,10 @@ foreach ($target in $cleanupRoots) {
 if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
     try {
         $preferences = Get-MpPreference
-        $productExclusionRoots = @($cleanupRoots) + @((Join-Path $roamingRoot 'microclaw\runtime'))
         foreach ($excluded in @($preferences.ExclusionPath)) {
             if (-not $excluded) { continue }
             $absolute = ConvertTo-CleanupPath $excluded
-            if ($absolute -in $productExclusionRoots -and $PSCmdlet.ShouldProcess($excluded, 'Remove product-specific Defender exclusion')) {
+            if ($absolute -in $cleanupRoots -and $PSCmdlet.ShouldProcess($excluded, 'Remove product-specific Defender exclusion')) {
                 Remove-MpPreference -ExclusionPath $excluded
             }
         }

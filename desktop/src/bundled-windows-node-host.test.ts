@@ -20,6 +20,7 @@ import {
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
   inspectBundledNodeList,
+  waitForBundledNodeReconnect,
   replaceFileWithRetry,
   revokeActivationLeaseFile,
   sanitizeBundledHostDiagnostic,
@@ -825,26 +826,23 @@ describe("bundled Windows node host", () => {
     ).toBe("owned");
   });
 
-  it("waits for the old connection to close and reconnects after node reapproval", async () => {
+  it("keeps the node process while its client reconnects after node reapproval", async () => {
     const nodeId = "d".repeat(64);
     const commands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
     const startOptions = { requestedStrength: "off" };
     const initialProcess = { exitCode: null, signalCode: null };
-    const restartedProcess = { exitCode: null, signalCode: null };
     const host = new BundledWindowsNodeHost();
     Object.assign(host, { process: initialProcess, startOptions });
     vi.spyOn(host, "ensureIdentityNodeId").mockReturnValue(nodeId);
     const order: string[] = [];
     const stop = vi.spyOn(host, "stop");
-    const start = vi.spyOn(host, "start").mockImplementation(async (options) => {
-      order.push("start");
-      Object.assign(host, { process: restartedProcess, startOptions: options });
-    });
+    const start = vi.spyOn(host, "start").mockResolvedValue();
     let approved = false;
     let nodeListCalls = 0;
     const node = {
       nodeId,
       connected: true,
+      connectedAtMs: 1000,
       commands,
       displayName: "MicroClaw Bundled Windows Node",
     };
@@ -864,15 +862,19 @@ describe("bundled Windows node host", () => {
           case "node.list":
             nodeListCalls += 1;
             if (nodeListCalls === 1) {
-              order.push("previous connected");
+              order.push("before approval");
               return { nodes: [node] };
             }
             if (nodeListCalls === 2) {
+              order.push("previous connected");
+              return { nodes: [node] };
+            }
+            if (nodeListCalls === 3) {
               order.push("previous closed");
               return { nodes: [] };
             }
-            order.push("new connected");
-            return { nodes: [node] };
+            if (nodeListCalls === 4) order.push("new connected");
+            return { nodes: [{ ...node, connectedAtMs: 2000 }] };
           default:
             throw new Error(`Unexpected request: ${method}`);
         }
@@ -881,18 +883,19 @@ describe("bundled Windows node host", () => {
 
     await host.ensurePaired(gateway);
 
-    expect(stop).toHaveBeenCalledOnce();
-    expect(start).toHaveBeenCalledOnce();
+    expect(stop).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(Reflect.get(host, "process")).toBe(initialProcess);
     expect(order).toEqual([
+      "before approval",
       "approve",
       "previous connected",
       "previous closed",
-      "start",
       "new connected",
     ]);
   });
 
-  it("does not restart a stopped node while waiting for pairing reconnection", async () => {
+  it("does not approve or restart a stopped node after a pairing snapshot returns", async () => {
     const nodeId = "d".repeat(64);
     const commands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
     const host = new BundledWindowsNodeHost();
@@ -929,8 +932,87 @@ describe("bundled Windows node host", () => {
     host.stop(true);
     release({ nodes: [] });
 
-    await expect(pairing).rejects.toThrow("changed while waiting for pairing reconnection");
+    await expect(pairing).rejects.toThrow("process was replaced during pairing");
     expect(start).not.toHaveBeenCalled();
+    expect(gateway.request).not.toHaveBeenCalledWith("node.pair.approve", expect.anything());
+  });
+
+  it("recognizes a newer connection when polling did not observe the brief disconnect", async () => {
+    const nodeId = "d".repeat(64);
+    const gateway = {
+      request: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            nodeId,
+            connected: true,
+            connectedAtMs: 2000,
+            commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+          },
+        ],
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+    await expect(
+      waitForBundledNodeReconnect({
+        gateway,
+        nodeId,
+        previousConnection: { connected: true, connectedAtMs: 1000 },
+        assertCurrent: () => undefined,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("does not treat the old connection as proof of pairing reconnection", async () => {
+    const nodeId = "d".repeat(64);
+    let elapsed = 0;
+    const gateway = {
+      request: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            nodeId,
+            connected: true,
+            connectedAtMs: 1000,
+            commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+          },
+        ],
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+    await expect(
+      waitForBundledNodeReconnect({
+        gateway,
+        nodeId,
+        previousConnection: { connected: true, connectedAtMs: 1000 },
+        assertCurrent: () => undefined,
+        now: () => elapsed,
+        wait: async (milliseconds) => {
+          elapsed += milliseconds;
+        },
+      }),
+    ).resolves.toBe(false);
+    expect(elapsed).toBe(5000);
+  });
+
+  it("still rejects unexpected commands on a reconnected node", async () => {
+    const nodeId = "d".repeat(64);
+    const gateway = {
+      request: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            nodeId,
+            connected: true,
+            connectedAtMs: 2000,
+            commands: ["device.info"],
+          },
+        ],
+      }),
+    } as unknown as BundledWindowsNodeGateway;
+    await expect(
+      waitForBundledNodeReconnect({
+        gateway,
+        nodeId,
+        previousConnection: { connected: true, connectedAtMs: 1000 },
+        assertCurrent: () => undefined,
+      }),
+    ).rejects.toThrow("unexpected command surface");
   });
 
   it("selects only the exact bundled identity and ignores foreign same-name records", () => {

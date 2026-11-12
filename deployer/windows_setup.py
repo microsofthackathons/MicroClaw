@@ -4,7 +4,6 @@ Downloads Node.js from npmmirror (Chinese mirror), installs it,
 configures npm to use the taobao registry, and installs openclaw.
 """
 
-import base64
 import hashlib
 import json
 import ntpath
@@ -6471,7 +6470,6 @@ class WindowsSetup:
         dirs = [
             self.node_dir,  # ~/.openclaw-node (node + node_modules)
             appdata / "npm" / "node_modules" / "openclaw",
-            appdata / "microclaw" / "runtime",  # bundled runtime and sibling staging directories
             Path.home() / ".openclaw",  # config, skills, plugins, compile-cache
             Path.home() / ".openclaw-git",  # PortableGit
             Path.home() / ".microclaw",  # Electron desktop client
@@ -6482,7 +6480,7 @@ class WindowsSetup:
         marker = DEFAULT_DESKTOP_DIR / "install-state" / "defender-exclusions.json"
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
-            if payload == {"schema": 2, "paths": normalized}:
+            if payload == {"schema": 1, "paths": normalized}:
                 self.log.info("  Windows Defender exclusions already configured")
                 return True
         except (OSError, json.JSONDecodeError, TypeError):
@@ -6494,7 +6492,7 @@ class WindowsSetup:
             marker.parent.mkdir(parents=True, exist_ok=True)
             temporary = marker.with_suffix(".tmp")
             temporary.write_text(
-                json.dumps({"schema": 2, "paths": normalized}, indent=2) + "\n",
+                json.dumps({"schema": 1, "paths": normalized}, indent=2) + "\n",
                 encoding="utf-8",
             )
             os.replace(temporary, marker)
@@ -6545,52 +6543,26 @@ class WindowsSetup:
             self.log.info("  Windows Defender exclusions already configured")
             return True
 
-        # Preserve literal paths across both PowerShell processes. The elevated
-        # child must confirm the settings and return its own exit code; launching
-        # it successfully does not mean Defender accepted the exclusions.
-        safe_paths = ",".join("'" + str(d).replace("'", "''") + "'" for d in missing)
-        elevated_script = (
-            "$ErrorActionPreference = 'Stop'; "
-            "try { "
-            f"$requestedPaths = @({safe_paths}); "
-            "Add-MpPreference -ExclusionPath $requestedPaths -ErrorAction Stop; "
-            "$configuredPaths = @((Get-MpPreference -ErrorAction Stop).ExclusionPath | "
-            "Where-Object { $_ } | ForEach-Object { "
-            "[IO.Path]::GetFullPath($_).TrimEnd([char[]]'\\/') }); "
-            "foreach ($requestedPath in $requestedPaths) { "
-            "$normalizedPath = [IO.Path]::GetFullPath($requestedPath).TrimEnd([char[]]'\\/'); "
-            "if ($configuredPaths -notcontains $normalizedPath) { "
-            "throw 'Defender did not retain a requested exclusion' } }; "
-            "exit 0 "
-            "} catch { exit 1 }"
-        )
-        encoded = base64.b64encode(elevated_script.encode("utf-16le")).decode("ascii")
-        launch_script = (
-            "$ErrorActionPreference = 'Stop'; try { "
-            "$defenderProcess = Start-Process powershell.exe -Verb RunAs -Wait "
-            "-WindowStyle Hidden -PassThru "
-            f"-ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'); "
-            "exit $defenderProcess.ExitCode } catch { exit 1 }"
-        )
+        # Add-MpPreference always requires admin — elevate directly
+        safe_paths = ",".join(f"''{str(d).replace(chr(39), chr(39) * 2)}''" for d in missing)
         try:
             result = self._run(
                 [
                     "powershell",
                     "-NoProfile",
                     "-Command",
-                    launch_script,
+                    f"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
+                    f"-ArgumentList '-NoProfile','-Command',"
+                    f"'Add-MpPreference -ExclusionPath {safe_paths}'",
                 ],
                 capture_output=True,
                 timeout=30,
             )
             if result.returncode != 0:
-                self.log.warning(
-                    "  Defender exclusions were not confirmed. Administrator approval or "
-                    "organization policy may prevent changes; installation will continue."
-                )
+                self.log.warning("  Defender exclusion command did not complete successfully")
                 return False
             for d in missing:
-                self.log.info(f"  Defender exclusion added and confirmed: {d}")
+                self.log.info(f"  Defender exclusion added: {d}")
             return True
         except Exception as e:
             self.log.warning(f"  Defender 排除项添加失败（需要管理员权限）: {e}")

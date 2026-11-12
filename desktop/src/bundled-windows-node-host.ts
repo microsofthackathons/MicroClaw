@@ -129,7 +129,7 @@ export interface BundledWindowsNodeAmbientAccess extends WindowsNodeMxcAmbientAc
 }
 
 export interface BundledWindowsNodeGateway {
-  request<T = unknown>(method: string, params?: unknown): Promise<T>;
+  request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
 }
 
 export class BundledWindowsNodeHost {
@@ -752,6 +752,11 @@ export class BundledWindowsNodeHost {
     let approved = false;
     let lastForeignNodeCount = -1;
     const deadline = Date.now() + 5 * 60_000;
+    const assertPairingCurrent = () => {
+      if (!expectedProcess) throw new Error("Bundled Windows node process is not running");
+      const error = this.describePairingProcessChange(expectedProcess);
+      if (error) throw new Error(error);
+    };
     const restartAfterApproval = async () => {
       const startOptions = this.startOptions;
       if (!startOptions || this.process !== expectedProcess) {
@@ -801,9 +806,30 @@ export class BundledWindowsNodeHost {
         const nodePairing = await gateway.request<unknown>("node.pair.list", {});
         const nodePairRequestId = findBundledNodePairRequest(nodePairing, nodeId);
         if (nodePairRequestId) {
+          const previousConnection = observeBundledNodeConnection(
+            await gateway.request("node.list", {}, 2_000),
+            nodeId,
+          );
+          assertPairingCurrent();
           await gateway.request("node.pair.approve", { requestId: nodePairRequestId });
+          assertPairingCurrent();
           approved = true;
-          await restartAfterApproval();
+          const reconnectStartedAt = Date.now();
+          // The pinned client handles node.pair.resolved by reconnecting its
+          // socket. Preserve the host process, policy and approval pipe while it
+          // does so. Do not accept the pre-approval connection as readiness.
+          const reconnected = await waitForBundledNodeReconnect({
+            gateway,
+            nodeId,
+            previousConnection,
+            assertCurrent: assertPairingCurrent,
+          });
+          this.startOptions?.onDiagnostic?.("pairing-reconnect", {
+            processId: expectedProcess?.pid ?? null,
+            mode: reconnected ? "same-process" : "restart-fallback",
+            elapsedMs: Date.now() - reconnectStartedAt,
+          });
+          if (!reconnected) await restartAfterApproval();
           continue;
         }
 
@@ -1194,11 +1220,11 @@ export function assertApprovalResponseMatches(pendingRequestId: string, response
   }
 }
 
-export function inspectBundledNodeList(
+function findBundledNodeRecord(
   payload: unknown,
   nodeId: string,
 ): {
-  node: { connected: boolean; displayName: string; commands: string[] } | null;
+  match: Record<string, unknown> | undefined;
   foreignNodeCount: number;
 } {
   const nodes = Array.isArray(payload)
@@ -1215,13 +1241,90 @@ export function inspectBundledNodeList(
     const id = stringField(node, "nodeId") || stringField(node, "id");
     return id.length > 0 && id.toLowerCase() !== nodeId.toLowerCase();
   }).length;
-  const match = matches[0];
+  return { match: matches[0], foreignNodeCount };
+}
+
+interface BundledNodeConnection {
+  connected: boolean;
+  connectedAtMs: number | null;
+}
+
+function isNodeRecordConnected(node: Record<string, unknown>): boolean {
+  return (
+    node.connected === true ||
+    node.isConnected === true ||
+    stringField(node, "status").toLowerCase() === "connected"
+  );
+}
+
+export function observeBundledNodeConnection(
+  payload: unknown,
+  nodeId: string,
+): BundledNodeConnection {
+  const { match } = findBundledNodeRecord(payload, nodeId);
+  return {
+    connected: match !== undefined && isNodeRecordConnected(match),
+    connectedAtMs:
+      match &&
+      typeof match.connectedAtMs === "number" &&
+      Number.isSafeInteger(match.connectedAtMs) &&
+      match.connectedAtMs > 0
+        ? match.connectedAtMs
+        : null,
+  };
+}
+
+export async function waitForBundledNodeReconnect(params: {
+  gateway: BundledWindowsNodeGateway;
+  nodeId: string;
+  previousConnection: BundledNodeConnection;
+  assertCurrent: () => void;
+  now?: () => number;
+  wait?: (milliseconds: number) => Promise<void>;
+}): Promise<boolean> {
+  const now = params.now ?? Date.now;
+  const wait = params.wait ?? delay;
+  const deadline = now() + 5_000;
+  let observedDisconnect = false;
+  while (now() < deadline) {
+    params.assertCurrent();
+    try {
+      const remaining = deadline - now();
+      if (remaining <= 0) break;
+      const payload = await params.gateway.request("node.list", {}, Math.min(1_000, remaining));
+      params.assertCurrent();
+      const connection = observeBundledNodeConnection(payload, params.nodeId);
+      if (!connection.connected) observedDisconnect = true;
+      const newerConnection =
+        params.previousConnection.connectedAtMs !== null &&
+        connection.connectedAtMs !== null &&
+        connection.connectedAtMs > params.previousConnection.connectedAtMs;
+      if (connection.connected && (observedDisconnect || newerConnection)) {
+        // A fresh connection must still advertise exactly the allowed command
+        // surface. Ownership/pairing/activation checks are not bypassed.
+        return inspectBundledNodeList(payload, params.nodeId).node?.connected === true;
+      }
+    } catch (error) {
+      if (!isGatewayRequestTimeout(error)) throw error;
+    }
+    params.assertCurrent();
+    await wait(Math.max(0, Math.min(250, deadline - now())));
+  }
+  params.assertCurrent();
+  return false;
+}
+
+export function inspectBundledNodeList(
+  payload: unknown,
+  nodeId: string,
+): {
+  node: { connected: boolean; displayName: string; commands: string[] } | null;
+  foreignNodeCount: number;
+} {
+  const { match, foreignNodeCount } = findBundledNodeRecord(payload, nodeId);
   if (!match) return { node: null, foreignNodeCount };
   const node = {
-    connected:
-      match.connected === true ||
-      match.isConnected === true ||
-      stringField(match, "status").toLowerCase() === "connected",
+    connected: isNodeRecordConnected(match),
     displayName: stringField(match, "displayName") || stringField(match, "name"),
     commands: stringArrayField(match, "commands"),
   };
