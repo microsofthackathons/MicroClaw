@@ -119,6 +119,8 @@ export default {
   "chat.newMessages": "New Messages ↓",
   "chat.inputPlaceholder": "Press ENTER to send message",
   "chat.waitingGateway": "Waiting for Gateway connection\u2026",
+  "chat.securityUpdating": "Applying changes\u2026",
+  "chat.executionLocked": "Execution is locked. Review Security settings.",
   "chat.stopGeneration": "Stop Generating",
   "chat.stopTask": "Stop task",
   "chat.addAttachment": "Add attachment",
@@ -341,7 +343,7 @@ export default {
   "settings.commandConsentHint":
     "Ask when needed uses Windows Node's allowlist and asks for unmatched commands. Allow always skips command-consent prompts. Neither setting grants new MXC folder access, which may still require approval.",
   "settings.commandConsentNativeTools":
-    "Command consent applies to exec in both modes. In regular mode, OpenClaw's native file tools remain available and bypass command consent. In MXC mode, native file tools are disabled.",
+    "Command consent applies to exec in both modes. OpenClaw's native file tools remain available and bypass command consent and MXC folder permissions.",
   "settings.commandConsentLiveUpdate":
     "Changes apply without restarting the Gateway. Wait for active work to finish.",
   "settings.windowsNodeMxcOn": "On",
@@ -349,25 +351,20 @@ export default {
     "MicroClaw automatically uses the supported protection on this PC.",
   "settings.windowsNodeMxcLearnMore": "Learn more about sandboxing",
   "settings.windowsNodeMxcToggleUnavailable":
-    "Sandboxing is unavailable or could not be verified. Repair the bundled runtime and retry.",
+    "This Windows installation does not support MXC. Commands run without the MXC sandbox.",
+  "settings.windowsNodeMxcExecutionScope":
+    "MXC protects Windows Node commands only. Gateway-native tools, plugins, and channels can access files outside the MXC folder permissions.",
   "settings.windowsNodeMxcStatusLoading": "Checking MXC status...",
   "settings.windowsNodeMxcStatusRefreshing": "Refreshing MXC status in the background...",
   "settings.windowsNodeMxcStatusVerified": "Last verified: {time}",
   "perm.applyingFolders": "Applying folder access...",
   "perm.applyingDecision": "Applying permission decision...",
-  "settings.windowsNodeMxcExperimental":
-    "App-owned headless node and pinned official MXC 0.7 runtime (security framework #202)",
+  "settings.windowsNodeMxcExperimental": "App-owned headless node and pinned official MXC 1.0 SDK",
   "settings.experimental": "Experimental",
   "settings.windowsNodeMxcModeFull": "Full containment",
   "settings.windowsNodeMxcFullBadge": "Hard boundary",
   "settings.windowsNodeMxcModeFullDesc":
     "Uses the attested MXC filesystem boundary. Approved folders are the exclusive filesystem capability ceiling.",
-  "settings.windowsNodeMxcModeLimited": "Limited containment (DACL)",
-  "settings.windowsNodeMxcLimitedBadge": "Limited",
-  "settings.windowsNodeMxcModeLimitedDesc":
-    "Uses DACL-based filesystem containment when the full MXC boundary is unavailable.",
-  "settings.windowsNodeMxcLimitedFilesystemWarning":
-    "Additional folder grants are additive, not an exclusive allowlist. Read-only grants cannot reduce access already allowed by ambient Windows ACLs.",
   "settings.windowsNodeMxcModeOff": "Off",
   "settings.windowsNodeMxcModeOffDesc":
     "Turns off MXC. Agent tools run directly on Windows without an execution sandbox.",
@@ -375,70 +372,38 @@ export default {
     "No execution sandbox: agent tools can access resources available to your Windows account.",
   "settings.windowsNodeMxcSelected": "Selected",
   "settings.windowsNodeMxcUseFull": "Use Full containment",
-  "settings.windowsNodeMxcUseLimited": "Use Limited containment",
   "settings.windowsNodeMxcUseOff": "Turn containment off",
   "settings.windowsNodeMxcConsent.title": "Enable {mode}?",
   "settings.windowsNodeMxcConsent.summary":
     "Review the security impact of {mode} before enabling it.",
-  "settings.windowsNodeMxcConsent.group.disabled": "Unavailable",
-  "settings.windowsNodeMxcConsent.group.paused": "Paused",
-  "settings.windowsNodeMxcConsent.group.available-restricted": "Restricted",
-  "settings.windowsNodeMxcConsent.groupSummary.disabled":
-    "Gateway file tools, browser automation, MCP, screen/camera/location/speech, and Gateway memory.",
-  "settings.windowsNodeMxcConsent.groupSummary.paused":
-    "Scheduled jobs (no catch-up) and hooks/webhooks (webhooks return 503; events are dropped; no replay).",
-  "settings.windowsNodeMxcConsent.groupSummary.available-restricted":
-    "exec only through Windows Node + MXC + approval; Gateway web_search/web_fetch, allowlisted WeChat, and reviewed Canvas A2UI.",
+  "settings.windowsNodeMxcConsent.group.contained": "Contained by MXC",
+  "settings.windowsNodeMxcConsent.group.outside-mxc": "Outside MXC",
+  "settings.windowsNodeMxcConsent.groupSummary.contained":
+    "Only Windows Node command execution is routed through MXC and the configured folder grants.",
+  "settings.windowsNodeMxcConsent.groupSummary.outside-mxc":
+    "Gateway tools, channels, plugins, scheduled jobs, and hooks remain enabled but run outside MXC. Canvas uses standard OpenClaw routing to a supported paired Canvas node.",
+  "settings.windowsNodeMxcConsent.item.windows-node-exec":
+    "Windows Node exec uses MXC containment and the command approval flow.",
   "settings.windowsNodeMxcConsent.item.gateway-native-filesystem":
-    "Gateway-native filesystem tools are disabled: read, write, edit, and apply_patch.",
-  "settings.windowsNodeMxcConsent.item.browser-automation": "Browser automation is disabled.",
-  "settings.windowsNodeMxcConsent.item.mcp": "MCP is disabled.",
-  "settings.windowsNodeMxcConsent.item.screen": "Screen access is disabled.",
-  "settings.windowsNodeMxcConsent.item.camera": "Camera access is disabled.",
-  "settings.windowsNodeMxcConsent.item.location": "Location access is disabled.",
-  "settings.windowsNodeMxcConsent.item.tts": "Text-to-speech (TTS) is disabled.",
-  "settings.windowsNodeMxcConsent.item.stt": "Speech-to-text (STT) is disabled.",
-  "settings.windowsNodeMxcConsent.item.gateway-memory":
-    "Memory Search and Memory Get read the agent's scoped memory through the Gateway, independently of MXC folder grants. General filesystem tools remain disabled.",
-  "settings.windowsNodeMxcConsent.item.cron":
-    "Cron and scheduled jobs are preserved but paused, with no catch-up for work missed during containment.",
-  "settings.windowsNodeMxcConsent.item.hooks-webhooks":
-    "Hooks and Webhooks are paused. Webhooks return 503, internal events are dropped, and neither is replayed later.",
-  "settings.windowsNodeMxcConsent.item.exec":
-    "exec remains available only through the app-owned Windows node, MXC policy, and command approval flow.",
-  "settings.windowsNodeMxcConsent.item.gateway-web":
-    "web_search and HTTP(S)-only web_fetch remain available through the Gateway.",
-  "settings.windowsNodeMxcConsent.item.wechat-message":
-    "Allowlisted WeChat/message remains available only after the local release gate and approval/media broker checks.",
-  "settings.windowsNodeMxcConsent.item.canvas-phase-1":
-    "Canvas Phase 1 remains available only for reviewed native A2UI operations. General navigation, eval, and external or local content remain unavailable.",
+    "Gateway-native read, write, edit, and apply_patch tools are not sandboxed by MXC and use the Gateway account's permissions.",
+  "settings.windowsNodeMxcConsent.item.gateway-runtime":
+    "Other Gateway tools, channels, plugins, scheduled jobs, and hooks are not sandboxed by MXC.",
+  "settings.windowsNodeMxcConsent.item.canvas":
+    "Canvas uses standard OpenClaw routing to a supported paired Canvas node, independently of MXC and the bundled Windows Node.",
   "settings.windowsNodeMxcConsent.fullNote":
     "Full containment is an exclusive filesystem boundary, subject to backend preflight.",
-  "settings.windowsNodeMxcConsent.limitedNote":
-    "Limited containment adds DACL grants, is not an exclusive boundary, and is acknowledged in the native restart confirmation.",
   "settings.windowsNodeMxcConsent.repeatNote":
-    "Each sandbox toggle requires one native backend-restart confirmation.",
+    "Changing sandbox protection applies to new commands without restarting the Gateway.",
   "settings.windowsNodeMxcConsent.enable": "Enable MXC",
   "settings.windowsNodeMxcRequestedMode": "Requested mode",
   "settings.windowsNodeMxcAttestedStrength": "Attested effective strength",
   "settings.windowsNodeMxcAttestedTier": "Attested effective tier",
-  "settings.windowsNodeMxcLimitedActive": "Limited containment active",
   "settings.windowsNodeMxcStatusActive": "Active",
   "settings.windowsNodeMxcCompactStatus": "{mode} — {state}",
   "settings.windowsNodeMxcCompactOff": "Containment — Off",
   "settings.windowsNodeMxcOffDisclosure": "MXC is off. Tools run without MXC isolation.",
   "settings.windowsNodeMxcAvailabilityOnEnable":
     "Sandbox availability is checked when you turn it on.",
-  "settings.windowsNodeMxcHooksPausedBoth":
-    "Webhooks and internal hooks stay paused in MXC Locked and Active states. Requests are rejected, internal events are dropped, and neither is replayed.",
-  "settings.windowsNodeMxcHooksPausedExternal":
-    "Webhooks stay paused in MXC Locked and Active states. Requests are rejected and are not replayed.",
-  "settings.windowsNodeMxcHooksPausedInternal":
-    "Internal hooks stay paused in MXC Locked and Active states. Events are dropped and are not replayed.",
-  "settings.windowsNodeMxcCanvasActive":
-    "Canvas Phase 1 — Active. Managed native A2UI only; navigation, eval, local files, and screen capture remain unavailable.",
-  "settings.windowsNodeMxcCanvasPaused":
-    "Canvas Phase 1 is requested but unavailable until MXC reaches Active.",
   "settings.windowsNodeMxcSelectedNode": "Selected local Windows node",
   "settings.windowsNodeMxcSelectNode": "Select one paired Windows node",
   "settings.windowsNodeMxcEffective": "Effective state",
@@ -458,7 +423,6 @@ export default {
   "settings.windowsNodeMxcCompiledOut": "Compiled out",
   "settings.windowsNodeMxcVerified": "Verified",
   "settings.windowsNodeMxcUnverified": "Unverified",
-  "settings.windowsNodeMxcDaclRequired": "DACL augmentation required",
   "settings.windowsNodeMxcBundledHelper": "Bundled helper",
   "settings.windowsNodeMxcRuntimeContract": "MXC runtime / CWD policy",
   "settings.windowsNodeMxcSettingsFingerprint": "Settings fingerprint",
@@ -475,66 +439,29 @@ export default {
   "settings.windowsNodeMxcConnection": "Connection / pairing",
   "settings.windowsNodeMxcFolders": "Global MXC approved folders",
   "settings.windowsNodeMxcFullFolders": "Full hard-boundary approved folders",
-  "settings.windowsNodeMxcLimitedFolders": "Limited additional filesystem grants",
   "settings.windowsNodeMxcConfiguredFolders": "Configured MXC folders",
   "settings.windowsNodeMxcGrantReadWrite": "Read/write",
   "settings.windowsNodeMxcGrantReadOnly": "Read-only",
   "settings.windowsNodeMxcFoldersHint":
     "These roots are a global capability ceiling applied to every contained command. Declarations only state intended use; they never grant access. OpenClawWorkspaces is granted read/write by default for all agents. Separate agent subfolders are not security boundaries; you can remove or change this grant.",
-  "settings.windowsNodeMxcLimitedFoldersHint":
-    "These grants add access in Limited mode; they are not an exclusive allowlist. Read-only cannot reduce access already provided by ambient Windows ACLs. OpenClawWorkspaces is granted read/write by default for all agents, including other agents' subfolders. You can remove or change this grant.",
   "settings.windowsNodeMxcConfiguredFoldersHint":
-    "These folders will be used when Full or Limited containment is selected. OpenClawWorkspaces is granted read/write by default for all agents, including other agents' subfolders. You can remove or change this grant.",
-  "settings.windowsNodeMxcAmbientAccess": "Ambient filesystem access",
-  "settings.windowsNodeMxcAmbientBeforeGrants": "Ambient access before selected-folder grants",
-  "settings.windowsNodeMxcAmbientExceptions":
-    "Inherited filesystem access detected: {details} ({denied}/{total} denied)",
-  "settings.windowsNodeMxcAmbientContract": "Attestation contract",
-  "settings.windowsNodeMxcAmbientHash": "Attestation hash",
-  "settings.windowsNodeMxcAmbientCheckedAt": "Assessed at",
-  "settings.windowsNodeMxcAmbientAccessHint":
-    "This assessment runs before MicroClaw adds the selected folder grants. Category-level attestation only; absolute paths are intentionally not displayed.",
-  "settings.windowsNodeMxcAmbientUnavailable": "Ambient access attestation is not available.",
-  "settings.windowsNodeMxcAmbientCategory.desktop": "Desktop",
-  "settings.windowsNodeMxcAmbientCategory.documents": "Documents",
-  "settings.windowsNodeMxcAmbientCategory.downloads": "Downloads",
-  "settings.windowsNodeMxcAmbientCategory.microclaw-state": "MicroClaw state",
-  "settings.windowsNodeMxcAmbientCategory.openclaw-state": "OpenClaw state",
-  "settings.windowsNodeMxcAmbientCategory.openclaw-roaming-state": "OpenClaw roaming state",
-  "settings.windowsNodeMxcAmbientCategory.ssh": "SSH",
-  "settings.windowsNodeMxcAmbientCategory.gnupg": "GnuPG",
-  "settings.windowsNodeMxcAmbientCategory.aws": "AWS credentials",
-  "settings.windowsNodeMxcAmbientCategory.azure": "Azure credentials",
-  "settings.windowsNodeMxcAmbientCategory.kube": "Kubernetes credentials",
-  "settings.windowsNodeMxcAmbientCategory.gcloud": "Google Cloud credentials",
-  "settings.windowsNodeMxcAmbientCategory.windows-credentials": "Windows credentials",
-  "settings.windowsNodeMxcAmbientCategory.powershell-history": "PowerShell history",
-  "settings.windowsNodeMxcAmbientCategory.browser-chrome": "Chrome data",
-  "settings.windowsNodeMxcAmbientCategory.browser-edge": "Edge data",
-  "settings.windowsNodeMxcAmbientCategory.browser-brave": "Brave data",
-  "settings.windowsNodeMxcAmbientCategory.browser-firefox": "Firefox data",
-  "settings.windowsNodeMxcAmbientStatus.denied": "Denied",
-  "settings.windowsNodeMxcAmbientStatus.read": "Read",
-  "settings.windowsNodeMxcAmbientStatus.read-write": "Read/write",
-  "settings.windowsNodeMxcFoldersLocked":
-    "Disable Windows Node + MXC before adding, changing, or removing approved folders.",
+    "These folders are used when sandboxing is enabled. OpenClawWorkspaces is granted read/write by default for all agents, including other agents' subfolders. You can remove or change this grant.",
   "settings.windowsNodeMxcFoldersStaged":
     "Changes are staged only. Applying them updates permissions while the Gateway stays running. Pending approvals and running contained commands are canceled.",
   "settings.windowsNodeMxcApplyChanges": "Apply changes",
   "settings.windowsNodeMxcApplyFoldersImpact":
-    "Updating folder permissions will briefly pause new execution launches. Pending approvals and running contained commands will be canceled, and Canvas will close. Execution remains locked if the update fails.",
+    "Updating folder permissions will briefly pause new execution launches. Pending approvals and running contained commands will be canceled. Execution remains locked if the update fails.",
   "settings.windowsNodeMxcSaveFoldersImpact":
     "Folder permissions will be saved for use when sandboxing is enabled.",
   "settings.commandConsentApplyImpact":
     "Command consent will change to {mode}. New execution launches will pause briefly while the new policy is applied.",
   "settings.windowsNodeMxcApplyFoldersBeforeRestart":
-    "Folder changes will be applied first, then the Gateway will restart to change sandboxing. Running work will be interrupted.",
+    "Folder changes will be applied first. Changing sandboxing will cancel pending approvals and running node commands; the Gateway will not restart.",
   "settings.windowsNodeMxcApplyRestart":
-    "Changing sandboxing will restart the Gateway and interrupt running work.",
+    "Changing sandboxing will cancel pending approvals and running node commands. The Gateway will not restart.",
   "settings.windowsNodeMxcApplyWithoutRestart": "The Gateway will not restart.",
-  "settings.windowsNodeMxcApplyComplete": "Security changes applied.",
   "settings.windowsNodeMxcChangesStale":
-    "Security settings or active work changed while you were confirming. Review the pending changes and apply again.",
+    "Security settings or active work changed before the changes could be applied. Review the pending changes and apply again.",
   "settings.windowsNodeMxcChangesNotApplied":
     "The requested security changes could not be verified. Review the current status before trying again.",
   "settings.windowsNodeMxcStagePreviousFolders": "Stage previous policy",
@@ -569,18 +496,10 @@ export default {
   "settings.windowsNodeMxcFolderMissing": "The selected folder no longer exists.",
   "settings.windowsNodeMxcFolderReparse":
     "Folders containing junctions, symbolic links, or other reparse points are denied.",
-  "settings.windowsNodeMxcFolderSensitive":
-    "This folder overlaps a protected credentials, browser, SSH, cloud, or MicroClaw state root.",
   "settings.windowsNodeMxcFolderAclFailed":
     "Windows could not apply and verify the folder access policy.",
   "settings.windowsNodeMxcFolderNotConfigured": "This folder is no longer configured.",
   "settings.windowsNodeMxcFolderMutationFailed": "Could not update the approved folder policy.",
-  "settings.windowsNodeMxcLimitedAcknowledgeTitle": "Enable Limited filesystem containment?",
-  "settings.windowsNodeMxcLimitedAcknowledgeBody":
-    "Limited containment relies on additive Windows DACL grants. It is not an exclusive filesystem allowlist, and a read-only grant cannot remove access already available through ambient ACLs.",
-  "settings.windowsNodeMxcLimitedAcknowledgeCheckbox":
-    "I understand these filesystem limitations and want to enable Limited containment.",
-  "settings.windowsNodeMxcEnableLimited": "Enable Limited containment",
   "settings.windowsNodeMxcNoDurableApprovals": "No exact commands are remembered.",
   "settings.windowsNodeMxcRevokeApproval": "Revoke",
   "settings.windowsNodeMxcRevokeAllApprovals": "Revoke all",
@@ -604,8 +523,8 @@ export default {
   "settings.sandboxDirsRO": "Read only",
   "settings.sandboxAddDir": "Add folder",
   "settings.sandboxNoDirs": "No custom directories",
-  "settings.sandboxChildrenRemoved":
-    "Auto-removed {count} subdirectory(s) now covered by the parent directory.",
+  "settings.windowsNodeMxcFolderOverlapHint":
+    "For overlapping folders, the most specific selected folder takes precedence. Protected paths may still be denied.",
   "settings.cap.internetClient": "Allow outbound network access",
   "settings.cap.internetClientServer": "Inbound + outbound network (internetClientServer)",
   "settings.cap.privateNetworkClientServer": "Private network / LAN (privateNetworkClientServer)",
@@ -663,6 +582,7 @@ export default {
   "settings.searchSettingsSaved": "Web search settings saved",
   "settings.searchConfigured": "Configured",
   "settings.searchNotConfigured": "Not configured",
+  "settings.enableWebSearch": "Enable search",
   "settings.searchDefault": "Default",
   "settings.searchApiKeyRequired": "API key required",
   "settings.searchApiKeyFormatInvalid": "Check the key format",
@@ -892,6 +812,7 @@ export default {
   "setup.reasoningAdaptive": "Adaptive",
   "setup.finishAndEnter": "Save & Enter",
   "setup.enterApiKey": "Please enter an API Key",
+  "setup.checkFailed": "Could not check setup status: {error}",
   "setup.saveFailed": "Save failed: {error}",
 
   // ── ModelSetupDialog ──
@@ -1148,11 +1069,6 @@ export default {
   "tasks.colLastRun": "Last Run",
   "tasks.enabled": "Enabled",
   "tasks.disabled": "Disabled",
-  "tasks.pausedByMxc": "Paused by MXC",
-  "tasks.mxcPausedTitle": "Scheduled tasks paused by MXC",
-  "tasks.mxcPausedDesc":
-    "Saved jobs are preserved. Changes and run-now are unavailable; enabled jobs resume at their next future schedule after MXC is turned off, without catch-up.",
-
   // ── Common ──
   "common.cancel": "Cancel",
   "common.close": "Close",
@@ -1180,7 +1096,6 @@ export default {
   "perm.titleCommand": "Your agent wants to run the following command",
   "perm.titleApp": "External app approval required",
   "perm.titleMxc": "MXC sandbox command approval",
-  "perm.titleMxcLimited": "Limited filesystem containment",
   "perm.deny": "Deny",
   "perm.allow": "Allow",
   "perm.allowOnce": "Allow once",
@@ -1217,9 +1132,7 @@ export default {
     "Permission decision could not be confirmed. No automatic retry; check the current request status.",
   "perm.mxcDurableNotSaved":
     "The one-use decision was accepted, but the Windows Node allowlist entry could not be saved.",
-  "perm.mxcLimitedDesc": "AI wants to run this command with Limited filesystem containment.",
   "perm.mxcAccessLabel": "Declared folder use",
-  "perm.mxcAdditionalAccessLabel": "Additional filesystem grants",
   "perm.mxcAccessRo": "Read only",
   "perm.mxcAccessRw": "Read and write",
   "perm.mxcCwdLabel": "Canonical working directory",
@@ -1231,10 +1144,6 @@ export default {
     "Approval authorizes this command inside MXC with the working directory shown. Remembering uses Windows Node's executable and argument allowlist for this agent across conversations; it does not bind the working directory.",
   "perm.mxcScopeNoAccessOnce":
     "Approval authorizes this command itself inside MXC with the canonical working directory shown.",
-  "perm.mxcLimitedScope":
-    "Additional folder grants are additive, not an exclusive allowlist. Remembering uses Windows Node's executable and argument allowlist for this agent across conversations; it does not bind the working directory or folders.",
-  "perm.mxcLimitedScopeOnce":
-    "This approval authorizes this command once. Additional folder grants are additive, not an exclusive allowlist.",
   "perm.mxcPowerShellScope":
     "PowerShell uses logical $PWD MicroClawCwd:\\ with the physical working directory shown above. The exact initialization is included in this command; it grants no extra file access.",
   "perm.riskRead": "Low risk: the agent can view files in this folder.",
@@ -1243,8 +1152,6 @@ export default {
   "perm.riskCommandRW": "High risk: this command may change files or system state.",
   "perm.riskApp": "High risk: this application runs outside the sandbox.",
   "perm.riskMxc": "Contained by MXC: review the command and declared folder use before allowing.",
-  "perm.riskMxcLimited":
-    "Limited filesystem containment: review the command and additional requested grants before allowing.",
   "perm.commandLabel": "Command",
   "perm.allowAlways": "Allow always",
   "perm.mxcAllowAlways": "Remember for this agent",

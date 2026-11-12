@@ -4,14 +4,9 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
+  BUNDLED_WINDOWS_NODE_RUNTIME_CONTRACT,
   BUNDLED_WINDOWS_NODE_REVISION,
   BundledWindowsNodeHost,
-  MXC_EXACT_BACKEND_PROVISIONING,
-  MXC_HOST_PREP_PATCH_REVISION,
-  MXC_SDK_SOURCE_REVISION,
-  sha256DirectoryTree,
-  sha256DirectoryTreeAsync,
 } from "./bundled-windows-node-host";
 
 vi.mock("electron", () => ({
@@ -35,62 +30,46 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-const pinned = {
+const nativeHashes = {
   x64: {
-    probe: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
-    official: "531fb3cdb4b0c964908fd71b71d40961417afb399cbab72f92a25e95309a6416",
+    "mxc_ffi.dll": "bd45522f06dc9cc8001dcd5d7320bc2bf303fb08a39bf10f3404bd9a8001812c",
+    "plm.exe": "beffc9c9ab974ca9e7455089fd8ecb36eb8c92811ddd1705db91370a689692c3",
+    "wslcsdk.dll": "8d4d55d4283fb32a5909b57e78b576d01363d7b28bb9b2595115e80faf61db5b",
+    "wxc-wslc-daemon.exe": "84f61c1bc13abde8da1c3f2ff100e6d59368ecaabdbfeca939e6fdb696202d0c",
   },
   arm64: {
-    probe: "e430d0e4f44f616e91db684f8d825a6dc93e06a1262b8d00bcaac7522a317aab",
-    official: "3ef702332286a39153fc259310b5021e3de3c191751d7522684f6475f73af5ef",
+    "mxc_ffi.dll": "1becaf695ad9ab6f6fe21ca4ad2e838d9218996a5d42cb82e609df1eb4d3db6b",
+    "plm.exe": "8818982c6b91c78d9198dc03d5efc8a9a34a1075afb4a6a3e9f1a750c5462532",
+    "wslcsdk.dll": "ad440e116a64af004fe021b95914163021c2e8f40b0f8b6d8ece210ee5cae3d4",
+    "wxc-wslc-daemon.exe": "ad9a7a42a607c2670e493b9f4d5eb4f2cd959c9d05b8882df42f9d8ecc1f6fef",
   },
 }[process.arch === "arm64" ? "arm64" : "x64"];
 
 describe("nonblocking bundled Windows node status", () => {
   let root: string;
-  let canvasRoot: string;
   let host: BundledWindowsNodeHost;
   let manifest: Record<string, unknown>;
 
   beforeEach(() => {
     vi.mocked(createHash).mockReset();
     root = fs.mkdtempSync(path.join(process.cwd(), ".test-node-status-"));
-    canvasRoot = path.join(root, "canvas-host");
-    for (const directory of ["host", "mxc", "host-prep", "canvas-host"]) {
-      fs.mkdirSync(path.join(root, directory));
-    }
+    fs.mkdirSync(path.join(root, "host"));
     const hostPath = path.join(root, "host", "host.exe");
-    const wxcExecPath = path.join(root, "mxc", "wxc-exec.exe");
-    const canvasHostPath = path.join(canvasRoot, "canvas.exe");
     fs.writeFileSync(hostPath, "host");
-    fs.writeFileSync(wxcExecPath, "probe");
-    fs.writeFileSync(path.join(root, "mxc", "wxc-host-prep.exe"), "official");
-    fs.writeFileSync(path.join(root, "host-prep", "microclaw-mxc-host-prep.exe"), "patch");
-    fs.writeFileSync(canvasHostPath, "canvas");
-    fs.writeFileSync(path.join(canvasRoot, "resource.dll"), Buffer.alloc(1024 * 1024, 17));
     manifest = {
       architecture: process.arch,
-      mxcVersion: "0.7.0",
-      mxcSourceRevision: MXC_SDK_SOURCE_REVISION,
-      mxcProductionBfsCompiledIn: false,
-      mxcExactBackendProvisioning: MXC_EXACT_BACKEND_PROVISIONING,
-      wxcExecSha256: pinned.probe,
-      officialWxcHostPrepSha256: pinned.official,
-      microclawHostPrepSha256: createHash("sha256").update("patch").digest("hex"),
+      runtimeIdentifier: `win-${process.arch}`,
+      mxcVersion: "1.0.1",
+      mxcManagedSha256: "59761d9a868cde01ef05139775ad6d072f9425b5b73b911bdf465b29b4bf20a6",
+      mxcNativeSha256: nativeHashes,
+      hostSha256: createHash("sha256").update("host").digest("hex"),
       windowsNodeRevision: BUNDLED_WINDOWS_NODE_REVISION,
-      canvasContract: BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
-      canvasHostSha256: createHash("sha256").update("canvas").digest("hex"),
-      canvasHostTreeSha256: sha256DirectoryTree(canvasRoot),
-      mxcHostPrepPatchRevision: MXC_HOST_PREP_PATCH_REVISION,
-      microclawHostPrepOrigin: "microclaw-built",
-      microclawHostPrepOperations: ["prepare-system-drive", "unprepare-system-drive"],
+      contract: BUNDLED_WINDOWS_NODE_RUNTIME_CONTRACT,
     };
     saveManifest();
     host = Object.assign(new BundledWindowsNodeHost(), {
       resourceRoot: root,
       hostPath,
-      wxcExecPath,
-      canvasHostPath,
     });
     vi.mocked(execFileSync).mockReturnValue("A".repeat(64));
     vi.clearAllMocks();
@@ -103,16 +82,6 @@ describe("nonblocking bundled Windows node status", () => {
 
   function saveManifest() {
     fs.writeFileSync(path.join(root, "RUNTIME.json"), JSON.stringify(manifest));
-  }
-
-  // Only the two official binary digests are substituted; fixture/tree hashing stays real.
-  function acceptOfficialFixtures(includeHost = true) {
-    const probe = createHash("sha256");
-    const official = createHash("sha256");
-    vi.spyOn(probe, "digest").mockReturnValue(pinned.probe);
-    vi.spyOn(official, "digest").mockReturnValue(pinned.official);
-    vi.mocked(createHash).mockReturnValueOnce(probe);
-    if (includeHost) vi.mocked(createHash).mockReturnValueOnce(official);
   }
 
   function expectNoBlockingWork() {
@@ -129,7 +98,6 @@ describe("nonblocking bundled Windows node status", () => {
   });
 
   it("reuses the initialized identity but still validates every explicit identity request", () => {
-    acceptOfficialFixtures();
     expect(host.ensureIdentityNodeId()).toBe("a".repeat(64));
     expect(execFileSync).toHaveBeenCalledTimes(1);
     vi.clearAllMocks();
@@ -145,14 +113,12 @@ describe("nonblocking bundled Windows node status", () => {
   });
 
   it("does not remember an invalid native identity", () => {
-    acceptOfficialFixtures();
     vi.mocked(execFileSync).mockReturnValue("not-a-node-id");
     expect(() => host.ensureIdentityNodeId()).toThrow("invalid identity");
     expect(host.status().nodeId).toBeNull();
   });
 
-  it("pairs in regular mode without requiring MXC artifacts", async () => {
-    fs.rmSync(path.join(root, "mxc", "wxc-exec.exe"));
+  it("pairs in regular mode with the bundled host", async () => {
     Object.assign(host, {
       startOptions: { requestedStrength: "off" },
       process: { exitCode: null, signalCode: null },
@@ -163,20 +129,19 @@ describe("nonblocking bundled Windows node status", () => {
     expect(execFileSync).toHaveBeenCalledTimes(1);
   });
 
-  it("still requires MXC artifacts before pairing in sandboxed mode", async () => {
-    fs.rmSync(path.join(root, "mxc", "wxc-exec.exe"));
+  it("requires the bundled host before pairing in sandboxed mode", async () => {
+    fs.rmSync(path.join(root, "host", "host.exe"));
     Object.assign(host, {
       startOptions: { requestedStrength: "full" },
       process: { exitCode: null, signalCode: null },
     });
     const gateway = { request: vi.fn() };
-    await expect(host.ensurePaired(gateway)).rejects.toThrow("Pinned MXC runtime is missing");
+    await expect(host.ensurePaired(gateway)).rejects.toThrow("host is missing");
     expect(gateway.request).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
   it("validates the full runtime asynchronously and yields to the event loop", async () => {
-    acceptOfficialFixtures();
     let completed = false;
     const validation = host.validateRuntimeIntegrity().then(() => {
       completed = true;
@@ -187,81 +152,55 @@ describe("nonblocking bundled Windows node status", () => {
     expectNoBlockingWork();
   });
 
-  it("validates only the probe while Off, without enumerating the Canvas tree", async () => {
-    fs.rmSync(canvasRoot, { recursive: true });
-    acceptOfficialFixtures(false);
+  it("validates the exec runtime without requiring or enumerating Canvas resources", async () => {
     const readdir = vi.spyOn(fs.promises, "readdir");
-    await expect(host.validateRuntimeIntegrity(false)).resolves.toBeUndefined();
+    await expect(host.validateRuntimeIntegrity()).resolves.toBeUndefined();
     expect(readdir).not.toHaveBeenCalled();
     expectNoBlockingWork();
   });
 
   it("does not cache successful probe validation across status requests", async () => {
-    acceptOfficialFixtures(false);
-    await host.validateRuntimeIntegrity(false);
-    fs.writeFileSync(path.join(root, "mxc", "wxc-exec.exe"), "tampered");
-    await expect(host.validateRuntimeIntegrity(false)).rejects.toThrow("runtime hash mismatch");
-    expectNoBlockingWork();
-  });
-
-  it.each([
-    ["microclawHostPrepSha256", "MicroClaw MXC host-prep hash mismatch"],
-    ["officialWxcHostPrepSha256", "Official MXC host-prep hash mismatch"],
-    ["canvasHostSha256", "Canvas host hash mismatch"],
-    ["canvasHostTreeSha256", "resource tree hash mismatch"],
-  ])("rejects a mismatched %s in fresh enabled checks", async (field, error) => {
-    manifest[field] = "0".repeat(64);
-    saveManifest();
-    acceptOfficialFixtures();
-    await expect(host.validateRuntimeIntegrity()).rejects.toThrow(error);
-    expectNoBlockingWork();
-  });
-
-  it("rejects changed Canvas resources after a previous successful validation", async () => {
-    acceptOfficialFixtures();
     await host.validateRuntimeIntegrity();
-    fs.writeFileSync(path.join(canvasRoot, "resource.dll"), "tampered");
-    acceptOfficialFixtures();
-    await expect(host.validateRuntimeIntegrity()).rejects.toThrow("resource tree hash mismatch");
+    fs.writeFileSync(path.join(root, "host", "host.exe"), "tampered");
+    await expect(host.validateRuntimeIntegrity()).rejects.toThrow("host hash mismatch");
+    expectNoBlockingWork();
+  });
+
+  it("rejects a mismatched host hash in fresh enabled checks", async () => {
+    manifest.hostSha256 = "0".repeat(64);
+    saveManifest();
+    await expect(host.validateRuntimeIntegrity()).rejects.toThrow(
+      "Windows node host hash mismatch",
+    );
+    expectNoBlockingWork();
+  });
+
+  it("rejects legacy runtime manifests so old Canvas-capable hosts cannot start", async () => {
+    delete manifest.contract;
+    manifest.canvasContract = "microclaw.windows-node-mxc.canvas.v1";
+    saveManifest();
+    await expect(host.validateRuntimeIntegrity()).rejects.toThrow("manifest does not match");
     expectNoBlockingWork();
   });
 
   it("rejects missing files and malformed or incompatible manifests", async () => {
     manifest.mxcVersion = "wrong";
     saveManifest();
-    await expect(host.validateRuntimeIntegrity(false)).rejects.toThrow("manifest does not match");
+    await expect(host.validateRuntimeIntegrity()).rejects.toThrow("manifest does not match");
     fs.writeFileSync(path.join(root, "RUNTIME.json"), "{");
-    await expect(host.validateRuntimeIntegrity(false)).rejects.toThrow();
+    await expect(host.validateRuntimeIntegrity()).rejects.toThrow();
     fs.rmSync(path.join(root, "RUNTIME.json"));
-    await expect(host.validateRuntimeIntegrity(false)).rejects.toThrow();
+    await expect(host.validateRuntimeIntegrity()).rejects.toThrow();
     expectNoBlockingWork();
   });
 
-  it("matches the existing tree hash including nested files, ordering and empty files", async () => {
-    fs.mkdirSync(path.join(canvasRoot, "a"));
-    fs.writeFileSync(path.join(canvasRoot, "a", "Z.dll"), "nested");
-    fs.writeFileSync(path.join(canvasRoot, "a", "empty"), "");
-    fs.writeFileSync(path.join(canvasRoot, "A.dll"), "uppercase");
-    const expected = sha256DirectoryTree(canvasRoot);
-    vi.clearAllMocks();
-    expect(await sha256DirectoryTreeAsync(canvasRoot)).toBe(expected);
-    expectNoBlockingWork();
-  });
-
-  it("rejects linked directories in the asynchronous tree hash", async () => {
-    fs.symlinkSync(path.join(root, "host"), path.join(canvasRoot, "linked"), "junction");
-    await expect(sha256DirectoryTreeAsync(canvasRoot)).rejects.toThrow("tree contains a link");
-    expectNoBlockingWork();
-  });
-
-  it("retains fresh full-tree validation before launching a host", async () => {
-    acceptOfficialFixtures();
-    fs.writeFileSync(path.join(canvasRoot, "resource.dll"), "tampered");
+  it("retains fresh executable validation before launching a host", async () => {
+    fs.writeFileSync(path.join(root, "host", "host.exe"), "tampered");
     await expect(
       host.start({
         gatewayUrl: "ws://127.0.0.1:18789",
       } as Parameters<BundledWindowsNodeHost["start"]>[0]),
-    ).rejects.toThrow("resource tree hash mismatch");
+    ).rejects.toThrow("host hash mismatch");
     expect(execFileSync).not.toHaveBeenCalled();
   });
 });

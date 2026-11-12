@@ -157,8 +157,7 @@ if (-not (Test-Path $windowsNodeSharedProject)) {
     }
 }
 
-# Bootstrap desktop dependencies before building the Windows node, because the
-# resource preparation step consumes the pinned @microsoft/mxc-sdk package.
+# Bootstrap desktop dependencies before preparing the native and plugin resources.
 Start-BuildStage 'Preflight: desktop dependencies'
 Push-Location "$root\desktop"
 try {
@@ -239,7 +238,7 @@ if (-not $desktopCache.hit -and (Test-Path $distDir)) {
     Write-Host "  Cleaned desktop\dist\"
 }
 
-# Ensure top-level dist/ exists so Compress-Archive can write into it later.
+# Ensure top-level dist/ exists for the build archives.
 $outDist = "$root\dist"
 if (-not (Test-Path $outDist)) {
     New-Item -ItemType Directory -Path $outDist -Force | Out-Null
@@ -286,11 +285,30 @@ Write-Host "`n=== Step 4/7: Create portable zip ===" -ForegroundColor Cyan
 $zipPath = "$root\dist\microclaw-portable.zip"
 $portableContext = $desktopContext + @($PortableCompression)
 $portableCache = Get-BuildCache -Stage portable -Context $portableContext
+
+function New-BuildArchive {
+    param([string]$SourceDirectory, [string]$Destination, [string]$Compression)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $paths = @($SourceDirectory, $Destination) | ForEach-Object {
+        $absolute = [IO.Path]::GetFullPath($_)
+        if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or $absolute.StartsWith('\\?\')) {
+            $absolute
+        } elseif ($absolute.StartsWith('\\')) {
+            '\\?\UNC\' + $absolute.Substring(2)
+        } else {
+            '\\?\' + $absolute
+        }
+    }
+    $level = [Enum]::Parse([IO.Compression.CompressionLevel], $Compression)
+    [IO.Compression.ZipFile]::CreateFromDirectory($paths[0], $paths[1], $level, $false)
+}
+
 Start-BuildStage 'Step 4/7: create portable zip'
 if (-not $portableCache.hit) {
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path "$root\desktop\release\win-unpacked\*" -DestinationPath $zipPath `
-        -CompressionLevel $PortableCompression
+    New-BuildArchive -SourceDirectory "$root\desktop\release\win-unpacked" `
+        -Destination $zipPath -Compression $PortableCompression
     Start-BuildStage 'Step 4/7: save portable cache'
     Save-BuildCache -Cache $portableCache
 }
@@ -477,7 +495,7 @@ if (-not (Test-Path $installerDir)) {
 }
 if ($IncludeInstallerZip) {
     if (Test-Path $installerZip) { Remove-Item $installerZip -Force }
-    Compress-Archive -Path "$installerDir\*" -DestinationPath $installerZip
+    New-BuildArchive -SourceDirectory $installerDir -Destination $installerZip -Compression Optimal
     $instZipSizeMB = [math]::Round((Get-Item $installerZip).Length / 1MB, 1)
     Write-Host "  -> $installerZip  ${instZipSizeMB} MB" -ForegroundColor Green
 } else {

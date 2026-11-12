@@ -295,15 +295,15 @@ describe("privacy-safe approval context diagnostics", () => {
     );
   });
 
-  it("observes the actual main approval envelope before normalization, behind the existing MXC gate", () => {
+  it("routes approvals in both modes while keeping WeChat diagnostics behind the MXC gate", () => {
     const source = readFileSync(join(__dirname, "main.ts"), "utf8");
-    const branch = source.indexOf(
-      'if (evt.event === "exec.approval.requested" && isWindowsNodeMxcDesired())',
-    );
+    const branch = source.indexOf('if (evt.event === "exec.approval.requested")');
+    const diagnosticsGate = source.indexOf("if (isWindowsNodeMxcDesired())", branch);
     const diagnostic = source.indexOf("describeGatewayApprovalContext(evt.payload)", branch);
     const normalize = source.indexOf("normalizeWindowsNodeMxcGatewayApproval(", branch);
     expect(branch).toBeGreaterThan(-1);
-    expect(diagnostic).toBeGreaterThan(branch);
+    expect(diagnosticsGate).toBeGreaterThan(branch);
+    expect(diagnostic).toBeGreaterThan(diagnosticsGate);
     expect(normalize).toBeGreaterThan(diagnostic);
   });
 });

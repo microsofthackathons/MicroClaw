@@ -43,6 +43,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       readEnv: async () => ({}),
       write: noopAsync,
       isConfigured: async () => true,
+      initialSetupRequired: async () => false,
       needsSetup: async () => false,
     },
     skills: {
@@ -112,12 +113,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
           effectiveInternalEnabled: false,
           pausedByMxc: false,
         },
-        canvas: {
-          state: "off" as const,
-          commandCount: 8 as const,
-          nativeA2uiOnly: true as const,
-          localFilesAllowed: false as const,
-        },
         lifecycleState: {
           phase: "idle" as const,
           detail: null,
@@ -146,8 +141,6 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
         activationLeaseExpiresAt: null,
         gatewayPolicyState: "drift" as const,
         gatewayPolicyReady: false,
-        effectiveToolsReady: false,
-        effectiveToolsState: "unverified" as const,
         durableApprovalsPresent: null,
         probe: {
           outcome: "error" as const,

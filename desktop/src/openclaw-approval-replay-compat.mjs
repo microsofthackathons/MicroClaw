@@ -4,7 +4,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
-import { URL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
 const EXPECTED_VERSION = "2026.10.5";
@@ -32,24 +32,6 @@ const EXPECTED_WEB_TOOLS_SHA256 =
 const EXPECTED_CRON_SERVICE_MODULE = "service-B3JlUlHg.mjs";
 const EXPECTED_CRON_SERVICE_SHA256 =
   "80b7e584751b1b260377c9e856d5b97c3d4540e525a5f29d7b7309ac8e1d9320";
-const EXPECTED_CRON_HANDLERS_MODULE = "cron-Bz6F4quM.mjs";
-const EXPECTED_CRON_HANDLERS_SHA256 =
-  "da2ef23428fa4eea0ac27b2ba9c7cf2c6e92ec2979bef692ba76fc5f50d11f83";
-const EXPECTED_HOOKS_SERVER_MODULE = "server-start-CZZFIc7j.mjs";
-const EXPECTED_HOOKS_SERVER_SHA256 =
-  "a0450d72ae6d4e37014cd9e36bb5fa613fb660ea5e8e33f4dab6c0f80d0366b2";
-const EXPECTED_INTERNAL_HOOKS_MODULE = "internal-hooks-C3ju7znI.mjs";
-const EXPECTED_INTERNAL_HOOKS_SHA256 =
-  "6a16a588d98621cac5ede209e53ccda37e11e21d14e3291e538a09dc0356c471";
-const EXPECTED_CANVAS_EXTENSION_MODULE = "extensions/canvas/index.js";
-const EXPECTED_CANVAS_EXTENSION_SHA256 =
-  "fb82b88b91a8b10963541ac4d8cba58ee944540be8408652816f19ce7c3b316d";
-const EXPECTED_CANVAS_TOOL_MODULE = "tool-QdensQdF.mjs";
-const EXPECTED_CANVAS_TOOL_SHA256 =
-  "0330910945a2eebcad5a779097810606687d617ee72c823aa3718eda558e1fdd";
-const EXPECTED_CANVAS_ELIGIBILITY_MODULE = "node-eligibility-CYxKvUWR.mjs";
-const EXPECTED_CANVAS_ELIGIBILITY_SHA256 =
-  "db074a408f22f683aab4f22422c968d8e8cde9dfd8a47c5509320bdddcc00071";
 const PINNED_RELEASE_MODULES = {
   "2026.10.3": {
     nodeGateway: [EXPECTED_NODE_GATEWAY_MODULE, EXPECTED_NODE_GATEWAY_SHA256],
@@ -66,12 +48,6 @@ const PINNED_RELEASE_MODULES = {
     bashTools: [EXPECTED_BASH_TOOLS_MODULE, EXPECTED_BASH_TOOLS_SHA256],
     webTools: [EXPECTED_WEB_TOOLS_MODULE, EXPECTED_WEB_TOOLS_SHA256],
     cronService: [EXPECTED_CRON_SERVICE_MODULE, EXPECTED_CRON_SERVICE_SHA256],
-    cronHandlers: [EXPECTED_CRON_HANDLERS_MODULE, EXPECTED_CRON_HANDLERS_SHA256],
-    hooksServer: [EXPECTED_HOOKS_SERVER_MODULE, EXPECTED_HOOKS_SERVER_SHA256],
-    internalHooks: [EXPECTED_INTERNAL_HOOKS_MODULE, EXPECTED_INTERNAL_HOOKS_SHA256],
-    canvasExtension: [EXPECTED_CANVAS_EXTENSION_MODULE, EXPECTED_CANVAS_EXTENSION_SHA256],
-    canvasTool: [EXPECTED_CANVAS_TOOL_MODULE, EXPECTED_CANVAS_TOOL_SHA256],
-    canvasEligibility: [EXPECTED_CANVAS_ELIGIBILITY_MODULE, EXPECTED_CANVAS_ELIGIBILITY_SHA256],
   },
   "2026.10.5": {
     nodeGateway: [
@@ -106,37 +82,12 @@ const PINNED_RELEASE_MODULES = {
       "service-BlXGdNfC.mjs",
       "811e2fac7e3dc0c3ddf647d8407afd180a7d3e65c43f6e1ed87f9b8133761633",
     ],
-    cronHandlers: [
-      "cron-CtU5MS3t.mjs",
-      "e212a5ae674b2350ab1b7cd1eb828af0bec7aa2419879dcc20bfb2efcdd2e4f6",
-    ],
-    hooksServer: [
-      "server-start-D9FwRIP_.mjs",
-      "9a057e3dadcfe264a5c227373467e056b3ead17dcee8fc45b53c52f070983a48",
-    ],
-    internalHooks: [
-      "internal-hooks-u9Bo9D-Q.mjs",
-      "d9c6169c252b941e3b2d1d2f1c4dd101f4bb1d6345489bcf0fa9e9116b5040f8",
-    ],
-    canvasExtension: [
-      "extensions/canvas/index.js",
-      "4cdc18f497664b3c81eac4584b15b2cf8f357c0d09c2e3cee667a25cc83cca55",
-    ],
-    canvasTool: [
-      "tool-DjtevMZn.mjs",
-      "d221da1656624cf554158dc4d09199c993c4126ef05ec68a756c215b0a8fba2f",
-    ],
-    canvasEligibility: [
-      "node-eligibility-Cv0dWQeV.mjs",
-      "815455fa32ec86dbe3eb483759cca0f4204643ef519b47179594523c72e67ee4",
-    ],
   },
 };
 export const APPROVAL_PROOF_CONTRACT = "microclaw.windows-node-approval.v2";
 export const APPROVAL_PROOF_PLAN_CONTRACT = "microclaw.windows-node-approval-plan.v2";
 export const APPROVAL_PROOF_TTL_MS = 30_000;
 const APPROVAL_PROOF_MINTER_SYMBOL = Symbol.for("microclaw.windows-node-mxc.approval-proof.v1");
-const HOOKS_GATE_SYMBOL = Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1");
 const PRELOAD_INITIALIZED_ENV = "MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED";
 
 export function buildMxcApprovalContextDiagnostic(stage, context, hashString) {
@@ -1270,293 +1221,6 @@ const PATCHED_CRON_STARTUP_ACK_SOURCE = `\t\tarmTimer(state);
 \t\t}
 \t\tstate.deps.log.info({`;
 
-export const PINNED_CRON_HANDLER_MAP_SOURCE = "const cronHandlers = {";
-const PATCHED_CRON_HANDLER_MAP_SOURCE = `function rejectMicroclawMxcPausedCronMutation(method, respond) {
-\tif (process.env.MICROCLAW_MXC_CRON_PAUSED !== "1") return false;
-\trespond(false, void 0, errorShape(ErrorCodes.INVALID_REQUEST, \`\${method} is paused while MicroClaw MXC is enabled\`));
-\treturn true;
-}
-const cronHandlers = {`;
-export const PINNED_CRON_MUTATION_HANDLER_SOURCES = [
-  '\t"cron.scratch.set": scopedCronJobHandler("cron.scratch.set", validateCronScratchSetParams, async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }, { jobId, callerScope }) => {',
-  '\t"cron.add": async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }) => {',
-  '\t"cron.update": async ({ params, respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }) => {',
-  '\t"cron.remove": scopedCronJobHandler("cron.remove", validateCronRemoveParams, async ({ respond, context, client, sessionMutationCommitGuard, hasCurrentClientAuthority }, { jobId, callerScope, job }) => {',
-  '\t"cron.run": scopedCronJobHandler("cron.run", validateCronRunParams, async (options, { jobId, callerScope, job }) => {',
-];
-
-export function patchPinnedOpenClawCronHandlers(source) {
-  let patched = replaceExactlyOnce(
-    source,
-    PINNED_CRON_HANDLER_MAP_SOURCE,
-    PATCHED_CRON_HANDLER_MAP_SOURCE,
-    "Cron handler map",
-  );
-  for (const handlerSource of PINNED_CRON_MUTATION_HANDLER_SOURCES) {
-    const method = handlerSource.match(/"([^"]+)"/)?.[1];
-    if (!method) throw new Error("Pinned OpenClaw Cron mutation handler name is invalid");
-    const respondExpression = method === "cron.run" ? "options.respond" : "respond";
-    patched = replaceExactlyOnce(
-      patched,
-      handlerSource,
-      `${handlerSource}\n\t\tif (rejectMicroclawMxcPausedCronMutation("${method}", ${respondExpression})) return;`,
-      `${method} MXC pause fence`,
-    );
-  }
-  return patched;
-}
-
-export const PINNED_EXTERNAL_HOOK_HANDLER_SOURCE = `\tconst handleHooksRequest = async (req, res) => {
-\t\tconst hooksConfig = params.hooksConfig();`;
-const PATCHED_EXTERNAL_HOOK_HANDLER_SOURCE = `\tconst handleHooksRequest = async (req, res) => {
-\t\tconst microclawMxcHooksGate = globalThis[Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1")];
-\t\tif (microclawMxcHooksGate?.rejectExternal(req, res)) return true;
-\t\tconst hooksConfig = params.hooksConfig();`;
-
-export function patchPinnedOpenClawExternalHooks(source) {
-  return replaceExactlyOnce(
-    source,
-    PINNED_EXTERNAL_HOOK_HANDLER_SOURCE,
-    PATCHED_EXTERNAL_HOOK_HANDLER_SOURCE,
-    "external Hooks admission gate",
-  );
-}
-
-export const PINNED_INTERNAL_HOOK_TRIGGER_SOURCE = `async function triggerInternalHook(event) {
-\tif (!internalHooksEnabledState.enabled) return;`;
-const PATCHED_INTERNAL_HOOK_TRIGGER_SOURCE = `async function triggerInternalHook(event) {
-\tconst microclawMxcHooksGate = globalThis[Symbol.for("microclaw.windows-node-mxc.hooks-gate.v1")];
-\tif (microclawMxcHooksGate?.dropInternal(event)) return;
-\tif (!internalHooksEnabledState.enabled) return;`;
-
-export function patchPinnedOpenClawInternalHooks(source) {
-  return replaceExactlyOnce(
-    source,
-    PINNED_INTERNAL_HOOK_TRIGGER_SOURCE,
-    PATCHED_INTERNAL_HOOK_TRIGGER_SOURCE,
-    "internal Hooks dispatch gate",
-  );
-}
-
-const PINNED_CANVAS_EXTENSION_COMMANDS = `const CANVAS_NODE_COMMANDS = [
-\t"canvas.present",
-\t"canvas.hide",
-\t"canvas.navigate"
-];`;
-const PATCHED_CANVAS_EXTENSION_COMMANDS = `const CANVAS_NODE_COMMANDS = [
-\t"canvas.present",
-\t"canvas.hide",
-\t"canvas.snapshot",
-\t"canvas.caps",
-\t"canvas.a2ui.push",
-\t"canvas.a2ui.pushJSONL",
-\t"canvas.a2ui.reset",
-\t"canvas.a2ui.dump"
-];`;
-
-export function patchPinnedOpenClawCanvasExtension(source) {
-  let patched = replaceExactlyOnce(
-    source,
-    PINNED_CANVAS_EXTENSION_COMMANDS,
-    PATCHED_CANVAS_EXTENSION_COMMANDS,
-    "Canvas Phase 1 command registration",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    'description: "Presents hosted widget documents on paired macOS panels.",',
-    'description: "Presents the managed native A2UI Canvas on paired MicroClaw Windows nodes.",',
-    "Canvas Phase 1 plugin description",
-  );
-  return replaceExactlyOnce(
-    patched,
-    'defaultPlatforms: ["macos"],',
-    'defaultPlatforms: ["windows"],',
-    "Canvas Windows platform registration",
-  );
-}
-
-const PINNED_CANVAS_TOOL_PRESENT_CASE = `\t\t\t\tcase "present": {
-\t\t\t\t\tconst placement = {
-\t\t\t\t\t\tx: readFiniteNumberParam(params, "x"),
-\t\t\t\t\t\ty: readFiniteNumberParam(params, "y"),
-\t\t\t\t\t\twidth: readFiniteNumberParam(params, "width"),
-\t\t\t\t\t\theight: readFiniteNumberParam(params, "height")
-\t\t\t\t\t};
-\t\t\t\t\tconst invokeParams = {};
-\t\t\t\t\tconst presentTarget = readToolStringParam(params, "target", { trim: true }) ?? readToolStringParam(params, "url", { trim: true });
-\t\t\t\t\tif (presentTarget) invokeParams.url = presentTarget;
-\t\t\t\t\tif (Object.values(placement).some(Number.isFinite)) invokeParams.placement = placement;
-\t\t\t\t\tconst node = await invoke(CANVAS_PRESENT_COMMAND, invokeParams);
-\t\t\t\t\treturn jsonResult({
-\t\t\t\t\t\tok: true,
-\t\t\t\t\t\tnode,
-\t\t\t\t\t\t...presentTarget ? { url: presentTarget } : {}
-\t\t\t\t\t});
-\t\t\t\t}`;
-const PATCHED_CANVAS_TOOL_PRESENT_CASE = `\t\t\t\tcase "present": {
-\t\t\t\t\tconst { node } = await invoke(CANVAS_PRESENT_COMMAND, {});
-\t\t\t\t\treturn jsonResult({
-\t\t\t\t\t\tok: true,
-\t\t\t\t\t\tnode
-\t\t\t\t\t});
-\t\t\t\t}`;
-const PINNED_CANVAS_TOOL_NAVIGATE_CASE = `\t\t\t\tcase "navigate": {
-\t\t\t\t\tconst url = readToolStringParam(params, "url", { trim: true }) ?? readToolStringParam(params, "target", {
-\t\t\t\t\t\trequired: true,
-\t\t\t\t\t\ttrim: true,
-\t\t\t\t\t\tlabel: "url"
-\t\t\t\t\t});
-\t\t\t\t\tconst node = await invoke("canvas.navigate", { url });
-\t\t\t\t\treturn jsonResult({
-\t\t\t\t\t\tok: true,
-\t\t\t\t\t\tnode,
-\t\t\t\t\t\turl
-\t\t\t\t\t});
-\t\t\t\t}`;
-
-export function patchPinnedOpenClawCanvasTool(source) {
-  let patched = replaceExactlyOnce(
-    source,
-    '\t\t\t\tawait callGatewayTool("node.invoke", {',
-    '\t\t\t\tconst result = await callGatewayTool("node.invoke", {',
-    "Canvas invocation result capture",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    "\t\t\t\treturn nodeId;\n\t\t\t};",
-    "\t\t\t\treturn { node: nodeId, result };\n\t\t\t};",
-    "Canvas invocation result projection",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    PINNED_CANVAS_TOOL_PRESENT_CASE,
-    PATCHED_CANVAS_TOOL_PRESENT_CASE,
-    "Canvas present target removal",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    PINNED_CANVAS_TOOL_NAVIGATE_CASE,
-    "",
-    "Canvas navigate removal",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    'const node = await invoke("canvas.hide");',
-    'const { node } = await invoke("canvas.hide");',
-    "Canvas hide result projection",
-  );
-  return replaceExactlyOnce(
-    patched,
-    "\t\t\t\tdefault: throw new Error(`Unknown action: ${action}`);",
-    `\t\t\t\tcase "snapshot": {
-\t\t\t\t\tconst format = readToolStringParam(params, "format", { trim: true });
-\t\t\t\t\tconst { node, result } = await invoke("canvas.snapshot", format ? { format } : {});
-\t\t\t\t\treturn jsonResult({ ok: true, node, result });
-\t\t\t\t}
-\t\t\t\tcase "caps": {
-\t\t\t\t\tconst { node, result } = await invoke("canvas.caps", {});
-\t\t\t\t\treturn jsonResult({ ok: true, node, result });
-\t\t\t\t}
-\t\t\t\tcase "a2ui_push":
-\t\t\t\tcase "a2ui_push_jsonl": {
-\t\t\t\t\tconst jsonl = readToolStringParam(params, "jsonl", { required: true });
-\t\t\t\t\tconst command = action === "a2ui_push" ? "canvas.a2ui.push" : "canvas.a2ui.pushJSONL";
-\t\t\t\t\tconst { node, result } = await invoke(command, {
-\t\t\t\t\t\tjsonl,
-\t\t\t\t\t\tprops: options?.agentSessionKey ? { sessionKey: options.agentSessionKey } : {}
-\t\t\t\t\t});
-\t\t\t\t\treturn jsonResult({ ok: true, node, result });
-\t\t\t\t}
-\t\t\t\tcase "a2ui_reset": {
-\t\t\t\t\tconst { node, result } = await invoke("canvas.a2ui.reset", {});
-\t\t\t\t\treturn jsonResult({ ok: true, node, result });
-\t\t\t\t}
-\t\t\t\tcase "a2ui_dump": {
-\t\t\t\t\tconst { node, result } = await invoke("canvas.a2ui.dump", {});
-\t\t\t\t\treturn jsonResult({ ok: true, node, result });
-\t\t\t\t}
-\t\t\t\tdefault: throw new Error(\`Unknown action: \${action}\`);`,
-    "Canvas Phase 1 safe tool actions",
-  );
-}
-
-const PINNED_CANVAS_TOOL_SCHEMA = `parameters: Type.Object({
-\t\taction: stringEnum([
-\t\t\t"present",
-\t\t\t"hide",
-\t\t\t"navigate"
-\t\t]),
-\t\tgatewayUrl: Type.Optional(Type.String()),
-\t\tgatewayToken: Type.Optional(Type.String()),
-\t\ttimeoutMs: optionalPositiveIntegerSchema(),
-\t\tnode: Type.Optional(Type.String()),
-\t\ttarget: Type.Optional(Type.String()),
-\t\tx: optionalFiniteNumberSchema(),
-\t\ty: optionalFiniteNumberSchema(),
-\t\twidth: optionalFiniteNumberSchema(),
-\t\theight: optionalFiniteNumberSchema(),
-\t\turl: Type.Optional(Type.String())
-\t})`;
-const PATCHED_CANVAS_TOOL_SCHEMA = `parameters: Type.Object({
-\t\taction: stringEnum([
-\t\t\t"present",
-\t\t\t"hide",
-\t\t\t"snapshot",
-\t\t\t"caps",
-\t\t\t"a2ui_push",
-\t\t\t"a2ui_push_jsonl",
-\t\t\t"a2ui_reset",
-\t\t\t"a2ui_dump"
-\t\t]),
-\t\tgatewayUrl: Type.Optional(Type.String()),
-\t\tgatewayToken: Type.Optional(Type.String()),
-\t\ttimeoutMs: optionalPositiveIntegerSchema(),
-\t\tnode: Type.Optional(Type.String()),
-\t\tjsonl: Type.Optional(Type.String()),
-\t\tformat: Type.Optional(Type.String())
-\t})`;
-const PINNED_CANVAS_ELIGIBILITY = `function isEligibleCanvasNode(node) {
-\tconst commands = node.invocableCommands ?? node.commands ?? [];
-\treturn /^macos(?:\\s|$)/i.test(node.platform ?? "") && node.connected === true && commands.includes("canvas.present");
-}
-const CANVAS_NODE_MESSAGES = {
-\tineligibleExact: (query, eligibleIds) => \`node "\${query}" is not an eligible Canvas panel (requires a connected macOS node advertising \${CANVAS_PRESENT_COMMAND}; eligible node ids: \${eligibleIds})\`,
-\tnameResolveFailed: (reason, eligibleIds) => \`\${reason} (eligible Canvas panel node ids: \${eligibleIds})\`,
-\tnoneEligible: () => \`no eligible Canvas panel (requires a connected macOS node advertising \${CANVAS_PRESENT_COMMAND})\`,
-\tmultipleEligible: (eligible) => \`multiple eligible Canvas panels connected; pass node explicitly: \${eligible.map((node) => node.nodeId).join(", ")}\`
-};`;
-const PATCHED_CANVAS_ELIGIBILITY = `function isEligibleCanvasNode(node) {
-\tconst commands = node.invocableCommands ?? node.commands ?? [];
-\treturn /^windows(?:\\s|$)/i.test(node.platform ?? "") && node.connected === true && commands.includes("canvas.present");
-}
-const CANVAS_NODE_MESSAGES = {
-\tineligibleExact: (query, eligibleIds) => \`node "\${query}" is not an eligible MicroClaw Canvas (requires a connected Windows node advertising \${CANVAS_PRESENT_COMMAND}; eligible node ids: \${eligibleIds})\`,
-\tnameResolveFailed: (reason, eligibleIds) => \`\${reason} (eligible MicroClaw Canvas node ids: \${eligibleIds})\`,
-\tnoneEligible: () => \`no eligible MicroClaw Canvas (requires a connected Windows node advertising \${CANVAS_PRESENT_COMMAND})\`,
-\tmultipleEligible: (eligible) => \`multiple eligible MicroClaw Canvas nodes connected; pass node explicitly: \${eligible.map((node) => node.nodeId).join(", ")}\`
-};`;
-
-export function patchPinnedOpenClawCanvasEligibility(source) {
-  let patched = replaceExactlyOnce(
-    source,
-    'description: "Present, hide, or navigate the widget panel on a paired macOS node.",',
-    'description: "Present, update, inspect, snapshot, or hide the managed native A2UI Canvas on a paired MicroClaw Windows node.",',
-    "Canvas Phase 1 tool description",
-  );
-  patched = replaceExactlyOnce(
-    patched,
-    PINNED_CANVAS_TOOL_SCHEMA,
-    PATCHED_CANVAS_TOOL_SCHEMA,
-    "Canvas Phase 1 tool schema",
-  );
-  return replaceExactlyOnce(
-    patched,
-    PINNED_CANVAS_ELIGIBILITY,
-    PATCHED_CANVAS_ELIGIBILITY,
-    "Canvas Windows node eligibility",
-  );
-}
-
 function encodeField(name, value) {
   return `${name}=${Buffer.byteLength(value, "utf8")}:${value}`;
 }
@@ -1878,109 +1542,11 @@ function installApprovalProofMinter() {
   });
 }
 
-export function isWindowsNodeMxcProtectedHooksPath(rawUrl, basePath) {
-  let pathname;
-  try {
-    pathname = new URL(rawUrl ?? "/", "http://127.0.0.1").pathname;
-  } catch {
-    return false;
-  }
-  const candidates = new Set();
-  const addCandidate = (candidate) => {
-    candidates.add(candidate);
-    candidates.add(candidate.replaceAll("\\", "/"));
-  };
-  addCandidate(pathname);
-  let decoded = pathname;
-  for (let depth = 0; depth < 3; depth += 1) {
-    try {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) break;
-      addCandidate(next);
-      decoded = next;
-    } catch {
-      break;
-    }
-  }
-  return [...candidates].some(
-    (candidate) => candidate === basePath || candidate.startsWith(`${basePath}/`),
-  );
-}
-
-export function createWindowsNodeMxcHooksGate(policy) {
-  if (
-    !policy ||
-    typeof policy !== "object" ||
-    Array.isArray(policy) ||
-    policy.contract !== "microclaw.windows-node-mxc.hooks-gate.v1" ||
-    typeof policy.gatewayGeneration !== "string" ||
-    !policy.gatewayGeneration ||
-    !/^[a-f0-9]{64}$/i.test(policy.policyFingerprint ?? "") ||
-    (policy.requestedMode !== "full" && policy.requestedMode !== "limited-dacl") ||
-    typeof policy.externalRequested !== "boolean" ||
-    typeof policy.internalRequested !== "boolean" ||
-    typeof policy.basePath !== "string" ||
-    !policy.basePath.startsWith("/") ||
-    policy.basePath === "/" ||
-    policy.basePath.endsWith("/") ||
-    /[%?#\\]/.test(policy.basePath) ||
-    policy.basePath.split("/").some((segment) => segment === "." || segment === "..")
-  ) {
-    throw new Error("MicroClaw MXC Hooks gate policy is invalid");
-  }
-  const immutablePolicy = Object.freeze({ ...policy });
-  return Object.freeze({
-    policy: immutablePolicy,
-    rejectExternal(req, res) {
-      if (!isWindowsNodeMxcProtectedHooksPath(req?.url, immutablePolicy.basePath)) {
-        return false;
-      }
-      res.statusCode = 503;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.setHeader("Cache-Control", "no-store");
-      res.end(
-        JSON.stringify({
-          ok: false,
-          error: "Hooks and webhooks are paused while MicroClaw MXC is enabled",
-          code: "MXC_HOOKS_PAUSED",
-        }),
-      );
-      return true;
-    },
-    dropInternal() {
-      return true;
-    },
-  });
-}
-
-function installWindowsNodeMxcHooksGate() {
-  const encoded = readRequiredEnvironment("MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64", true);
-  const bytes = Buffer.from(encoded, "base64");
-  if (bytes.toString("base64") !== encoded) {
-    throw new Error("MicroClaw MXC Hooks gate policy encoding is invalid");
-  }
-  let policy;
-  try {
-    policy = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error("MicroClaw MXC Hooks gate policy JSON is invalid");
-  }
-  Object.defineProperty(globalThis, HOOKS_GATE_SYMBOL, {
-    value: createWindowsNodeMxcHooksGate(policy),
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-}
-
 export function validatePinnedOpenClawApprovalPackage(
   packageDir,
   capabilities = {
     approval: true,
-    cronPause: false,
     cronResume: false,
-    hooksPause: false,
-    canvasPhase1: false,
   },
 ) {
   if (!packageDir || !isAbsolute(packageDir)) {
@@ -2017,23 +1583,6 @@ export function validatePinnedOpenClawApprovalPackage(
   if (capabilities.cronResume) {
     requestedTargets.push(createTarget("cronService", patchPinnedOpenClawCronService));
   }
-  if (capabilities.cronPause) {
-    requestedTargets.push(createTarget("cronHandlers", patchPinnedOpenClawCronHandlers));
-  }
-  if (capabilities.hooksPause) {
-    requestedTargets.push(
-      createTarget("hooksServer", patchPinnedOpenClawExternalHooks),
-      createTarget("internalHooks", patchPinnedOpenClawInternalHooks),
-    );
-  }
-  if (capabilities.canvasPhase1) {
-    requestedTargets.push(
-      createTarget("canvasExtension", patchPinnedOpenClawCanvasExtension),
-      createTarget("canvasTool", patchPinnedOpenClawCanvasTool),
-      createTarget("canvasEligibility", patchPinnedOpenClawCanvasEligibility),
-    );
-  }
-
   return requestedTargets.map((target) => {
     const modulePath = join(canonicalPackageDir, "dist", target.module);
     const targetPath = realpathSync(modulePath);
@@ -2053,11 +1602,8 @@ export function validatePinnedOpenClawApprovalPackage(
 
 function initialize() {
   const approvalEnabled = process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT === "1";
-  const cronPauseEnabled = process.env.MICROCLAW_MXC_CRON_PAUSED === "1";
   const cronResumeFence = process.env.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS;
   const cronResumeEnabled = cronResumeFence !== void 0;
-  const hooksPauseEnabled = process.env.MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64 !== void 0;
-  const canvasPhase1Enabled = process.env.MICROCLAW_MXC_CANVAS_PHASE1 === "1";
   if (cronResumeEnabled) {
     const parsedFence = Number(cronResumeFence);
     const acknowledgementPath = process.env.MICROCLAW_MXC_CRON_RESUME_ACK_PATH;
@@ -2077,14 +1623,10 @@ function initialize() {
     process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR,
     {
       approval: approvalEnabled,
-      cronPause: cronPauseEnabled,
       cronResume: cronResumeEnabled,
-      hooksPause: hooksPauseEnabled,
-      canvasPhase1: canvasPhase1Enabled,
     },
   );
   if (approvalEnabled) installApprovalProofMinter();
-  if (hooksPauseEnabled) installWindowsNodeMxcHooksGate();
 
   registerHooks({
     load(url, context, nextLoad) {
@@ -2110,10 +1652,7 @@ function initialize() {
   globalThis.console.log(
     `[microclaw-openclaw-compat] enabled ${[
       approvalEnabled ? "one-use node proof and prepared-plan backports" : null,
-      cronPauseEnabled ? "MXC Cron mutation pause fence" : null,
       cronResumeEnabled ? "MXC Cron no-catch-up resume fence" : null,
-      hooksPauseEnabled ? "MXC Hooks/Webhooks admission and dispatch pause" : null,
-      canvasPhase1Enabled ? "MXC Canvas Phase 1 exact tool and command surface" : null,
     ]
       .filter(Boolean)
       .join("; ")}`,
@@ -2123,10 +1662,7 @@ function initialize() {
 export function shouldInitializeApprovalPreload(environment, mainThread) {
   if (
     environment.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT !== "1" &&
-    environment.MICROCLAW_MXC_CRON_PAUSED !== "1" &&
-    environment.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS === void 0 &&
-    environment.MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64 === void 0 &&
-    environment.MICROCLAW_MXC_CANVAS_PHASE1 !== "1"
+    environment.MICROCLAW_MXC_CRON_RESUME_FENCE_UNIX_MS === void 0
   ) {
     return false;
   }

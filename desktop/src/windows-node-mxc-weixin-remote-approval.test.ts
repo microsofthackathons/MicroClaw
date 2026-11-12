@@ -440,45 +440,43 @@ describe("WeChat combined folder approvals", () => {
     broker.completeResolution(next.challengeId, "approved");
     expect(audit).not.toHaveBeenCalled();
   });
-  it.each(["base-container", "appcontainer-bfs"])(
-    "supports exact prepared PowerShell in Full %s",
-    (effectiveMode) => {
-      const request = input();
-      request.security = { ...request.security, requestedMode: "full", effectiveMode };
-      const access = [{ path: "C:\\Work", access: "rw" as const }];
-      const executablePath = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-      const initialization = createPowerShellFilesystemInitialization(
-        [
-          "powershell.exe",
-          "-NoProfile",
-          "-Command",
-          "Remove-Item -Path 'C:\\Work\\file.txt' -Force",
-        ],
-        executablePath,
-        access,
-      )!;
-      expect(initialization).not.toBeNull();
-      request.requests = [
-        {
-          approval: {
-            ...approval,
-            executable: "powershell.exe",
-            executablePath,
-            arguments: initialization.finalArgv.slice(1),
-            command: `powershell.exe -NoProfile -Command "${initialization.finalArgv.at(-1)}"`,
-            declaredAccess: access,
-            providerInitialization: initialization,
-          },
+  it("supports exact prepared PowerShell only in Full BaseContainer", () => {
+    const request = input();
+    request.security = {
+      ...request.security,
+      requestedMode: "full",
+      effectiveMode: "base-container",
+    };
+    const access = [{ path: "C:\\Work", access: "rw" as const }];
+    const executablePath = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    const initialization = createPowerShellFilesystemInitialization(
+      ["powershell.exe", "-NoProfile", "-Command", "Remove-Item -Path 'C:\\Work\\file.txt' -Force"],
+      executablePath,
+      access,
+    )!;
+    expect(initialization).not.toBeNull();
+    request.requests = [
+      {
+        approval: {
+          ...approval,
+          executable: "powershell.exe",
+          executablePath,
+          arguments: initialization.finalArgv.slice(1),
+          command: `powershell.exe -NoProfile -Command "${initialization.finalArgv.at(-1)}"`,
+          declaredAccess: access,
+          providerInitialization: initialization,
         },
-      ];
-      expect(configuredBroker().createChallengeResult(request).status).toBe("created");
-      request.security.effectiveMode = "appcontainer-dacl";
+      },
+    ];
+    expect(configuredBroker().createChallengeResult(request).status).toBe("created");
+    for (const tier of ["appcontainer-dacl", "appcontainer-bfs"]) {
+      request.security.effectiveMode = tier;
       expect(configuredBroker().createChallengeResult(request)).toEqual({
         status: "rejected",
         reason: "security-binding-invalid",
       });
-    },
-  );
+    }
+  });
 });
 
 describe("WeChat Windows Node command consent", () => {

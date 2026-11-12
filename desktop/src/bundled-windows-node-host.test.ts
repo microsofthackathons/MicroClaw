@@ -1,32 +1,21 @@
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  promises as fsPromises,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, promises as fsPromises, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BUNDLED_WINDOWS_NODE_CWD_CONTRACT,
   BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
-  BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
+  BUNDLED_WINDOWS_NODE_RUNTIME_CONTRACT,
   BUNDLED_WINDOWS_NODE_REVISION,
   BundledWindowsNodeHost,
   type BundledWindowsNodeApprovalProofContext,
   type BundledWindowsNodeGateway,
-  MXC_EXACT_BACKEND_PROVISIONING,
-  MXC_HOST_PREP_PATCH_REVISION,
-  MXC_SDK_SOURCE_REVISION,
   assertApprovalResponseMatches,
   assertLoopbackGateway,
   approveBundledDevicePairRequest,
   createBundledWindowsNodeEnvironment,
   endBundledWindowsNodeBootstrap,
-  execFileText,
   classifyBundledHostDiagnostic,
   findBundledDevicePairRequest,
   findBundledNodePairRequest,
@@ -34,9 +23,7 @@ import {
   replaceFileWithRetry,
   revokeActivationLeaseFile,
   sanitizeBundledHostDiagnostic,
-  sha256DirectoryTree,
   terminateBundledWindowsNodeProcessTree,
-  sensitiveWindowsRoots,
   validateApprovalRequest,
   validateBundledWindowsNodeRuntimeManifest,
 } from "./bundled-windows-node-host";
@@ -51,8 +38,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-const policyCanvasRoot = mkdtempSync(path.join(os.tmpdir(), "microclaw-policy-canvas-"));
-const policyCanvasHostPath = path.join(policyCanvasRoot, "canvas-host.exe");
 const leaseProofContext: BundledWindowsNodeApprovalProofContext = {
   contract: BUNDLED_WINDOWS_NODE_APPROVAL_PROOF_CONTRACT,
   secretBase64: Buffer.alloc(32, 9).toString("base64"),
@@ -61,8 +46,21 @@ const leaseProofContext: BundledWindowsNodeApprovalProofContext = {
   nodeId: "a".repeat(64),
   readinessTransitionId: "12345678-1234-4234-8234-123456789abc",
 };
-writeFileSync(policyCanvasHostPath, "canvas-host");
-afterAll(() => rmSync(policyCanvasRoot, { recursive: true, force: true }));
+const runtimeManifest = {
+  architecture: "x64",
+  runtimeIdentifier: "win-x64",
+  mxcVersion: "1.0.1",
+  mxcManagedSha256: "59761d9a868cde01ef05139775ad6d072f9425b5b73b911bdf465b29b4bf20a6",
+  mxcNativeSha256: {
+    "mxc_ffi.dll": "bd45522f06dc9cc8001dcd5d7320bc2bf303fb08a39bf10f3404bd9a8001812c",
+    "plm.exe": "beffc9c9ab974ca9e7455089fd8ecb36eb8c92811ddd1705db91370a689692c3",
+    "wslcsdk.dll": "8d4d55d4283fb32a5909b57e78b576d01363d7b28bb9b2595115e80faf61db5b",
+    "wxc-wslc-daemon.exe": "84f61c1bc13abde8da1c3f2ff100e6d59368ecaabdbfeca939e6fdb696202d0c",
+  },
+  windowsNodeRevision: BUNDLED_WINDOWS_NODE_REVISION,
+  hostSha256: "0".repeat(64),
+  contract: BUNDLED_WINDOWS_NODE_RUNTIME_CONTRACT,
+};
 
 describe("bundled Windows node host", () => {
   it.each([true, false])(
@@ -128,7 +126,7 @@ describe("bundled Windows node host", () => {
       }
     },
   );
-  it("preserves live consent and folder changes and gives every revision a fresh epoch", async () => {
+  it("preserves live consent and folder changes with a fresh epoch", async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-live-consent-"));
     try {
       const host = createLeaseHost(root);
@@ -172,6 +170,7 @@ describe("bundled Windows node host", () => {
       ]);
       expect(policies[2].approvedRoots).toEqual(policies[1].approvedRoots);
       expect(policies[2].approvedRoots).toContainEqual({ path: "C:\\Work", access: "ReadWrite" });
+      expect(policies.every((policy) => !("canvas" in policy))).toBe(true);
       expect(new Set(policies.map((policy) => policy.livePolicyEpoch)).size).toBe(3);
       expect(new Set(revisions.map((revision) => revision.policyFingerprint)).size).toBe(3);
       expect(revisions.map((revision) => revision.approval)).toEqual([null, null, null]);
@@ -198,75 +197,19 @@ describe("bundled Windows node host", () => {
     expect(BUNDLED_WINDOWS_NODE_CWD_CONTRACT).toBe("microclaw.windows-cwd.v1");
   });
 
-  it("binds every Canvas host code and resource file into one tree hash", () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-canvas-tree-"));
-    try {
-      mkdirSync(path.join(root, "nested"));
-      writeFileSync(path.join(root, "host.exe"), "apphost");
-      writeFileSync(path.join(root, "nested", "host.dll"), "managed-code");
-      const original = sha256DirectoryTree(root);
-      expect(sha256DirectoryTree(root)).toBe(original);
-      writeFileSync(path.join(root, "nested", "host.dll"), "changed-code");
-      expect(sha256DirectoryTree(root)).not.toBe(original);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("pins the reviewed MXC target-only host-prep patch", () => {
-    expect(MXC_HOST_PREP_PATCH_REVISION).toBe("695c2b89c6142090a098ec4484f49aff8157f0b3");
-  });
-
-  it("attests the exact MXC package provenance and backend build contract", () => {
-    expect(() =>
-      validateBundledWindowsNodeRuntimeManifest(
-        {
-          architecture: "x64",
-          mxcVersion: "0.7.0",
-          mxcSourceRevision: MXC_SDK_SOURCE_REVISION,
-          mxcProductionBfsCompiledIn: false,
-          mxcExactBackendProvisioning: MXC_EXACT_BACKEND_PROVISIONING,
-          wxcExecSha256: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
-          windowsNodeRevision: BUNDLED_WINDOWS_NODE_REVISION,
-          canvasContract: BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
-          canvasHostSha256: "1".repeat(64),
-          canvasHostTreeSha256: "2".repeat(64),
-          mxcHostPrepPatchRevision: MXC_HOST_PREP_PATCH_REVISION,
-          microclawHostPrepOrigin: "microclaw-built",
-          microclawHostPrepOperations: ["prepare-system-drive", "unprepare-system-drive"],
-        },
-        "x64",
-      ),
-    ).not.toThrow();
+  it("attests the bundled MXC SDK and Windows node provenance", () => {
+    expect(() => validateBundledWindowsNodeRuntimeManifest(runtimeManifest, "x64")).not.toThrow();
   });
 
   it.each([
-    ["version", { mxcVersion: "0.7.1" }],
-    ["source revision", { mxcSourceRevision: "0".repeat(40) }],
-    ["BFS build flag", { mxcProductionBfsCompiledIn: true }],
-    ["backend provisioning contract", { mxcExactBackendProvisioning: "appcontainer-bfs" }],
-    ["runtime hash", { wxcExecSha256: "0".repeat(64) }],
+    ["version", { mxcVersion: "1.0.0" }],
+    ["Windows node revision", { windowsNodeRevision: "0".repeat(40) }],
+    ["managed SDK hash", { mxcManagedSha256: "0".repeat(64) }],
+    ["native SDK hashes", { mxcNativeSha256: {} }],
+    ["host hash", { hostSha256: "invalid" }],
   ])("rejects an MXC runtime manifest with a mismatched %s", (_label, override) => {
     expect(() =>
-      validateBundledWindowsNodeRuntimeManifest(
-        {
-          architecture: "x64",
-          mxcVersion: "0.7.0",
-          mxcSourceRevision: MXC_SDK_SOURCE_REVISION,
-          mxcProductionBfsCompiledIn: false,
-          mxcExactBackendProvisioning: MXC_EXACT_BACKEND_PROVISIONING,
-          wxcExecSha256: "db0a3422be9e1b396cc1b2547c70ff16b27412438a31c10a45abf370cac86ae2",
-          windowsNodeRevision: BUNDLED_WINDOWS_NODE_REVISION,
-          canvasContract: BUNDLED_WINDOWS_NODE_CANVAS_CONTRACT,
-          canvasHostSha256: "1".repeat(64),
-          canvasHostTreeSha256: "2".repeat(64),
-          mxcHostPrepPatchRevision: MXC_HOST_PREP_PATCH_REVISION,
-          microclawHostPrepOrigin: "microclaw-built",
-          microclawHostPrepOperations: ["prepare-system-drive", "unprepare-system-drive"],
-          ...override,
-        },
-        "x64",
-      ),
+      validateBundledWindowsNodeRuntimeManifest({ ...runtimeManifest, ...override }, "x64"),
     ).toThrow("runtime manifest does not match");
   });
 
@@ -344,14 +287,12 @@ describe("bundled Windows node host", () => {
       "generation-1",
       "a".repeat(64),
       folders,
-      String.raw`C:\Users\Alice\AppData\Roaming\openclaw`,
       "12345678-1234-4234-8234-123456789abc",
     );
     const second = host.createApprovalProofContext(
       "generation-1",
       "a".repeat(64),
       folders,
-      String.raw`C:\Users\Alice\AppData\Roaming\openclaw`,
       "12345678-1234-4234-8234-123456789abc",
     );
 
@@ -611,17 +552,24 @@ describe("bundled Windows node host", () => {
     return { promise, resolve: () => release() };
   }
 
-  it("binds requested strength, effective tier, and ambient assessment into policy identity", () => {
+  it("binds mode and consent into policy identity and rejects retired DACL evidence", () => {
     const host = createPolicyHost();
     const folders = [{ path: String.raw`C:\Approved`, access: "rw" as const }];
     const args = [
       "generation-1",
       "a".repeat(64),
       folders,
-      String.raw`C:\OpenClaw`,
       "12345678-1234-4234-8234-123456789abc",
     ] as const;
     const full = host.createApprovalProofContext(...args, "full", "base-container", null);
+    const withConsent = host.createApprovalProofContext(
+      ...args,
+      "full",
+      "base-container",
+      null,
+      "allow-always",
+    );
+    expect(full.policyFingerprint).not.toBe(withConsent.policyFingerprint);
     const targets = [
       ["desktop", String.raw`C:\Users\Alice\Desktop`],
       ["documents", String.raw`C:\Users\Alice\Documents`],
@@ -658,51 +606,29 @@ describe("bundled Windows node host", () => {
       })),
       targets: targets.map(([category, path]) => ({ category, path })),
     };
-    const limited = host.createApprovalProofContext(
-      ...args,
-      "limited-dacl",
-      "appcontainer-dacl",
-      ambient,
-    );
-
-    expect(full.policyFingerprint).not.toBe(limited.policyFingerprint);
+    expect(() =>
+      host.createApprovalProofContext(...args, "limited-dacl", "appcontainer-dacl", ambient),
+    ).toThrow("retired DACL");
+    expect(() =>
+      host.createApprovalProofContext(...args, "full", "base-container", ambient),
+    ).toThrow("retired DACL");
   });
 
-  it("protects both helper state and the resolved OpenClaw state root", () => {
-    const roots = sensitiveWindowsRoots(
-      "C:\\Users\\Alice\\AppData\\Roaming\\MicroClaw\\windows-node",
-      "D:\\OpenClawState",
-    );
-
-    expect(roots).toContain("C:\\Users\\Alice\\AppData\\Roaming\\MicroClaw\\windows-node");
-    expect(roots).toContain("D:\\OpenClawState");
-    expect(roots).toContain(path.join(os.homedir(), ".gnupg"));
-    expect(roots).toContain(path.join(os.homedir(), ".config", "gcloud"));
-    expect(roots).toContain(
-      path.join(
-        process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
-        "Mozilla",
-        "Firefox",
-        "Profiles",
+  it("does not add MicroClaw-specific denied roots to a profile grant", () => {
+    const host = createPolicyHost();
+    const policy = JSON.parse(
+      host["buildPolicyJson"](
+        [{ path: String.raw`C:\Users\Alice`, access: "ro" }],
+        "full",
+        "base-container",
+        null,
       ),
-    );
-    expect(roots).toContain(
-      path.join(
-        process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
-        "Microsoft",
-        "Windows",
-        "PowerShell",
-        "PSReadLine",
-      ),
-    );
-    expect(roots).toContain(
-      path.join(
-        process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"),
-        "BraveSoftware",
-        "Brave-Browser",
-        "User Data",
-      ),
-    );
+    ) as { approvedRoots: Array<{ path: string; access: string }>; deniedRoots?: unknown };
+    expect(policy.approvedRoots).toContainEqual({
+      path: String.raw`C:\Users\Alice`,
+      access: "ReadOnly",
+    });
+    expect(policy).not.toHaveProperty("deniedRoots");
   });
 
   it.each(["ws://127.0.0.1:18789", "ws://localhost:18789", "wss://[::1]:18789"])(
@@ -864,7 +790,7 @@ describe("bundled Windows node host", () => {
     ).toBeNull();
   });
 
-  it("approves only the exact app-owned system and Canvas node surface", () => {
+  it("approves only the exact app-owned system node surface", () => {
     const nodeId = "d".repeat(64);
     const commands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
     expect(
@@ -901,7 +827,7 @@ describe("bundled Windows node host", () => {
 
   it("waits for the old connection to close and reconnects after node reapproval", async () => {
     const nodeId = "d".repeat(64);
-    const commands = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const commands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
     const startOptions = { requestedStrength: "off" };
     const initialProcess = { exitCode: null, signalCode: null };
     const restartedProcess = { exitCode: null, signalCode: null };
@@ -968,7 +894,7 @@ describe("bundled Windows node host", () => {
 
   it("does not restart a stopped node while waiting for pairing reconnection", async () => {
     const nodeId = "d".repeat(64);
-    const commands = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const commands = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
     const host = new BundledWindowsNodeHost();
     Object.assign(host, {
       process: { exitCode: null, signalCode: null },
@@ -1076,31 +1002,25 @@ describe("bundled Windows node host", () => {
     ).toThrow(/unexpected command surface/);
   });
 
-  it("accepts only the required reviewed command subset in regular mode", () => {
+  it("requires the same complete system-only surface in every mode", () => {
     const nodeId = "d".repeat(64);
-    const required = ["system.run", "system.run.prepare", "system.which", "system.run.cwd-policy"];
+    const required = [...WINDOWS_NODE_MXC_NODE_COMMANDS];
     const node = (commands: string[]) => ({ nodeId, connected: true, commands });
     const pending = (commands: string[]) => ({
       pending: [{ ...node(commands), requestId: "regular-node" }],
     });
 
-    expect(inspectBundledNodeList({ nodes: [node(required)] }, nodeId, false).node?.connected).toBe(
-      true,
-    );
-    expect(findBundledNodePairRequest(pending(required), nodeId, false)).toBe("regular-node");
-    expect(() => inspectBundledNodeList({ nodes: [node(required)] }, nodeId)).toThrow(
-      /unexpected command surface/,
-    );
-    expect(findBundledNodePairRequest(pending(required), nodeId)).toBeNull();
+    expect(inspectBundledNodeList({ nodes: [node(required)] }, nodeId).node?.connected).toBe(true);
+    expect(findBundledNodePairRequest(pending(required), nodeId)).toBe("regular-node");
     for (const commands of [
       required.slice(0, -1),
-      [...required, "canvas.eval"],
+      [...required, "device.info"],
       [...required, required[0]],
     ]) {
-      expect(() => inspectBundledNodeList({ nodes: [node(commands)] }, nodeId, false)).toThrow(
+      expect(() => inspectBundledNodeList({ nodes: [node(commands)] }, nodeId)).toThrow(
         /unexpected command surface/,
       );
-      expect(findBundledNodePairRequest(pending(commands), nodeId, false)).toBeNull();
+      expect(findBundledNodePairRequest(pending(commands), nodeId)).toBeNull();
     }
   });
 
@@ -1153,7 +1073,6 @@ describe("bundled Windows node host", () => {
     const host = Object.create(BundledWindowsNodeHost.prototype) as BundledWindowsNodeHost;
     Object.assign(host, {
       wxcExecPath: process.execPath,
-      canvasHostPath: policyCanvasHostPath,
     });
     return host;
   }
@@ -1264,11 +1183,31 @@ describe("bundled Windows node host", () => {
       APPDATA: String.raw`C:\Users\Alice\AppData\Roaming`,
       TEMP: String.raw`C:\MicroClaw\scratch`,
     });
+
     expect(environment).not.toHaveProperty("OPENCLAW_STATE_DIR");
     expect(environment).not.toHaveProperty("MODEL_API_KEY");
     expect(createBundledWindowsNodeEnvironment(String.raw`C:\Windows`, "scratch", {}).PATHEXT).toBe(
       ".COM;.EXE;.BAT;.CMD",
     );
+  });
+
+  it("uses the Gateway temporary directory without changing helper probes", () => {
+    const environment = createBundledWindowsNodeEnvironment(
+      String.raw`C:\Windows`,
+      String.raw`C:\MicroClaw\scratch`,
+      {},
+      String.raw`C:\Users\Alice\AppData\Local\Temp`,
+    );
+    expect(environment.TEMP).toBe(String.raw`C:\Users\Alice\AppData\Local\Temp`);
+    expect(environment.TMP).toBe(environment.TEMP);
+    expect(() =>
+      createBundledWindowsNodeEnvironment(
+        String.raw`C:\Windows`,
+        String.raw`C:\MicroClaw\scratch`,
+        {},
+        "relative-temp",
+      ),
+    ).toThrow(/absolute Windows path/);
   });
 
   it("retries a transient Windows atomic replacement without weakening failures", async () => {
@@ -1341,47 +1280,6 @@ describe("bundled Windows node host", () => {
     ).toBe(deletionError);
     expect(terminated).toBe(true);
   });
-
-  it("settles a timed out ambient helper and terminates its process tree", async () => {
-    const startedAt = Date.now();
-
-    await expect(
-      execFileText(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], 100),
-    ).rejects.toThrow("ambient assessment timed out after 100ms");
-
-    expect(Date.now() - startedAt).toBeLessThan(10_000);
-  });
-
-  it.runIf(process.platform === "win32")(
-    "kills pipe-holding descendants before settling a helper timeout",
-    async () => {
-      const root = mkdtempSync(path.join(os.tmpdir(), "microclaw-ambient-timeout-"));
-      const pidsPath = path.join(root, "pids.json");
-      const script = `
-      const { spawn } = require("node:child_process");
-      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
-        stdio: "inherit", windowsHide: true,
-      });
-      child.on("spawn", () => require("node:fs").writeFileSync(
-        process.argv[1], JSON.stringify([process.pid, child.pid]),
-      ));
-      setTimeout(() => {}, 30000);
-    `;
-      try {
-        await expect(
-          execFileText(process.execPath, ["-e", script, pidsPath], 2000),
-        ).rejects.toThrow("ambient assessment timed out after 2000ms");
-        const pids = JSON.parse(readFileSync(pidsPath, "utf8")) as number[];
-        expect(pids).toHaveLength(2);
-        for (const pid of pids) {
-          expect(() => process.kill(pid, 0)).toThrow();
-        }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-    15_000,
-  );
 
   it("requires an explicit non-conflicting package architecture", () => {
     const script = path.join(__dirname, "..", "scripts", "prepare-windows-node-resources.mjs");

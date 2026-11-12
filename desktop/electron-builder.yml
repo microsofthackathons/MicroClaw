@@ -24,6 +24,12 @@ win:
     - "!wxc-test-proxy.exe"
     - "!wxc-windows-sandbox-daemon.exe"
     - "!wxc-windows-sandbox-guest.exe"
+    - "!plm.exe"
+    - "!wxc-wslc-daemon.exe"
+    # Upstream pins every fixed-worker file, including the .NET runtime tools,
+    # in a manifest embedded in the signed host.
+    - "!createdump.exe"
+    - "!OpenClaw.FileWorker.exe"
 
 appx:
   artifactName: MicroClawDesktop-${version}-${arch}.msix

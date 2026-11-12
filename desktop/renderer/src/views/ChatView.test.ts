@@ -1,9 +1,14 @@
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ref } from "vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { setLocale } from "@/i18n";
 import { useChatStore } from "@/stores/chat";
+import {
+  windowsNodeMxcLifecycleStateKey,
+  type WindowsNodeMxcLifecycleState,
+} from "@/windows-node-mxc-lifecycle";
 import ChatView from "./ChatView.vue";
 
 vi.mock("vue-router", () => ({
@@ -70,6 +75,57 @@ describe("ChatView agent preparation", () => {
     await flushPromises();
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect((input.element as HTMLTextAreaElement).value).toBe("");
+    wrapper.unmount();
+  });
+
+  it("preserves drafts and blocks submission during live mode changes and failures", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useChatStore(pinia);
+    store.wsConnected = true;
+    const state = ref<WindowsNodeMxcLifecycleState | null>({
+      phase: "active",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const sendMessage = vi.spyOn(window.openclaw.chat, "sendMessage");
+    const wrapper = shallowMount(ChatView, {
+      global: {
+        plugins: [pinia],
+        provide: { [windowsNodeMxcLifecycleStateKey as symbol]: state },
+      },
+    });
+    const input = wrapper.get("textarea");
+    await input.setValue("Keep this draft");
+    for (const phase of [
+      "locking",
+      "updating-folders",
+      "updating-consent",
+      "updating-model",
+      "connecting-weixin",
+      "disconnecting-weixin",
+    ] as const) {
+      state.value = { ...state.value!, phase };
+      await wrapper.vm.$nextTick();
+      expect(store.wsConnected).toBe(true);
+      expect(wrapper.get(".home-input-send").attributes("disabled")).toBeDefined();
+      await input.trigger("keydown", { key: "Enter" });
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect((input.element as HTMLTextAreaElement).value).toBe("Keep this draft");
+    }
+
+    state.value = { ...state.value!, phase: "failed", detail: "Policy failed" };
+    await wrapper.vm.$nextTick();
+    expect(input.attributes("placeholder")).toContain("执行已锁定");
+    await input.trigger("keydown", { key: "Enter" });
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    state.value = { ...state.value!, phase: "idle", detail: null };
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".home-input-send").attributes("disabled")).toBeUndefined();
+    await input.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 });

@@ -26,17 +26,18 @@ export function parseCommandConsentPreview(value: unknown): CommandConsentPrevie
   };
 }
 
-export async function applyCommandConsentChange(
-  previous: CommandConsentMode,
-  next: CommandConsentMode,
+export async function applyLiveSecurityPolicyChange<T>(
+  previous: T,
+  next: T,
   hooks: {
     lock: () => Promise<void>;
-    save: (mode: CommandConsentMode) => void;
-    publish: (mode: CommandConsentMode) => Promise<void>;
-    verify: (mode: CommandConsentMode) => Promise<void>;
+    save: (value: T) => void;
+    publish: (value: T) => Promise<void>;
+    verify: (value: T) => Promise<void>;
     release: () => Promise<void>;
     failClosed: (error: unknown) => Promise<void>;
   },
+  failureMessage: string,
 ): Promise<void> {
   try {
     await hooks.lock();
@@ -58,12 +59,21 @@ export async function applyCommandConsentChange(
       } catch (lockingError) {
         failures.push(lockingError);
       }
-      throw new AggregateError(
-        failures,
-        "Command consent could not be applied or restored; execution is unavailable",
-        { cause: rollbackError },
-      );
+      throw new AggregateError(failures, failureMessage, { cause: rollbackError });
     }
     throw error;
   }
+}
+
+export function applyCommandConsentChange(
+  previous: CommandConsentMode,
+  next: CommandConsentMode,
+  hooks: Parameters<typeof applyLiveSecurityPolicyChange<CommandConsentMode>>[2],
+): Promise<void> {
+  return applyLiveSecurityPolicyChange(
+    previous,
+    next,
+    hooks,
+    "Command consent could not be applied or restored; execution is unavailable",
+  );
 }

@@ -86,4 +86,22 @@ describe("MXC folder cleanup integration", () => {
     });
     expect(validate).toHaveBeenCalledExactlyOnceWith("C:\\Work");
   });
+
+  it("preserves nested folder grants when validating and later removing a parent", async () => {
+    const { normalize } = loadDraftNormalizer();
+    const saved = await normalize({
+      rw: ["C:\\Work", "C:\\Work\\Child"],
+      ro: ["C:\\Work\\ReadOnly"],
+    });
+    expect(saved).toEqual({
+      rw: ["C:\\Work", "C:\\Work\\Child"],
+      ro: ["C:\\Work\\ReadOnly"],
+    });
+    expect(
+      await normalize({ ...saved, rw: saved.rw.filter((entry) => entry !== "C:\\Work") }),
+    ).toEqual({
+      rw: ["C:\\Work\\Child"],
+      ro: ["C:\\Work\\ReadOnly"],
+    });
+  });
 });

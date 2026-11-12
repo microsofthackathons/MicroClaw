@@ -54,11 +54,15 @@ contextBridge.exposeInMainWorld("openclaw", {
   config: {
     getStateDir: () => ipcRenderer.invoke("config:get-state-dir"),
     isConfigured: () => ipcRenderer.invoke("config:is-configured"),
+    initialSetupRequired: () => ipcRenderer.invoke("config:initial-setup-required"),
     needsSetup: () => ipcRenderer.invoke("config:needs-setup"),
     read: () => ipcRenderer.invoke("config:read"),
     readEnv: () => ipcRenderer.invoke("config:read-env"),
-    write: (config: any, expectedConfig?: unknown) =>
-      ipcRenderer.invoke("config:write", config, expectedConfig),
+    write: (
+      config: unknown,
+      expectedConfig?: unknown,
+      intent?: { kind: "initial-setup"; providerKey: string } | { kind: "search-settings" },
+    ) => ipcRenderer.invoke("config:write", config, expectedConfig, intent),
   },
 
   // --- Settings ---
@@ -434,9 +438,6 @@ contextBridge.exposeInMainWorld("openclaw", {
         ok: boolean;
         canceled?: boolean;
         reason?: string;
-        parentDir?: string;
-        parentAccess?: string;
-        removedChildren?: string[];
         dirs: { rw: string[]; ro: string[] };
       }>,
     setEnabled: (params: { enabled: boolean }) =>

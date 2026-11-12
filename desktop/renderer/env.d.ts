@@ -214,10 +214,15 @@ interface OpenClawAPI {
   config: {
     getStateDir(): Promise<string>;
     isConfigured(): Promise<boolean>;
+    initialSetupRequired(): Promise<boolean>;
     needsSetup(): Promise<boolean>;
     read(): Promise<any>;
     readEnv(): Promise<Record<string, string>>;
-    write(config: any, expectedConfig?: any): Promise<void>;
+    write(
+      config: unknown,
+      expectedConfig?: unknown,
+      intent?: { kind: "initial-setup"; providerKey: string } | { kind: "search-settings" },
+    ): Promise<void>;
   };
   settings: {
     get(): Promise<AppSettings>;
@@ -288,11 +293,7 @@ interface OpenClawAPI {
     ): () => void;
   };
   cron: {
-    list(): Promise<{
-      jobs?: unknown[];
-      pausedByMxc?: boolean;
-      requestedMode?: "off" | "full" | "limited-dacl";
-    }>;
+    list(): Promise<{ jobs?: unknown[] }>;
   };
   agents: {
     list(): Promise<{ agents?: { id: string; name: string; description?: string }[] }>;
@@ -433,14 +434,11 @@ interface OpenClawAPI {
       ok: boolean;
       canceled?: boolean;
       reason?: string;
-      parentDir?: string;
-      parentAccess?: string;
-      removedChildren?: string[];
       dirs: { rw: string[]; ro: string[] };
     }>;
     getStatus(): Promise<{
-      requestedMode: "off" | "full" | "limited-dacl";
-      effectiveStrength: "off" | "full" | "limited-dacl";
+      requestedMode: "off" | "full";
+      effectiveStrength: "off" | "full";
       effectiveTier: string | null;
       desiredEnabled: boolean;
       effectiveEnabled: boolean;
@@ -450,12 +448,6 @@ interface OpenClawAPI {
         effectiveExternalEnabled: boolean;
         effectiveInternalEnabled: boolean;
         pausedByMxc: boolean;
-      };
-      canvas: {
-        state: "off" | "paused" | "active";
-        commandCount: 8;
-        nativeA2uiOnly: true;
-        localFilesAllowed: false;
       };
       lifecycleState: {
         phase:
@@ -546,11 +538,11 @@ interface OpenClawAPI {
       activationLeaseExpiresAt: string | null;
       gatewayPolicyState: "active" | "locked" | "drift";
       gatewayPolicyReady: boolean;
-      effectiveToolsReady: boolean;
-      effectiveToolsState: "unverified" | "verified" | "drift";
       durableApprovalsPresent: boolean | null;
       probe: {
         outcome: "supported" | "unsupported" | "error";
+        windowsUnsupported?: boolean;
+        supportsProtectedPathDenies?: boolean;
         tier: string | null;
         needsDaclAugmentation: boolean;
         degraded: boolean;

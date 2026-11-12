@@ -15,8 +15,8 @@ const security = {
   policyFingerprint: "b".repeat(64),
   nodeId: "c".repeat(64),
   activationLeaseHash: "d".repeat(64),
-  requestedMode: "limited-dacl" as const,
-  effectiveMode: "appcontainer-dacl",
+  requestedMode: "full" as const,
+  effectiveMode: "base-container",
 };
 
 function normalized(argv: string[], executablePath: string, initialize = false) {

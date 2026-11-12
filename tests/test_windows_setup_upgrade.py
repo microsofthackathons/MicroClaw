@@ -2176,7 +2176,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(written["defaults"]["heartbeat"], {"agentId": "custom"})
         self.assertEqual(written["defaults"]["model"], {"primary": "custom/test-model"})
 
-    def test_write_config_defaults_fresh_install_to_parallel_free_search(self):
+    def test_write_config_does_not_install_a_search_provider_by_default(self):
         self.ws._deploy_managed_skills = unittest.mock.Mock()
         self.ws._install_officecli = unittest.mock.Mock()
         self.ws._generate_skill_snapshot = unittest.mock.Mock()
@@ -2185,8 +2185,13 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         config_path = self.home / ".openclaw" / "openclaw.json"
         written = json.loads(config_path.read_text(encoding="utf-8"))
-        self.assertEqual(written["tools"]["web"]["search"], {"provider": "parallel-free"})
-        self.assertEqual(written["plugins"]["entries"]["parallel"], {"enabled": True})
+        self.assertNotIn("search", written.get("tools", {}).get("web", {}))
+        entries = written.get("plugins", {}).get("entries", {})
+        allowed = written.get("plugins", {}).get("allow", [])
+        self.assertNotIn("parallel", entries)
+        self.assertNotIn("brave", entries)
+        self.assertNotIn("tavily", entries)
+        self.assertFalse({"parallel", "brave", "tavily"} & set(allowed))
 
     def test_write_config_preserves_search_disabled_for_background_setup_or_by_user(self):
         state = self.home / ".openclaw"
@@ -2203,6 +2208,63 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         written = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(written["tools"]["web"]["search"], search)
         self.assertNotIn("parallel", written.get("plugins", {}).get("entries", {}))
+
+    def test_write_config_does_not_override_disabled_search_plugins(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        policies = (
+            {"entries": {"parallel": {"enabled": False, "owner": "user"}}},
+            {"enabled": False},
+            {"deny": ["parallel"]},
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+        for plugins in policies:
+            with self.subTest(plugins=plugins):
+                config_path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+                self.assertTrue(self.ws.write_config())
+                written = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(written["plugins"], plugins)
+                self.assertNotIn("search", written.get("tools", {}).get("web", {}))
+
+    def test_write_config_does_not_enable_a_disabled_brave_plugin_for_an_installer_key(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        plugins = {"entries": {"brave": {"enabled": False}}}
+        config_path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+        self.ws.cfg = _Config({"brave.api_key": "installer-brave-key"})
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["plugins"], plugins)
+        self.assertNotIn("search", written.get("tools", {}).get("web", {}))
+
+    def test_write_config_reports_malformed_existing_search_without_overwriting_it(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        examples = (
+            "not json",
+            json.dumps([]),
+            json.dumps({"tools": {"web": {"search": []}}}),
+            json.dumps({"tools": {"web": {"search": {"provider": []}}}}),
+            json.dumps({"plugins": {"entries": {"parallel": []}}}),
+            json.dumps(
+                {
+                    "tools": {"web": {"search": {"provider": "brave"}}},
+                    "plugins": {"entries": {"brave": {"config": {"webSearch": []}}}},
+                }
+            ),
+        )
+        for content in examples:
+            with self.subTest(content=content):
+                config_path.write_text(content, encoding="utf-8")
+                self.assertFalse(self.ws.write_config())
+                self.assertEqual(config_path.read_text(encoding="utf-8"), content)
 
     def test_write_config_disables_new_managed_skills_outside_whitelist(self):
         self.ws.cfg = _Config(
@@ -2272,7 +2334,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         written = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(
             written["tools"]["web"]["search"],
-            {"provider": "tavily", "apiKey": "key"},
+            {"provider": "tavily"},
+        )
+        self.assertEqual(
+            written["plugins"]["entries"]["tavily"]["config"]["webSearch"]["apiKey"], "key"
         )
 
     def test_write_config_existing_provider_wins_over_installer_brave_key(self):
@@ -2292,10 +2357,83 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         written = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(
             written["tools"]["web"]["search"],
-            {"provider": "tavily", "apiKey": "key"},
+            {"provider": "tavily"},
+        )
+        self.assertEqual(
+            written["plugins"]["entries"]["tavily"]["config"]["webSearch"]["apiKey"], "key"
         )
 
-    def test_write_config_replaces_keyless_paid_provider_with_parallel_free(self):
+    def test_write_config_preserves_plugin_owned_search_credentials(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        search = {"provider": "tavily", "maxResults": 5}
+        plugin = {
+            "enabled": True,
+            "config": {"webSearch": {"apiKey": "existing-key", "count": 5}, "other": True},
+        }
+        config_path.write_text(
+            json.dumps(
+                {"tools": {"web": {"search": search}}, "plugins": {"entries": {"tavily": plugin}}}
+            ),
+            encoding="utf-8",
+        )
+        self.ws.cfg = _Config({"brave.api_key": "installer-brave-key"})
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["tools"]["web"]["search"], search)
+        self.assertEqual(written["plugins"]["entries"]["tavily"], plugin)
+        self.assertNotIn("brave", written["plugins"]["entries"])
+
+    def test_write_config_removes_an_empty_legacy_key_from_a_valid_plugin_provider(self):
+        config_path = self.home / ".openclaw" / "openclaw.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {"web": {"search": {"provider": "tavily", "apiKey": ""}}},
+                    "plugins": {
+                        "entries": {"tavily": {"config": {"webSearch": {"apiKey": "existing-key"}}}}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["tools"]["web"]["search"], {"provider": "tavily"})
+        self.assertEqual(
+            written["plugins"]["entries"]["tavily"]["config"]["webSearch"]["apiKey"],
+            "existing-key",
+        )
+
+    def test_write_config_places_new_brave_key_in_the_plugin(self):
+        self.ws.cfg = _Config({"brave.api_key": "installer-brave-key"})
+        self.ws._deploy_managed_skills = unittest.mock.Mock()
+        self.ws._install_officecli = unittest.mock.Mock()
+        self.ws._generate_skill_snapshot = unittest.mock.Mock()
+
+        self.assertTrue(self.ws.write_config())
+
+        written = json.loads(
+            (self.home / ".openclaw" / "openclaw.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(written["tools"]["web"]["search"], {"provider": "brave"})
+        self.assertEqual(
+            written["plugins"]["entries"]["brave"],
+            {"enabled": True, "config": {"webSearch": {"apiKey": "${BRAVE_API_KEY}"}}},
+        )
+
+    def test_write_config_preserves_keyless_paid_provider_without_adding_parallel(self):
         for provider in ("brave", "tavily"):
             with self.subTest(provider=provider):
                 config_path = self.home / ".openclaw" / "openclaw.json"
@@ -2313,12 +2451,9 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
                 written = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(
                     written["tools"]["web"]["search"],
-                    {"provider": "parallel-free"},
+                    {"provider": provider},
                 )
-                self.assertEqual(
-                    written["plugins"]["entries"]["parallel"],
-                    {"enabled": True},
-                )
+                self.assertNotIn("parallel", written.get("plugins", {}).get("entries", {}))
 
     def test_install_search_provider_plugin_installs_parallel_package(self):
         config_path = self.home / ".openclaw" / "openclaw.json"
@@ -2612,6 +2747,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             json.dumps(
                 {
                     "name": "@openclaw/parallel-plugin",
+                    "version": OPENCLAW_TARGET_VERSION,
                     "openclaw": {
                         "extensions": ["./index.ts"],
                         "runtimeExtensions": ["./dist/index.js"],
@@ -2634,6 +2770,37 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertTrue(self.ws.install_search_provider_plugin())
 
         self.ws._weixin_cli_context.assert_not_called()
+
+    def test_search_plugin_fast_path_rejects_an_incompatible_version(self):
+        state_dir = self.home / ".openclaw"
+        for provider, plugin_id in (("parallel-free", "parallel"), ("brave", "brave")):
+            with self.subTest(provider=provider):
+                plugin_dir = (
+                    state_dir
+                    / "npm"
+                    / "projects"
+                    / f"{plugin_id}-project"
+                    / "node_modules"
+                    / "@openclaw"
+                    / f"{plugin_id}-plugin"
+                )
+                (plugin_dir / "dist").mkdir(parents=True)
+                (plugin_dir / "dist" / "index.js").write_text("", encoding="utf-8")
+                (plugin_dir / "package.json").write_text(
+                    json.dumps(
+                        {
+                            "name": f"@openclaw/{plugin_id}-plugin",
+                            "version": "2026.1.1",
+                            "openclaw": {"runtimeExtensions": ["./dist/index.js"]},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (plugin_dir / "openclaw.plugin.json").write_text(
+                    json.dumps({"id": plugin_id, "contracts": {"webSearchProviders": [provider]}}),
+                    encoding="utf-8",
+                )
+                self.assertFalse(self.ws._search_plugin_is_installed_locally(state_dir, provider))
 
     def test_install_search_provider_plugin_preserves_other_provider(self):
         config_path = self.home / ".openclaw" / "openclaw.json"

@@ -1,24 +1,19 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import {
+  assertSearchProviderPluginActive,
+  ensureSearchProviderPlugin,
+  searchProviderPlugin,
+  type SearchProviderGateway,
+} from "./search-provider-plugin";
 
 export const SEARCH_SETUP_FILENAME = "microclaw-search-setup.json";
-const PROVIDER = "parallel-free";
-const PLUGIN_ID = "parallel";
-const PACKAGE = "@openclaw/parallel-plugin";
 type JsonObject = Record<string, unknown>;
-
-interface SearchGateway {
-  connected: boolean;
-  serverVersion: string | null;
-  connectionGeneration: number;
-  methods: readonly string[];
-  request(method: string, params: JsonObject, timeoutMs?: number): Promise<unknown>;
-}
 
 interface Dependencies {
   stateDir(): string;
-  gateway(): SearchGateway | null;
+  gateway(): SearchProviderGateway | null;
   ready(): boolean;
   log(message: string): void;
 }
@@ -27,19 +22,46 @@ function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 }
 
+function requiredObject(value: unknown): JsonObject {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Unrecognized pending web search setup");
+  return value as JsonObject;
+}
+
 function searchConfig(config: JsonObject): JsonObject {
   return object(object(object(config.tools).web).search);
 }
 
-function runtimeApplied(value: JsonObject): boolean {
-  const runtime = object(value.runtime);
-  return (
-    value.ok === true &&
-    value.restartRequired !== true &&
-    Number.isInteger(runtime.generation) &&
-    Array.isArray(runtime.pluginIds) &&
-    runtime.pluginIds.includes(PLUGIN_ID)
-  );
+function assertPluginNotDisabled(config: JsonObject, pluginId: string): void {
+  const plugins = object(config.plugins);
+  const entry = object(object(plugins.entries)[pluginId]);
+  if (
+    plugins.enabled === false ||
+    entry.enabled === false ||
+    (Array.isArray(plugins.deny) && plugins.deny.includes(pluginId))
+  )
+    throw new Error("The selected web search plugin is disabled in Gateway settings");
+}
+
+function mergePluginEntry(saved: JsonObject, current: JsonObject): JsonObject {
+  const merged: JsonObject = { ...saved, ...current, enabled: true };
+  if (!Object.hasOwn(saved, "config") && !Object.hasOwn(current, "config")) return merged;
+  for (const value of [saved.config, current.config]) {
+    if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value)))
+      throw new Error("The web search plugin configuration is invalid");
+  }
+  const savedConfig = object(saved.config);
+  const currentConfig = object(current.config);
+  const config: JsonObject = { ...savedConfig, ...currentConfig };
+  if (Object.hasOwn(savedConfig, "webSearch") || Object.hasOwn(currentConfig, "webSearch")) {
+    for (const value of [savedConfig.webSearch, currentConfig.webSearch]) {
+      if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value)))
+        throw new Error("The web search provider configuration is invalid");
+    }
+    config.webSearch = { ...object(savedConfig.webSearch), ...object(currentConfig.webSearch) };
+  }
+  merged.config = config;
+  return merged;
 }
 
 export function searchSetupUpgradeCommitted(root: string, transactionId?: string): boolean {
@@ -91,14 +113,21 @@ export class BackgroundSearchProvider {
   private async install(): Promise<void> {
     const pendingPath = path.join(this.deps.stateDir(), SEARCH_SETUP_FILENAME);
     const pendingText = fs.readFileSync(pendingPath, "utf-8");
-    const pending = object(JSON.parse(pendingText));
+    const pending = requiredObject(JSON.parse(pendingText));
+    const search = requiredObject(pending.search);
+    const pluginEntry = requiredObject(pending.pluginEntry);
+    const expectedSuspended: JsonObject = { ...search, enabled: false };
+    delete expectedSuspended.provider;
     if (
       pending.schemaVersion !== 1 ||
-      object(pending.search).provider !== PROVIDER ||
-      object(pending.suspendedSearch).enabled !== false ||
-      object(pending.suspendedSearch).provider !== undefined
+      search.enabled === false ||
+      Object.hasOwn(search, "apiKey") ||
+      pluginEntry.enabled === false ||
+      !isDeepStrictEqual(pending.suspendedSearch, expectedSuspended)
     )
       throw new Error("Unrecognized pending web search setup");
+    const provider = search.provider;
+    const plugin = searchProviderPlugin(provider);
     const gateway = this.deps.gateway();
     if (!gateway?.connected) throw new Error("Gateway is not ready");
     if (
@@ -141,59 +170,13 @@ export class BackgroundSearchProvider {
       this.deps.log("Cancelled pending web search setup: search settings changed");
       return;
     }
+    assertPluginNotDisabled(object(snapshot.config), plugin.id);
     const reloadMode = object(object(object(snapshot.config).gateway).reload).mode;
     if (reloadMode === "off" || reloadMode === "restart")
       throw new Error("Web search setup requires configuration hot reload; no restart attempted");
-    const catalog = object(await gateway.request("plugins.list", {}));
-    assertCurrent();
-    if (!Array.isArray(catalog.plugins) || catalog.mutationAllowed === false)
-      throw new Error("Gateway plugin installation is unavailable");
-    const plugin = catalog.plugins.map(object).find((entry) => entry.id === PLUGIN_ID) ?? {};
-    const version = gateway.serverVersion?.split("+", 1)[0];
-    if (!version || !/^\d{4}\.\d{1,2}\.\d+(?:-[\w.-]+)?$/.test(version))
-      throw new Error("Cannot resolve a compatible web search plugin version");
-    let application: JsonObject | undefined;
-    if (plugin.installed !== true || plugin.version !== version || plugin.state === "error") {
-      this.deps.log("Installing web search plugin in the background");
-      application = object(
-        await gateway.request(
-          "plugins.install",
-          { source: "npm", spec: `${PACKAGE}@${version}`, expectedPluginId: PLUGIN_ID },
-          300_000,
-        ),
-      );
-    } else if (plugin.enabled !== true) {
-      application = object(
-        await gateway.request(
-          "plugins.setEnabled",
-          { pluginId: PLUGIN_ID, enabled: true },
-          300_000,
-        ),
-      );
-    } else if (object(plugin.runtime).state !== "active" || object(plugin.runtime).error) {
-      application = object(
-        await gateway.request(
-          "plugins.reload",
-          { plugins: [{ pluginId: PLUGIN_ID }], waitForDrain: true },
-          300_000,
-        ),
-      );
-    }
-    assertCurrent();
-    if (application && !runtimeApplied(application))
-      throw new Error("Web search plugin hot-load was not confirmed; no restart attempted");
-    const inspected = object(await gateway.request("plugins.inspect", { pluginId: PLUGIN_ID }));
-    assertCurrent();
-    const installed = object(inspected.plugin);
-    if (
-      installed.id !== PLUGIN_ID ||
-      installed.installed !== true ||
-      installed.enabled !== true ||
-      installed.version !== version ||
-      object(installed.runtime).state !== "active" ||
-      object(installed.runtime).error
-    )
-      throw new Error("Web search plugin is not active; search remains disabled");
+    await ensureSearchProviderPlugin(gateway, provider, assertCurrent, () =>
+      this.deps.log("Installing web search plugin in the background"),
+    );
     snapshot = await readSnapshot();
     if (!matches(snapshot)) {
       fs.unlinkSync(pendingPath);
@@ -201,6 +184,7 @@ export class BackgroundSearchProvider {
       return;
     }
     const config = object(snapshot.config);
+    assertPluginNotDisabled(config, plugin.id);
     const tools = object(config.tools);
     const plugins = object(config.plugins);
     const entries = object(plugins.entries);
@@ -211,11 +195,7 @@ export class BackgroundSearchProvider {
         ...plugins,
         entries: {
           ...entries,
-          [PLUGIN_ID]: {
-            ...object(pending.pluginEntry),
-            ...object(entries[PLUGIN_ID]),
-            enabled: true,
-          },
+          [plugin.id]: mergePluginEntry(pluginEntry, object(entries[plugin.id])),
         },
       },
     };
@@ -254,6 +234,14 @@ export class BackgroundSearchProvider {
       await new Promise((resolve) => setTimeout(resolve, 500));
       assertCurrent();
     }
+    if (object(pending.search).enabled !== false)
+      await assertSearchProviderPluginActive(gateway, provider, assertCurrent);
+    const confirmed = await readSnapshot();
+    if (
+      confirmed.hash !== result.hash ||
+      !isDeepStrictEqual(searchConfig(object(confirmed.config)), pending.search)
+    )
+      throw new Error("Search settings changed while the provider was being activated");
     fs.unlinkSync(pendingPath);
     this.deps.log("Web search is ready; Gateway was not restarted");
   }

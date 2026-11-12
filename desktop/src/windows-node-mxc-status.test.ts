@@ -5,6 +5,8 @@ import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 import { WindowsNodeMxcStatusCache } from "./windows-node-mxc-status-cache";
+import { checkWindowsNodeMxcHealth } from "./windows-node-mxc-health-check";
+import type { WindowsNodeMxcHeartbeatStatus } from "./windows-node-mxc-service";
 
 const source = readFileSync(resolve(process.cwd(), "src", "main.ts"), "utf8");
 const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
@@ -12,8 +14,10 @@ const declarations = [
   "presentWindowsNodeMxcDisplayStatus",
   "setWindowsNodeMxcLifecycleState",
   "getWindowsNodeMxcStatus",
+  "getWindowsNodeMxcInspectionOptions",
   "inspectWindowsNodeMxcStatus",
   "requireEffectiveWindowsNodeMxc",
+  "startHealthMonitor",
 ].map((name) => {
   const declaration = ast.statements.find(
     (node) => ts.isFunctionDeclaration(node) && node.name?.text === name,
@@ -21,13 +25,26 @@ const declarations = [
   if (!declaration) throw new Error(`Missing status function: ${name}`);
   return declaration.getText(ast);
 });
-const js = ts.transpileModule(declarations.join("\n"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-}).outputText;
+const heartbeatCacheDeclaration = ast.statements.find(
+  (node) =>
+    ts.isVariableStatement(node) &&
+    node.declarationList.declarations.some(
+      (declaration) => declaration.name.getText(ast) === "windowsNodeMxcHeartbeatCache",
+    ),
+);
+if (!heartbeatCacheDeclaration) throw new Error("Missing heartbeat cache");
+const js = ts.transpileModule(
+  [...declarations, heartbeatCacheDeclaration.getText(ast)].join("\n"),
+  {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  },
+).outputText;
 
 function harness(mode: WindowsNodeMxcRequestedMode) {
+  let contextKey = "generation-policy-lease";
+  let healthTick: (() => Promise<void>) | undefined;
   const cache = new WindowsNodeMxcStatusCache({
-    key: () => "generation-policy-lease",
+    key: () => contextKey,
     inspect: () => functions.inspectWindowsNodeMxcStatus(),
     publish: () => {},
   });
@@ -38,6 +55,17 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     effectiveEnabled: mode !== "off" && !options.runtimeIntegrityError,
     blockers: options.runtimeIntegrityError ? [options.runtimeIntegrityError] : [],
   }));
+  const inspectHeartbeat = vi.fn(
+    async (options): Promise<WindowsNodeMxcHeartbeatStatus> => ({
+      effectiveEnabled: mode !== "off" && !options.runtimeIntegrityError,
+      gatewayPolicyState: "active",
+      blockers: options.runtimeIntegrityError ? [options.runtimeIntegrityError] : [],
+    }),
+  );
+  const setInterval = vi.fn((callback: () => Promise<void>, _interval: number) => {
+    healthTick = callback;
+    return 1;
+  });
   const failClosed = vi.fn().mockResolvedValue(undefined);
   const renewLease = vi.fn().mockResolvedValue(undefined);
   const synchronousValidation = vi.fn(() => {
@@ -63,6 +91,7 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
       setActivationLease: renewLease,
     },
     inspectWindowsNodeMxc: inspect,
+    inspectWindowsNodeMxcHeartbeat: inspectHeartbeat,
     gwClient: { connected: true },
     gatewaySpawnedByUs: true,
     isManagedGatewayProcessAlive: () => true,
@@ -74,12 +103,26 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     windowsNodeMxcLifecycleDetail: null as string | null,
     windowsNodeMxcLifecycleUpdatedAt: "",
     inspectWindowsNodeMxcHooksStatus: () => ({}),
+    isExecutionRuntimeReady: () => false,
     isWindowsNodeMxcIngressReleased: () => true,
     windowsNodeMxcIngressGeneration: "generation",
     windowsNodeMxcActivationInProgress: false,
     failClosedWindowsNodeMxc: failClosed,
     captureGatewayReadinessCheckpoint: () => () => true,
     windowsNodeMxcStatusCache: cache,
+    WindowsNodeMxcStatusCache,
+    getWindowsNodeMxcStatusContextKey: () => contextKey,
+    checkWindowsNodeMxcHealth,
+    healthCheckInterval: null,
+    setInterval,
+    clearInterval: vi.fn(),
+    HEALTH_CHECK_INTERVAL_MS: 30_000,
+    explicitQuitRequested: false,
+    gatewayStopPromise: null,
+    gatewayRestarting: false,
+    gatewayStatus: "running",
+    gatewayPort: 18789,
+    checkExistingGateway: vi.fn(async () => true),
     publishWindowsNodeMxcDisplayStatus: publishDisplay,
     electronLifecycleDiagnostics: { log: vi.fn() },
     summarizeLifecycleError: (message: string) => message,
@@ -87,7 +130,7 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     mainWindow: {},
   };
   const functions = runInNewContext(
-    `${js}\n({ presentWindowsNodeMxcDisplayStatus, setWindowsNodeMxcLifecycleState, getWindowsNodeMxcStatus, inspectWindowsNodeMxcStatus, requireEffectiveWindowsNodeMxc })`,
+    `${js}\n({ presentWindowsNodeMxcDisplayStatus, setWindowsNodeMxcLifecycleState, getWindowsNodeMxcStatus, inspectWindowsNodeMxcStatus, requireEffectiveWindowsNodeMxc, startHealthMonitor, windowsNodeMxcHeartbeatCache })`,
     context,
   ) as {
     getWindowsNodeMxcStatus: () => Promise<{
@@ -96,6 +139,8 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     }>;
     inspectWindowsNodeMxcStatus: () => Promise<{ effectiveEnabled: boolean }>;
     requireEffectiveWindowsNodeMxc: () => Promise<void>;
+    startHealthMonitor: () => void;
+    windowsNodeMxcHeartbeatCache: WindowsNodeMxcStatusCache<WindowsNodeMxcHeartbeatStatus>;
     setWindowsNodeMxcLifecycleState: (phase: string, detail?: string | null) => void;
     presentWindowsNodeMxcDisplayStatus: (snapshot: {
       status: {
@@ -112,6 +157,7 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     validate,
     snapshot,
     inspect,
+    inspectHeartbeat,
     failClosed,
     renewLease,
     synchronousValidation,
@@ -119,6 +165,14 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
     publishDisplay,
     sendToWindow,
     logError,
+    setInterval,
+    runHealthTick: () => {
+      if (!healthTick) throw new Error("Health monitor was not started");
+      return healthTick();
+    },
+    changeContext: () => {
+      contextKey += "-changed";
+    },
     setLifecycleFailure: (detail: string) => {
       context.windowsNodeMxcLifecycleState = "failed";
       context.windowsNodeMxcLifecycleDetail = detail;
@@ -127,7 +181,7 @@ function harness(mode: WindowsNodeMxcRequestedMode) {
 }
 
 describe("main-process Windows node MXC status", () => {
-  it.each(["full", "limited-dacl"] as const)(
+  it.each(["full"] as const)(
     "awaits fresh asynchronous validation before inspecting %s",
     async (mode) => {
       const test = harness(mode);
@@ -140,7 +194,7 @@ describe("main-process Windows node MXC status", () => {
       );
       const status = test.getWindowsNodeMxcStatus();
       await Promise.resolve();
-      expect(test.validate).toHaveBeenCalledWith(true);
+      expect(test.validate).toHaveBeenCalledWith();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(test.snapshot).not.toHaveBeenCalled();
       expect(test.inspect).not.toHaveBeenCalled();
@@ -229,22 +283,19 @@ describe("main-process Windows node MXC status", () => {
     );
   });
 
-  it.each(["full", "limited-dacl"] as const)(
-    "preserves runtime integrity errors in %s status",
-    async (mode) => {
-      const test = harness(mode);
-      test.validate.mockRejectedValue(new Error("resource tree hash mismatch"));
-      await expect(test.getWindowsNodeMxcStatus()).resolves.toMatchObject({
-        effectiveEnabled: false,
-      });
-      expect(test.inspect).toHaveBeenCalledWith(
-        expect.objectContaining({
-          runtimeIntegrityError: "resource tree hash mismatch",
-        }),
-      );
-      expect(test.synchronousValidation).not.toHaveBeenCalled();
-    },
-  );
+  it.each(["full"] as const)("preserves runtime integrity errors in %s status", async (mode) => {
+    const test = harness(mode);
+    test.validate.mockRejectedValue(new Error("resource tree hash mismatch"));
+    await expect(test.getWindowsNodeMxcStatus()).resolves.toMatchObject({
+      effectiveEnabled: false,
+    });
+    expect(test.inspect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeIntegrityError: "resource tree hash mismatch",
+      }),
+    );
+    expect(test.synchronousValidation).not.toHaveBeenCalled();
+  });
 
   it("revalidates every enabled ingress check rather than trusting a previous snapshot", async () => {
     const test = harness("full");
@@ -253,10 +304,77 @@ describe("main-process Windows node MXC status", () => {
     test.validate.mockRejectedValue(new Error("resource tree hash mismatch"));
     await expect(test.requireEffectiveWindowsNodeMxc()).rejects.toThrow("execution is blocked");
     expect(test.validate).toHaveBeenCalledTimes(2);
-    expect(test.validate).toHaveBeenLastCalledWith(true);
+    expect(test.validate).toHaveBeenLastCalledWith();
     expect(test.failClosed).toHaveBeenCalledWith(
       "Runtime attestation drifted: resource tree hash mismatch",
     );
     expect(test.renewLease).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses only the heartbeat inspector for periodic checks and renews the lease", async () => {
+    const test = harness("full");
+    test.startHealthMonitor();
+    expect(test.setInterval).toHaveBeenCalledWith(expect.any(Function), 30_000);
+    await test.runHealthTick();
+    await test.runHealthTick();
+    expect(test.inspect).not.toHaveBeenCalled();
+    expect(test.inspectHeartbeat).toHaveBeenCalledTimes(2);
+    expect(test.validate).toHaveBeenCalledTimes(2);
+    expect(test.renewLease).toHaveBeenCalledTimes(2);
+    expect(test.renewLease).toHaveBeenLastCalledWith("active", 120_000);
+    expect(test.failClosed).not.toHaveBeenCalled();
+    expect(test.cache.snapshot().status).toBeNull();
+    expect(test.publishDisplay).not.toHaveBeenCalled();
+  });
+
+  it("does not share a pending or failed full inspection with the heartbeat", async () => {
+    const test = harness("full");
+    let finish!: (value: Awaited<ReturnType<typeof test.inspect>>) => void;
+    test.inspect.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const fullStatus = test.getWindowsNodeMxcStatus();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(test.inspect).toHaveBeenCalledOnce();
+    test.startHealthMonitor();
+    await test.runHealthTick();
+    expect(test.renewLease).toHaveBeenCalledOnce();
+    expect(test.cache.snapshot().refreshing).toBe(true);
+    finish({ desiredEnabled: true, effectiveEnabled: false, blockers: ["SDK probe timed out"] });
+    await fullStatus;
+    await test.runHealthTick();
+    expect(test.renewLease).toHaveBeenCalledTimes(2);
+    expect(test.failClosed).not.toHaveBeenCalled();
+    expect(test.cache.snapshot().status?.effectiveEnabled).toBe(false);
+    expect(test.windowsNodeMxcHeartbeatCache.snapshot().status?.effectiveEnabled).toBe(true);
+  });
+
+  it("refreshes heartbeat evidence if the configuration changes during inspection", async () => {
+    const test = harness("full");
+    test.inspectHeartbeat.mockImplementationOnce(async () => {
+      test.changeContext();
+      return { effectiveEnabled: true, gatewayPolicyState: "active", blockers: [] };
+    });
+    test.startHealthMonitor();
+    await test.runHealthTick();
+    expect(test.inspectHeartbeat).toHaveBeenCalledTimes(2);
+    expect(test.renewLease).toHaveBeenCalledOnce();
+    expect(test.failClosed).not.toHaveBeenCalled();
+  });
+
+  it("still locks the periodic heartbeat on a runtime integrity failure", async () => {
+    const test = harness("full");
+    test.validate.mockRejectedValue(new Error("resource tree hash mismatch"));
+    test.startHealthMonitor();
+    await test.runHealthTick();
+    expect(test.inspect).not.toHaveBeenCalled();
+    expect(test.inspectHeartbeat).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeIntegrityError: "resource tree hash mismatch" }),
+    );
+    expect(test.renewLease).not.toHaveBeenCalled();
+    expect(test.failClosed).toHaveBeenCalledWith("Readiness drifted: resource tree hash mismatch");
   });
 });

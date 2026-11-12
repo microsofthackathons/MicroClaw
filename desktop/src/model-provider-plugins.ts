@@ -1,4 +1,5 @@
 import { readAgentRoster } from "./agent-roster";
+import { includeInRestrictedPluginAllowlist } from "./plugin-allowlist";
 
 type JsonObject = Record<string, unknown>;
 
@@ -63,15 +64,7 @@ export function ensureGitHubCopilotProviderPlugin(config: JsonObject): boolean {
     changed = true;
   }
 
-  const allow = Array.isArray(plugins.allow) ? plugins.allow : [];
-  if (!Array.isArray(plugins.allow)) {
-    plugins.allow = allow;
-    changed = true;
-  }
-  if (!allow.includes(GITHUB_COPILOT_PROVIDER)) {
-    allow.push(GITHUB_COPILOT_PROVIDER);
-    changed = true;
-  }
+  if (includeInRestrictedPluginAllowlist(plugins, GITHUB_COPILOT_PROVIDER)) changed = true;
 
   if (Array.isArray(plugins.deny) && plugins.deny.includes(GITHUB_COPILOT_PROVIDER)) {
     plugins.deny = plugins.deny.filter((id) => id !== GITHUB_COPILOT_PROVIDER);
@@ -84,4 +77,16 @@ export function ensureGitHubCopilotProviderPlugin(config: JsonObject): boolean {
 export function ensureSelectedModelProviderPlugins(config: JsonObject): boolean {
   if (!getSelectedModelProviderPluginIds(config).includes(GITHUB_COPILOT_PROVIDER)) return false;
   return ensureGitHubCopilotProviderPlugin(config);
+}
+
+export function ensureEnabledPluginsAllowed(config: JsonObject): boolean {
+  const plugins = asJsonObject(config.plugins);
+  const entries = asJsonObject(plugins?.entries);
+  if (!plugins || !entries) return false;
+  let changed = false;
+  for (const [id, entry] of Object.entries(entries)) {
+    if (asJsonObject(entry)?.enabled === true && includeInRestrictedPluginAllowlist(plugins, id))
+      changed = true;
+  }
+  return changed;
 }

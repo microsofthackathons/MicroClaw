@@ -4,11 +4,14 @@ import { applyWindowsNodeCommandPolicy } from "./windows-node-mxc";
 
 describe("Windows node command policy diagnostics", () => {
   it("identifies a key-order-only mismatch without changing either config", () => {
-    const actual = applyWindowsNodeCommandPolicy({ agents: { entries: { main: {} } } }, "node-123");
+    const expected = applyWindowsNodeCommandPolicy(
+      { agents: { entries: { main: {} } } },
+      "node-123",
+    );
+    const actual = structuredClone(expected);
     const gateway = actual.gateway as { nodes: { commands: { allow: string[]; deny: string[] } } };
     const { allow, deny } = gateway.nodes.commands;
     gateway.nodes.commands = { deny, allow };
-    const expected = applyWindowsNodeCommandPolicy(actual, "node-123");
     const actualBefore = JSON.stringify(actual);
     const expectedBefore = JSON.stringify(expected);
 

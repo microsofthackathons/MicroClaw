@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WINDOWS_NODE_MXC_BLOCKED_CRON_METHODS } from "./windows-node-mxc-cron";
 // @ts-expect-error The compatibility preload is intentionally external ESM for the Gateway child.
 import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 
@@ -28,10 +27,6 @@ const {
   PINNED_EXEC_APPROVAL_VALIDATION_SOURCE,
   PINNED_CRON_STARTUP_MISSED_JOBS_SOURCE,
   PINNED_CRON_STARTUP_ACK_SOURCE,
-  PINNED_CRON_HANDLER_MAP_SOURCE,
-  PINNED_CRON_MUTATION_HANDLER_SOURCES,
-  PINNED_EXTERNAL_HOOK_HANDLER_SOURCE,
-  PINNED_INTERNAL_HOOK_TRIGGER_SOURCE,
   PINNED_NODE_GATEWAY_APPROVAL_SOURCE,
   PINNED_NODE_GATEWAY_ASK_FALLBACK_SOURCE,
   PINNED_NODE_GATEWAY_DIRECT_DISPATCH_SOURCE,
@@ -46,14 +41,9 @@ const {
   attestPinnedOpenClawWebFetchHttpOnly,
   createWindowsNodeMxcApprovalProofMinter,
   computeWindowsNodeMxcApprovalPlanSha256,
-  createWindowsNodeMxcHooksGate,
-  isWindowsNodeMxcProtectedHooksPath,
   patchPinnedOpenClawExecApproval,
   patchPinnedOpenClawBashTools,
   patchPinnedOpenClawCronService,
-  patchPinnedOpenClawCronHandlers,
-  patchPinnedOpenClawExternalHooks,
-  patchPinnedOpenClawInternalHooks,
   patchPinnedOpenClawNodeGateway,
   patchPinnedOpenClawNodeInvokePluginPolicy,
   patchPinnedOpenClawNodeRegistryPrivate,
@@ -113,10 +103,7 @@ describe("pinned OpenClaw package validation", () => {
     it("validates all published hashes and patch points and parses the patched bundles", () => {
       const targets = validatePinnedOpenClawApprovalPackage(publishedPackage, {
         approval: true,
-        cronPause: true,
         cronResume: true,
-        hooksPause: true,
-        canvasPhase1: true,
       });
       const version = JSON.parse(
         readFileSync(join(publishedPackage!, "package.json"), "utf8"),
@@ -132,12 +119,6 @@ describe("pinned OpenClaw package validation", () => {
               "bash-tools-BpD5km6h.mjs",
               "openclaw-tools-BzG0r_Mx.mjs",
               "service-BlXGdNfC.mjs",
-              "cron-CtU5MS3t.mjs",
-              "server-start-D9FwRIP_.mjs",
-              "internal-hooks-u9Bo9D-Q.mjs",
-              "extensions/canvas/index.js",
-              "tool-DjtevMZn.mjs",
-              "node-eligibility-Cv0dWQeV.mjs",
             ]
           : [
               "nodes-Cl-Air2F.mjs",
@@ -148,12 +129,6 @@ describe("pinned OpenClaw package validation", () => {
               "bash-tools-DQS9-f8q.mjs",
               "openclaw-tools-BA3mvtXt.mjs",
               "service-B3JlUlHg.mjs",
-              "cron-Bz6F4quM.mjs",
-              "server-start-CZZFIc7j.mjs",
-              "internal-hooks-C3ju7znI.mjs",
-              "extensions/canvas/index.js",
-              "tool-QdensQdF.mjs",
-              "node-eligibility-CYxKvUWR.mjs",
             ],
       );
       for (const target of targets) {
@@ -202,61 +177,77 @@ describe("pinned OpenClaw package validation", () => {
             'systemRunApprovalGuardError("APPROVAL_PLAN_REQUIRED", "operator approval requires an approved execution plan", runId)',
           );
         }
-        if (target.module === "extensions/canvas/index.js") {
-          expect(patched).toContain('"canvas.snapshot"');
-          expect(patched).not.toContain('"canvas.navigate"');
-          expect(patched).toContain('defaultPlatforms: ["windows"]');
-        }
-        if (target.module.startsWith("tool-")) {
-          expect(patched).not.toContain('case "navigate"');
-          expect(patched).not.toContain("presentTarget");
-          expect(patched).toContain('case "a2ui_push"');
-          expect(patched).toContain('"canvas.snapshot"');
-        }
-        if (target.module.startsWith("node-eligibility-")) {
-          expect(patched).toContain("/^windows(?:\\s|$)/i");
-          expect(patched).not.toContain('"navigate"');
-          expect(patched).toContain('"a2ui_push"');
-          expect(patched).not.toContain("target: Type.Optional");
-          expect(patched).not.toContain("url: Type.Optional");
-        }
       }
     });
 
-    it("initializes the real preload only after package validation", () => {
-      const hook = pathToFileURL(resolve(__dirname, "openclaw-approval-replay-compat.mjs")).href;
-      const initialized = spawnSync(
-        process.execPath,
-        [
-          "--import",
-          hook,
-          "--input-type=module",
-          "-e",
-          `import assert from "node:assert/strict";
+    it.each(["", "1"])(
+      "preserves stock Canvas with approval routing and legacy Canvas flag %j",
+      (canvasFlag) => {
+        const hook = pathToFileURL(resolve(__dirname, "openclaw-approval-replay-compat.mjs")).href;
+        const initialized = spawnSync(
+          process.execPath,
+          [
+            "--import",
+            hook,
+            "--input-type=module",
+            "-e",
+            `import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 assert.equal(process.env.MICROCLAW_MXC_APPROVAL_PROOF_SECRET, undefined);
 assert.equal(process.env.MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED, "1");
-assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-proof.v1")].mint, "function");`,
-        ],
-        {
-          env: {
-            ...process.env,
-            MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "1",
-            MICROCLAW_MXC_CANVAS_PHASE1: "1",
-            MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
-            MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
-            MICROCLAW_MXC_APPROVAL_PROOF_SECRET: Buffer.alloc(32, 1).toString("base64"),
-            MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION: "test-generation",
-            MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT: "a".repeat(64),
-            MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID: "b".repeat(64),
+assert.equal(typeof globalThis[Symbol.for("microclaw.windows-node-mxc.approval-proof.v1")].mint, "function");
+const dist = join(process.env.MICROCLAW_OPENCLAW_PACKAGE_DIR, "dist");
+const files = readdirSync(dist);
+const paths = [
+  join(dist, "extensions", "canvas", "index.js"),
+  join(dist, files.find(name => /^node-eligibility-.*\\.mjs$/.test(name))),
+  join(dist, files.find(name => /^tool-.*\\.mjs$/.test(name) && readFileSync(join(dist, name), "utf8").includes("function createCanvasTool("))),
+];
+const seen = new Set();
+const urls = new Set(paths.map(file => pathToFileURL(file).href));
+registerHooks({ load(url, context, nextLoad) {
+  const result = nextLoad(url, context);
+  if (urls.has(url)) {
+    assert.equal(Buffer.from(result.source).toString("utf8"), readFileSync(new URL(url), "utf8"));
+    seen.add(url);
+  }
+  return result;
+}});
+const modules = await Promise.all(paths.map(file => import(pathToFileURL(file).href)));
+assert.equal(seen.size, 3);
+const eligibility = Object.values(modules[1]).find(value => typeof value === "function" && value.name === "isEligibleCanvasNode");
+assert.equal(eligibility({ platform: "windows", connected: true, commands: ["canvas.present"] }), false);
+assert.equal(eligibility({ platform: "macos", connected: true, commands: ["canvas.present"] }), true);
+const resolveCanvasNode = Object.values(modules[1]).find(value => typeof value === "function" && value.name === "resolveCanvasNodeFromList");
+assert.throws(() => resolveCanvasNode([{ nodeId: "windows-node", platform: "windows", connected: true, commands: ["canvas.present"] }]), /no eligible Canvas panel.*macOS/i);
+const tool = modules[2].createCanvasTool({});
+assert.deepEqual(tool.parameters.properties.action.enum, ["present", "hide", "navigate"]);`,
+          ],
+          {
+            env: {
+              ...process.env,
+              MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "1",
+              MICROCLAW_MXC_CANVAS_PHASE1: canvasFlag,
+              MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
+              MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
+              MICROCLAW_MXC_APPROVAL_PROOF_SECRET: Buffer.alloc(32, 1).toString("base64"),
+              MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION: "test-generation",
+              MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT: "a".repeat(64),
+              MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID: "b".repeat(64),
+            },
+            encoding: "utf8",
+            timeout: 60_000,
           },
-          encoding: "utf8",
-          timeout: 10_000,
-        },
-      );
-      expect(initialized.error).toBeUndefined();
-      expect(initialized.status, initialized.stderr).toBe(0);
-      expect(initialized.stdout).toContain("enabled one-use node proof");
-    });
+        );
+        expect(initialized.error).toBeUndefined();
+        expect(initialized.status, initialized.stderr).toBe(0);
+        expect(initialized.stdout).toContain("enabled one-use node proof");
+      },
+      70_000,
+    );
 
     it("initializes the Cron-only resume fence without approval secrets", () => {
       const hook = pathToFileURL(resolve(__dirname, "openclaw-approval-replay-compat.mjs")).href;
@@ -312,152 +303,6 @@ describe("pinned OpenClaw web fetch contract", () => {
       expect(patched.indexOf("nowMs: microclawCronResumeFenceUnixMs")).toBeLessThan(
         patched.indexOf("await runMissedJobs(state"),
       );
-    });
-
-    describe("pinned OpenClaw Hooks pause contract", () => {
-      it("rejects the configured external hook path before reading or dispatching the request", () => {
-        const patched = patchPinnedOpenClawExternalHooks(PINNED_EXTERNAL_HOOK_HANDLER_SOURCE);
-        expect(patched).toContain("microclawMxcHooksGate?.rejectExternal(req, res)");
-        expect(patched.indexOf("rejectExternal(req, res)")).toBeLessThan(
-          patched.indexOf("params.hooksConfig()"),
-        );
-      });
-
-      it("drops internal hook events before listener lookup or handler execution", () => {
-        const patched = patchPinnedOpenClawInternalHooks(PINNED_INTERNAL_HOOK_TRIGGER_SOURCE);
-        expect(patched).toContain("microclawMxcHooksGate?.dropInternal(event)");
-        expect(patched.indexOf("dropInternal(event)")).toBeLessThan(
-          patched.indexOf("internalHooksEnabledState.enabled"),
-        );
-      });
-
-      it("returns an explicit unavailable response only at the protected external path", () => {
-        const gate = createWindowsNodeMxcHooksGate({
-          contract: "microclaw.windows-node-mxc.hooks-gate.v1",
-          gatewayGeneration: "generation",
-          policyFingerprint: "a".repeat(64),
-          requestedMode: "limited-dacl",
-          externalRequested: true,
-          internalRequested: true,
-          basePath: "/hooks",
-        });
-        const headers: Record<string, string> = {};
-        let body = "";
-        const response = {
-          statusCode: 200,
-          setHeader(name: string, value: string) {
-            headers[name] = value;
-          },
-          end(value: string) {
-            body = value;
-          },
-        };
-
-        expect(gate.rejectExternal({ url: "/health" }, response)).toBe(false);
-        expect(gate.rejectExternal({ url: "/hooks/agent?token=secret" }, response)).toBe(true);
-        expect(response.statusCode).toBe(503);
-        expect(headers["Cache-Control"]).toBe("no-store");
-        expect(JSON.parse(body)).toMatchObject({ ok: false, code: "MXC_HOOKS_PAUSED" });
-        expect(body).not.toContain("secret");
-        expect(gate.dropInternal({ type: "command:new" })).toBe(true);
-      });
-
-      it("rejects encoded protected paths without reading or admitting request content", () => {
-        expect(isWindowsNodeMxcProtectedHooksPath("/%68ooks/agent", "/hooks")).toBe(true);
-        expect(isWindowsNodeMxcProtectedHooksPath("/%2568ooks/agent", "/hooks")).toBe(true);
-        expect(isWindowsNodeMxcProtectedHooksPath("/hooks%5Cagent", "/hooks")).toBe(true);
-        expect(isWindowsNodeMxcProtectedHooksPath("/hooks/%E0", "/hooks")).toBe(true);
-        expect(isWindowsNodeMxcProtectedHooksPath("/health/%68ooks", "/hooks")).toBe(false);
-
-        const gate = createWindowsNodeMxcHooksGate({
-          contract: "microclaw.windows-node-mxc.hooks-gate.v1",
-          gatewayGeneration: "generation",
-          policyFingerprint: "a".repeat(64),
-          requestedMode: "full",
-          externalRequested: true,
-          internalRequested: true,
-          basePath: "/hooks",
-        });
-        const request = {
-          url: "/%68ooks/agent",
-          get body() {
-            throw new Error("request body must not be read");
-          },
-        };
-        const response = {
-          statusCode: 200,
-          setHeader() {},
-          end() {},
-        };
-
-        expect(gate.rejectExternal(request, response)).toBe(true);
-        expect(response.statusCode).toBe(503);
-      });
-
-      it("returns explicit unavailability at the default hook path even when none was configured", () => {
-        const gate = createWindowsNodeMxcHooksGate({
-          contract: "microclaw.windows-node-mxc.hooks-gate.v1",
-          gatewayGeneration: "generation",
-          policyFingerprint: "a".repeat(64),
-          requestedMode: "full",
-          externalRequested: false,
-          internalRequested: false,
-          basePath: "/hooks",
-        });
-        const response = {
-          statusCode: 200,
-          setHeader() {},
-          end() {},
-        };
-
-        expect(gate.rejectExternal({ url: "/hooks/wake" }, response)).toBe(true);
-        expect(response.statusCode).toBe(503);
-      });
-
-      it("fails closed when either pinned hook boundary drifts", () => {
-        expect(() => patchPinnedOpenClawExternalHooks("unrecognized source")).toThrow(
-          /did not match exactly once/,
-        );
-        expect(() => patchPinnedOpenClawInternalHooks("unrecognized source")).toThrow(
-          /did not match exactly once/,
-        );
-      });
-
-      it("rejects ambiguous gate policy paths", () => {
-        for (const basePath of ["/hooks/%68idden", "/hooks?token=x", "/a/../hooks"]) {
-          expect(() =>
-            createWindowsNodeMxcHooksGate({
-              contract: "microclaw.windows-node-mxc.hooks-gate.v1",
-              gatewayGeneration: "generation",
-              policyFingerprint: "a".repeat(64),
-              requestedMode: "limited-dacl",
-              externalRequested: true,
-              internalRequested: true,
-              basePath,
-            }),
-          ).toThrow(/policy is invalid/);
-        }
-      });
-    });
-
-    it("blocks every Cron mutation and run-now handler while MXC is requested", () => {
-      const patched = patchPinnedOpenClawCronHandlers(
-        [PINNED_CRON_HANDLER_MAP_SOURCE, ...PINNED_CRON_MUTATION_HANDLER_SOURCES].join("\n"),
-      );
-
-      for (const handler of PINNED_CRON_MUTATION_HANDLER_SOURCES) {
-        const method = handler.match(/"([^"]+)"/)?.[1];
-        const respondExpression = method === "cron.run" ? "options.respond" : "respond";
-        expect(patched).toContain(
-          `rejectMicroclawMxcPausedCronMutation("${method}", ${respondExpression})`,
-        );
-      }
-      expect(
-        PINNED_CRON_MUTATION_HANDLER_SOURCES.map(
-          (handler: string) => handler.match(/"([^"]+)"/)?.[1],
-        ),
-      ).toEqual(WINDOWS_NODE_MXC_BLOCKED_CRON_METHODS);
-      expect(patched).toContain("MICROCLAW_MXC_CRON_PAUSED");
     });
 
     it("fails closed when the pinned Cron startup boundary drifts", () => {
@@ -1118,12 +963,12 @@ describe("Windows Node MXC approval proof minter", () => {
           true,
         ),
       ).toBe(true);
-      expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CRON_PAUSED: "1" }, true)).toBe(true);
+      expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CRON_PAUSED: "1" }, true)).toBe(false);
       expect(
         shouldInitializeApprovalPreload({ MICROCLAW_MXC_HOOKS_GATE_POLICY_BASE64: "e30=" }, true),
-      ).toBe(true);
+      ).toBe(false);
       expect(shouldInitializeApprovalPreload({ MICROCLAW_MXC_CANVAS_PHASE1: "1" }, true)).toBe(
-        true,
+        false,
       );
       expect(shouldInitializeApprovalPreload({}, true)).toBe(false);
     });

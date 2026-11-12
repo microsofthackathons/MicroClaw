@@ -14,7 +14,7 @@ describe("GatewayLoading MXC lifecycle", () => {
     } as unknown as typeof window.openclaw;
   });
 
-  it("shows MXC progress instead of claiming a healthy Gateway is ready", () => {
+  it("shows generic startup progress instead of containment text", () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {
         status: "running",
@@ -22,23 +22,16 @@ describe("GatewayLoading MXC lifecycle", () => {
         warming: false,
         mxcDesired: true,
         mxcPhase: "smoking-locked",
-        mxcRequestedMode: "limited-dacl",
-        mxcEffectiveStrength: "off",
       },
     });
 
-    expect(wrapper.find(".loading-status").text()).toContain(
-      "Running internal probes in locked generation",
-    );
+    expect(wrapper.find(".loading-status").text()).toContain("Starting services");
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
-    expect(wrapper.find(".loading-mxc-strength").text()).toBe(
-      "Limited containment (DACL) — Starting",
-    );
-    expect(wrapper.find(".loading-mxc-strength").text()).not.toContain("Attested");
-    expect(wrapper.text()).not.toMatch(/approve|permission|allow once/i);
+    expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+    expect(wrapper.text()).not.toMatch(/approve|permission|allow once|containment|sandbox/i);
   });
 
-  it("shows validation while persisted mode is Off without jumping to connected 90%", async () => {
+  it("keeps validation details hidden without jumping to connected 90%", async () => {
     vi.useFakeTimers();
     const wrapper = shallowMount(GatewayLoading, {
       props: {
@@ -47,16 +40,12 @@ describe("GatewayLoading MXC lifecycle", () => {
         warming: false,
         mxcDesired: false,
         mxcPhase: "validating",
-        mxcDetail: "Assessing Limited-mode ambient filesystem access",
-        mxcRequestedMode: "off",
-        mxcEffectiveStrength: "off",
+        mxcDetail: "Checking BaseContainer availability",
       },
     });
 
-    expect(wrapper.find(".loading-status").text()).toContain("Validating policy");
-    expect(wrapper.find(".loading-mxc-detail").text()).toBe(
-      "Assessing Limited-mode ambient filesystem access",
-    );
+    expect(wrapper.find(".loading-status").text()).toContain("Starting services");
+    expect(wrapper.text()).not.toContain("Checking BaseContainer availability");
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
     await wrapper.setProps({ connected: true });
     await vi.advanceTimersByTimeAsync(30_000);
@@ -66,7 +55,7 @@ describe("GatewayLoading MXC lifecycle", () => {
     vi.useRealTimers();
   });
 
-  it("shows in-process policy promotion as a guarded startup phase", () => {
+  it("keeps in-process policy promotion generic", () => {
     const wrapper = shallowMount(GatewayLoading, {
       props: {
         status: "running",
@@ -77,9 +66,7 @@ describe("GatewayLoading MXC lifecycle", () => {
       },
     });
 
-    expect(wrapper.find(".loading-status").text()).toContain(
-      "Promoting verified policy in the current generation",
-    );
+    expect(wrapper.find(".loading-status").text()).toContain("Starting services");
     expect(wrapper.find(".loading-status").text()).not.toContain("Ready");
   });
 
@@ -96,30 +83,25 @@ describe("GatewayLoading MXC lifecycle", () => {
     expect(wrapper.find(".loading-status").text()).not.toContain("Disconnected");
   });
 
-  it.each(["full", "limited-dacl"] as const)(
-    "does not label the Off transition as %s starting while the previous mode is still persisted",
-    async (previousMode) => {
-      const wrapper = shallowMount(GatewayLoading, {
-        props: {
-          status: "restarting",
-          connected: false,
-          warming: false,
-          mxcDesired: true,
-          mxcRequestedMode: previousMode,
-          mxcEffectiveStrength: "off",
-          mxcPhase: "disabling",
-        },
-      });
-      expect(wrapper.find(".loading-status").text()).toContain("Turning off MXC");
-      expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
-      await wrapper.setProps({ mxcPhase: "starting-standard" });
-      expect(wrapper.find(".loading-status").text()).toContain("Starting normal mode (MXC Off)");
-      expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
-      await wrapper.setProps({ mxcDesired: false, mxcRequestedMode: "off" });
-      expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
-      wrapper.unmount();
-    },
-  );
+  it("uses generic text while switching Off", async () => {
+    const wrapper = shallowMount(GatewayLoading, {
+      props: {
+        status: "restarting",
+        connected: false,
+        warming: false,
+        mxcDesired: true,
+        mxcPhase: "disabling",
+      },
+    });
+    expect(wrapper.find(".loading-status").text()).toContain("Starting services");
+    expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+    await wrapper.setProps({ mxcPhase: "starting-standard" });
+    expect(wrapper.find(".loading-status").text()).toContain("Starting services");
+    expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+    await wrapper.setProps({ mxcDesired: false });
+    expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
+    wrapper.unmount();
+  });
 
   it("does not expose a conflicting retry when the Gateway timer expires mid-transition", () => {
     const wrapper = shallowMount(GatewayLoading, {
@@ -129,15 +111,11 @@ describe("GatewayLoading MXC lifecycle", () => {
         warming: false,
         mxcDesired: true,
         mxcPhase: "starting-locked",
-        mxcRequestedMode: "limited-dacl",
-        mxcEffectiveStrength: "off",
       },
     });
 
-    expect(wrapper.find(".loading-status").text()).toContain("Starting locked generation");
-    expect(wrapper.find(".loading-mxc-strength").text()).toBe(
-      "Limited containment (DACL) — Starting",
-    );
+    expect(wrapper.find(".loading-status").text()).toContain("Starting services");
+    expect(wrapper.find(".loading-mxc-strength").exists()).toBe(false);
     expect(wrapper.find(".loading-retry").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Gateway startup timed out");
   });

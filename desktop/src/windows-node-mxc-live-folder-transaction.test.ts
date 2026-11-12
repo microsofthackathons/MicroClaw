@@ -115,6 +115,21 @@ describe("missing folder grants", () => {
       ),
     ).toEqual([{ path: "C:\\Work", access: "rw" }]);
   });
+  it("requests an RW upgrade for a read-only child even under an RW parent", () => {
+    const folders = [
+      { path: "C:\\Work", access: "rw" as const },
+      { path: "C:\\Work\\child", access: "ro" as const },
+    ];
+    expect(
+      getWindowsNodeMxcMissingFolders(
+        {
+          canonicalCwd: "C:\\Work\\child",
+          declaredAccess: [{ path: "C:\\Work\\child", access: "rw" }],
+        },
+        folders,
+      ),
+    ).toEqual([{ path: "C:\\Work\\child", access: "rw" }]);
+  });
   it("folds a missing child CWD into its explicitly requested parent grant", () => {
     expect(
       getWindowsNodeMxcMissingFolders(
@@ -125,6 +140,72 @@ describe("missing folder grants", () => {
         [],
       ),
     ).toEqual([{ path: "C:\\Work", access: "rw" }]);
+  });
+  it("requests a nested upgrade when an existing read-only grant overrides a new parent", () => {
+    const approval = {
+      canonicalCwd: "isolated-scratch:v1",
+      declaredAccess: [
+        { path: "C:\\Work\\child\\project", access: "rw" as const },
+        { path: "C:\\Work", access: "rw" as const },
+      ],
+    };
+    const existing = [{ path: "C:\\Work\\child", access: "ro" as const }];
+    expect(getWindowsNodeMxcMissingFolders(approval, existing)).toEqual([
+      { path: "C:\\Work", access: "rw" },
+      { path: "C:\\Work\\child\\project", access: "rw" },
+    ]);
+    expect(
+      getWindowsNodeMxcMissingFolders(approval, [...existing, { path: "C:\\Work", access: "rw" }]),
+    ).toEqual([{ path: "C:\\Work\\child\\project", access: "rw" }]);
+    expect(
+      getWindowsNodeMxcMissingFolders(approval, [
+        ...existing,
+        { path: "C:\\Work", access: "rw" },
+        { path: "C:\\Work\\child\\project", access: "rw" },
+      ]),
+    ).toEqual([]);
+  });
+  it("folds a descendant request into an upgrade of its existing parent grant", () => {
+    expect(
+      getWindowsNodeMxcMissingFolders(
+        {
+          canonicalCwd: "isolated-scratch:v1",
+          declaredAccess: [
+            { path: "C:\\Work\\child", access: "rw" },
+            { path: "C:\\Work", access: "rw" },
+          ],
+        },
+        [{ path: "C:\\Work", access: "ro" }],
+      ),
+    ).toEqual([{ path: "C:\\Work", access: "rw" }]);
+  });
+  it("recognizes a drive-root grant for its descendants", () => {
+    expect(
+      getWindowsNodeMxcMissingFolders(
+        {
+          canonicalCwd: "C:\\Work",
+          declaredAccess: [{ path: "C:\\Work\\child", access: "rw" }],
+        },
+        [{ path: "C:\\", access: "rw" }],
+      ),
+    ).toEqual([]);
+  });
+  it("requests a child upgrade under a new drive-root grant", () => {
+    expect(
+      getWindowsNodeMxcMissingFolders(
+        {
+          canonicalCwd: "isolated-scratch:v1",
+          declaredAccess: [
+            { path: "C:\\Work", access: "rw" },
+            { path: "C:\\", access: "rw" },
+          ],
+        },
+        [{ path: "C:\\Work", access: "ro" }],
+      ),
+    ).toEqual([
+      { path: "C:\\", access: "rw" },
+      { path: "C:\\Work", access: "rw" },
+    ]);
   });
   it("does not grant a sibling or treat isolated scratch as a user folder", () => {
     expect(

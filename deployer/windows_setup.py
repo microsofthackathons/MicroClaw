@@ -87,6 +87,11 @@ _LOCAL_MODEL_PLUGIN_VERSION = OPENCLAW_TARGET_VERSION
 _LOCAL_MODEL_PLUGIN_SHA256 = "8c782ef30d528be1a7b57f80d9cfd30b18d52087452f98168894d2da387519e9"
 _PARALLEL_FREE_PROVIDER = "parallel-free"
 _SEARCH_PROVIDERS_REQUIRING_KEY = {"brave", "tavily"}
+_SEARCH_PLUGINS = {
+    _PARALLEL_FREE_PROVIDER: (_PARALLEL_PLUGIN_ID, _PARALLEL_PLUGIN_PACKAGE),
+    "brave": ("brave", "@openclaw/brave-plugin"),
+    "tavily": ("tavily", "@openclaw/tavily-plugin"),
+}
 
 MIRRORS = {
     MIRROR_OFFICIAL: {
@@ -410,6 +415,21 @@ class NodeInstallBlocked(RuntimeError):
     only re-triggers the UAC prompt and fails again, so the install pipeline
     treats this as fatal instead of retrying.
     """
+
+
+def _search_config_object(parent: dict, key: str) -> dict:
+    value = parent.get(key, {})
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be an object")
+    return value
+
+
+def _search_plugin_disabled(plugins: dict, plugin_id: str) -> bool:
+    entry = _search_config_object(_search_config_object(plugins, "entries"), plugin_id)
+    deny = plugins.get("deny", [])
+    if not isinstance(deny, list):
+        raise ValueError("plugins.deny must be a list")
+    return plugins.get("enabled") is False or entry.get("enabled") is False or plugin_id in deny
 
 
 class WindowsSetup:
@@ -3572,8 +3592,12 @@ class WindowsSetup:
         if config_path.exists():
             try:
                 existing = json.loads(config_path.read_text(encoding="utf-8"))
-            except Exception:
-                existing = {}
+            except (OSError, ValueError) as error:
+                self.log.error(f"Cannot read existing OpenClaw configuration: {error}")
+                return False
+            if not isinstance(existing, dict):
+                self.log.error("Cannot update OpenClaw configuration: root must be an object")
+                return False
 
         # ── Migrate legacy keys ──
         migrated = []
@@ -3682,38 +3706,86 @@ class WindowsSetup:
 
         # ── Web search ──
         brave_api_key = self.cfg.get("brave.api_key", "")
-        existing_search = existing.get("tools", {}).get("web", {}).get("search", {})
-        existing_provider = existing_search.get("provider")
-        existing_api_key = existing_search.get("apiKey")
+        try:
+            existing_search = _search_config_object(
+                _search_config_object(_search_config_object(existing, "tools"), "web"),
+                "search",
+            )
+            plugins = _search_config_object(existing, "plugins")
+            entries = _search_config_object(plugins, "entries")
+            for plugin_id, _ in _SEARCH_PLUGINS.values():
+                if plugin_id in entries:
+                    _search_config_object(entries, plugin_id)
+            for key in ("allow", "deny"):
+                if key in plugins and not isinstance(plugins[key], list):
+                    raise ValueError(f"plugins.{key} must be a list")
+            existing_provider = existing_search.get("provider")
+            if existing_provider is not None and not isinstance(existing_provider, str):
+                raise ValueError("search.provider must be a string")
+            existing_api_key = None
+            if existing_provider in _SEARCH_PROVIDERS_REQUIRING_KEY:
+                entry = _search_config_object(entries, existing_provider)
+                plugin_config = _search_config_object(entry, "config")
+                web_search = _search_config_object(plugin_config, "webSearch")
+                existing_api_key = web_search.get("apiKey")
+                if "apiKey" in web_search and not isinstance(existing_api_key, (str, dict)):
+                    raise ValueError("webSearch.apiKey must be a string or secret reference")
+                if "apiKey" in existing_search:
+                    legacy_key = existing_search["apiKey"]
+                    if not isinstance(legacy_key, (str, dict)):
+                        raise ValueError("search.apiKey must be a string or secret reference")
+                    if existing_api_key is None and (
+                        isinstance(legacy_key, str)
+                        and legacy_key.strip()
+                        or isinstance(legacy_key, dict)
+                        and legacy_key
+                    ):
+                        plugins = existing.setdefault("plugins", {})
+                        entries = plugins.setdefault("entries", {})
+                        entry = entries.setdefault(existing_provider, {})
+                        entry.setdefault("enabled", True)
+                        plugin_config = entry.setdefault("config", {})
+                        plugin_config.setdefault("webSearch", {})["apiKey"] = legacy_key
+                        existing_api_key = legacy_key
+                    existing_search.pop("apiKey")
+                    self.log.info("  Migrated the web search credential to its plugin")
+            brave_disabled = bool(brave_api_key) and _search_plugin_disabled(plugins, "brave")
+        except ValueError as error:
+            self.log.error(f"Cannot update web search configuration: {error}")
+            return False
         existing_search_usable = bool(existing_provider) and (
             existing_provider not in _SEARCH_PROVIDERS_REQUIRING_KEY
             or isinstance(existing_api_key, str)
             and bool(existing_api_key.strip())
+            or isinstance(existing_api_key, dict)
+            and bool(existing_api_key)
         )
         if existing_search.get("enabled") is False:
             self.log.info("  Preserving disabled web search configuration")
         elif existing_search_usable:
             self.log.info(f"  Preserving web search provider: {existing_search['provider']}")
+        elif brave_disabled:
+            self.log.warn("  brave web search plugin is disabled; preserving settings")
         elif brave_api_key:
             tools = existing.setdefault("tools", {})
             web = tools.setdefault("web", {})
-            web["search"] = {
-                "provider": "brave",
-                "apiKey": "${BRAVE_API_KEY}",
-            }
-            self.log.info("  Brave Search API configured")
-        else:
-            if existing_provider:
-                self.log.info(f"  Replacing unusable {existing_provider} web search configuration")
-            tools = existing.setdefault("tools", {})
-            web = tools.setdefault("web", {})
-            web["search"] = {"provider": _PARALLEL_FREE_PROVIDER}
+            web["search"] = {"provider": "brave"}
             plugins = existing.setdefault("plugins", {})
             entries = plugins.setdefault("entries", {})
-            entries[_PARALLEL_PLUGIN_ID] = {"enabled": True}
+            entry = entries.setdefault("brave", {})
+            entry.setdefault("enabled", True)
+            plugin_config = entry.setdefault("config", {})
+            plugin_config.setdefault("webSearch", {})["apiKey"] = "${BRAVE_API_KEY}"
             if isinstance(plugins.get("allow"), list):
-                plugins["allow"] = list(dict.fromkeys([*plugins["allow"], _PARALLEL_PLUGIN_ID]))
-            self.log.info("  Web search: Parallel free tier (no API key required)")
+                plugins["allow"] = list(dict.fromkeys([*plugins["allow"], "brave"]))
+            self.log.info("  Brave Search API configured")
+        elif existing_provider:
+            self.log.warn(
+                f"  Preserving incomplete {existing_provider} web search configuration; "
+                "check the provider settings before using it"
+            )
+        else:
+            self.log.info("  Web search is not configured; leaving search plugins unchanged")
 
         # ── Skill whitelist ──
         # Only applied when skills.enable is true in deployer config.
@@ -4331,12 +4403,13 @@ class WindowsSetup:
         env["OPENCLAW_STATE_DIR"] = str(state_dir)
         return openclaw_cmd, env
 
-    def _parallel_plugin_is_installed_locally(self, state_dir: Path) -> bool:
+    def _search_plugin_is_installed_locally(self, state_dir: Path, provider: str) -> bool:
+        plugin_id, package_name = _SEARCH_PLUGINS[provider]
         projects_dir = state_dir / "npm" / "projects"
         if not projects_dir.is_dir():
             return False
         try:
-            packages = projects_dir.glob("*/node_modules/@openclaw/parallel-plugin/package.json")
+            packages = projects_dir.glob(f"*/node_modules/{package_name}/package.json")
             for package_path in packages:
                 plugin_dir = package_path.parent
                 manifest_path = plugin_dir / "openclaw.plugin.json"
@@ -4347,18 +4420,17 @@ class WindowsSetup:
                     "extensions", []
                 )
                 if (
-                    package.get("name") == _PARALLEL_PLUGIN_PACKAGE
-                    and manifest.get("id") == _PARALLEL_PLUGIN_ID
-                    and "parallel-free"
-                    in manifest.get("contracts", {}).get("webSearchProviders", [])
+                    package.get("name") == package_name
+                    and package.get("version") == OPENCLAW_TARGET_VERSION
+                    and manifest.get("id") == plugin_id
+                    and provider in manifest.get("contracts", {}).get("webSearchProviders", [])
                     and isinstance(extensions, list)
                     and extensions
                     and all((plugin_dir / str(path)).is_file() for path in extensions)
                     and (
                         self._desktop_runtime_root is None
                         or (
-                            package.get("version") == OPENCLAW_TARGET_VERSION
-                            and (plugin_dir / "node_modules" / "openclaw").is_dir()
+                            (plugin_dir / "node_modules" / "openclaw").is_dir()
                             and os.path.samefile(
                                 plugin_dir / "node_modules" / "openclaw",
                                 self._desktop_runtime_root / "node_modules" / "openclaw",
@@ -4370,6 +4442,9 @@ class WindowsSetup:
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return False
         return False
+
+    def _parallel_plugin_is_installed_locally(self, state_dir: Path) -> bool:
+        return self._search_plugin_is_installed_locally(state_dir, _PARALLEL_FREE_PROVIDER)
 
     @staticmethod
     def _create_process_lifetime_job(process: subprocess.Popen) -> _WindowsKillOnCloseJob:
@@ -4528,26 +4603,46 @@ class WindowsSetup:
         pending_path = state_dir / "microclaw-search-setup.json"
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            search = config.get("tools", {}).get("web", {}).get("search", {})
-            if search.get("provider") != _PARALLEL_FREE_PROVIDER or search.get("enabled") is False:
+            if not isinstance(config, dict):
+                raise ValueError("configuration root must be an object")
+            search = _search_config_object(
+                _search_config_object(_search_config_object(config, "tools"), "web"),
+                "search",
+            )
+            provider = search.get("provider")
+            if provider is not None and not isinstance(provider, str):
+                raise ValueError("search.provider must be a string")
+            if provider not in _SEARCH_PLUGINS or search.get("enabled") is False:
                 return True
-            if self._parallel_plugin_is_installed_locally(state_dir):
-                self.log.info("  Parallel web search plugin is already installed")
+            plugin_id, _package_name = _SEARCH_PLUGINS[provider]
+            _search_config_object(config, "plugins")
+            plugins = config.setdefault("plugins", {})
+            _search_config_object(plugins, "entries")
+            entries = plugins.setdefault("entries", {})
+            _search_config_object(entries, plugin_id)
+            if "allow" in plugins and not isinstance(plugins["allow"], list):
+                raise ValueError("plugins.allow must be a list")
+            if _search_plugin_disabled(plugins, plugin_id):
+                self.log.warn(f"  {plugin_id} web search plugin is disabled; preserving settings")
+                return True
+            installed = (
+                self._parallel_plugin_is_installed_locally(state_dir)
+                if provider == _PARALLEL_FREE_PROVIDER
+                else self._search_plugin_is_installed_locally(state_dir, provider)
+            )
+            if installed:
+                self.log.info(f"  {plugin_id} web search plugin is already installed")
                 return True
             suspended_search = {**search, "enabled": False}
             suspended_search.pop("provider", None)
-            plugins = config.setdefault("plugins", {})
-            entries = plugins.setdefault("entries", {})
             pending = {
                 "schemaVersion": 1,
                 "search": search,
                 "suspendedSearch": suspended_search,
-                "pluginEntry": entries.pop(_PARALLEL_PLUGIN_ID, {}),
+                "pluginEntry": entries.pop(plugin_id, {}),
             }
             if isinstance(plugins.get("allow"), list):
-                plugins["allow"] = [
-                    plugin_id for plugin_id in plugins["allow"] if plugin_id != _PARALLEL_PLUGIN_ID
-                ]
+                plugins["allow"] = [allowed for allowed in plugins["allow"] if allowed != plugin_id]
             config["tools"]["web"]["search"] = suspended_search
             temporary = pending_path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps(pending, indent=2), encoding="utf-8")

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Mxc.Sdk.V1;
 using MicroClaw.WindowsNodeHost;
 
 namespace MicroClaw.WindowsNodeHost.Tests;
@@ -6,22 +7,29 @@ namespace MicroClaw.WindowsNodeHost.Tests;
 public sealed class MxcProcessRunnerTests
 {
     [Fact]
-    public void ScratchEnvironmentIsScopedToTheMxcChild()
+    public async Task TrackerRequiresACompletedWaitAndDisposal()
     {
-        var originalTemp = Environment.GetEnvironmentVariable("TEMP");
-        var originalTmp = Environment.GetEnvironmentVariable("TMP");
-        var originalTmpDir = Environment.GetEnvironmentVariable("TMPDIR");
-        var scratch = Path.Combine(Path.GetTempPath(), "mxc-scratch");
-        var startInfo = MxcProcessRunner.CreateStartInfo(
-            @"C:\mxc\wxc-exec.exe", @"C:\mxc\config.json", @"C:\work", scratch);
+        var tracker = new MxcProcessTracker(_ => Task.FromResult<IMxcProcess>(new FakeProcess()));
+        var process = await tracker.SpawnAsync(new ContainerRequest("test"));
+        Assert.Equal("mxc-process-uncertain", Assert.Throws<HostPolicyException>(tracker.AssertSettled).Code);
+        await process.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.Throws<HostPolicyException>(tracker.AssertSettled);
+        process.Dispose();
+        tracker.AssertSettled();
+    }
 
-        Assert.Equal(new[] { "--config", @"C:\mxc\config.json" }, startInfo.ArgumentList);
-        Assert.Equal(scratch, startInfo.Environment["TEMP"]);
-        Assert.Equal(scratch, startInfo.Environment["TMP"]);
-        Assert.Equal(scratch, startInfo.Environment["TMPDIR"]);
-        Assert.Equal(originalTemp, Environment.GetEnvironmentVariable("TEMP"));
-        Assert.Equal(originalTmp, Environment.GetEnvironmentVariable("TMP"));
-        Assert.Equal(originalTmpDir, Environment.GetEnvironmentVariable("TMPDIR"));
+    [Fact]
+    public async Task TrackerPermanentlyBlocksAfterUncertainLaunchOrCleanup()
+    {
+        var failedSpawn = new MxcProcessTracker(_ => Task.FromException<IMxcProcess>(new IOException("spawn failed")));
+        await Assert.ThrowsAsync<IOException>(() => failedSpawn.SpawnAsync(new ContainerRequest("test")));
+        Assert.Equal("mxc-process-uncertain", Assert.Throws<HostPolicyException>(failedSpawn.AssertSettled).Code);
+        await Assert.ThrowsAsync<HostPolicyException>(() => failedSpawn.SpawnAsync(new ContainerRequest("test")));
+
+        var failedCleanup = new MxcProcessTracker(_ => Task.FromResult<IMxcProcess>(new FakeProcess()));
+        var process = await failedCleanup.SpawnAsync(new ContainerRequest("test"));
+        process.Dispose();
+        Assert.Equal("mxc-process-uncertain", Assert.Throws<HostPolicyException>(failedCleanup.AssertSettled).Code);
     }
 
     [Fact]
@@ -62,5 +70,25 @@ public sealed class MxcProcessRunnerTests
         Assert.True(result.TimedOut);
         Assert.Equal(-1, result.ExitCode);
         Assert.Equal("Execution was cancelled.", result.Stderr);
+    }
+
+    private sealed class FakeProcess : IMxcProcess
+    {
+        public uint Id => 0;
+        public Stream? StandardInput => null;
+        public Stream? StandardOutput => null;
+        public Stream? StandardError => null;
+        public IMxcStreamCloser? StandardOutputCloser => null;
+        public IMxcStreamCloser? StandardErrorCloser => null;
+        public IReadOnlyList<string> Warnings => [];
+        public ExecutionMetadata? OutputMetadata => null;
+        public WaitResult Wait() => new() { ExitCode = 0 };
+        public Task<WaitResult> WaitAsync(CancellationToken cancellationToken = default) => Task.FromResult(Wait());
+        public bool TryGetExitCode(out int exitCode) { exitCode = 0; return true; }
+        public Task<(WaitResult Result, byte[] Stdout, byte[] Stderr)> WaitForExitWithOutputAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult((Wait(), Array.Empty<byte>(), Array.Empty<byte>()));
+        public void Kill() { }
+        public void Dispose() { }
     }
 }
