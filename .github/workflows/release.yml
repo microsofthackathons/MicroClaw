@@ -78,6 +78,13 @@ jobs:
       # (reliable on hosted runners, unlike on the self-hosted NetworkService
       # account). build.ps1 then installs its own npm/pip deps and locates NSIS
       # from electron-builder's cache.
+      - name: Normalize temporary directory
+        run: |
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TEMP=$env:RUNNER_TEMP",
+            "TMP=$env:RUNNER_TEMP"
+          )
+
       - name: Setup Node.js 26
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
