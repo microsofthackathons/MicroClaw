@@ -10,15 +10,26 @@ import {
   WINDOWS_NODE_MXC_SCRATCH_BINDING,
   windowsNodeMxcReadinessSessionKey,
 } from "./windows-node-mxc-readiness-proof";
-import { classifyMxcProbe } from "./windows-node-mxc";
+import {
+  applyWindowsNodeCommandPolicy,
+  classifyMxcProbe,
+  WINDOWS_NODE_MXC_NODE_COMMANDS,
+} from "./windows-node-mxc";
+import type { BundledWindowsNodeHostStatus } from "./bundled-windows-node-host";
 import {
   inspectWindowsNodeMxc,
+  inspectWindowsNodeMxcHeartbeat,
   isWindowsNodeMxcSmokePassed,
   preflightWindowsNodeMxcBackend,
   preflightWindowsNodeMxcExactBackend,
   runWindowsNodeMxcSmoke,
   type WindowsNodeMxcGateway,
+  type InspectWindowsNodeMxcOptions,
+  type StoredWindowsNodeMxcSmoke,
 } from "./windows-node-mxc-service";
+import { checkWindowsNodeMxcHealth } from "./windows-node-mxc-health-check";
+
+const backendProbe = vi.hoisted(() => ({ output: "", timedOut: false }));
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(
@@ -26,20 +37,37 @@ vi.mock("node:child_process", () => ({
       _file: string,
       _args: string[],
       _options: object,
-      callback: (error: Error, stdout: string, stderr: string) => void,
-    ) => callback(new Error("Test backend probe failed"), "", ""),
+      callback: (error: Error | null, stdout: string, stderr: string) => void,
+    ) =>
+      backendProbe.timedOut
+        ? callback(Object.assign(new Error("Test probe timeout"), { killed: true }), "", "")
+        : backendProbe.output
+          ? callback(null, backendProbe.output, "")
+          : callback(new Error("Test backend probe failed"), "", ""),
   ),
 }));
 
 const transitionId = "12345678-1234-4234-8234-123456789abc";
 const generation = "generation-test-001";
 const nodeId = "b".repeat(64);
-const strongProbe = classifyMxcProbe(0, JSON.stringify({ tier: "base-container" }), "");
-const limitedProbe = classifyMxcProbe(
-  0,
-  JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
-  "",
-);
+const probeFor = (tier: string, supported = tier === "base-container") =>
+  classifyMxcProbe(
+    0,
+    JSON.stringify({
+      contract: "microclaw.mxc-sdk-probe.v1",
+      supported,
+      windowsUnsupported: false,
+      probeErrored: false,
+      needsDaclAugmentation: false,
+      supportsProtectedPathDenies: supported && tier === "base-container",
+      tier,
+      warnings: [],
+      reasons: [],
+    }),
+    "",
+  );
+const strongProbe = probeFor("base-container");
+const retiredDaclProbe = probeFor("appcontainer-dacl", false);
 
 function preparedPlan() {
   const probeKind = "execution";
@@ -111,13 +139,15 @@ describe("Windows Node MXC status inspection", () => {
   let dataRoot: string;
   beforeEach(() => {
     dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "microclaw-mxc-status-"));
+    backendProbe.output = "";
+    backendProbe.timedOut = false;
     vi.mocked(execFile).mockClear();
   });
   afterEach(() => {
     fs.rmSync(dataRoot, { recursive: true, force: true });
   });
 
-  it("returns Off without waiting for Gateway agent or node readiness", async () => {
+  it("returns Off without waiting for Gateway readiness while checking local MXC availability", async () => {
     const request = vi.fn(() => new Promise<never>(() => {}));
     const result = await inspectWindowsNodeMxc({
       requestedMode: "off",
@@ -134,17 +164,15 @@ describe("Windows Node MXC status inspection", () => {
     });
 
     expect(request).not.toHaveBeenCalled();
-    expect(execFile).not.toHaveBeenCalled();
+    expect(execFile).toHaveBeenCalledOnce();
     expect(result).toMatchObject({
       requestedMode: "off",
       effectiveStrength: "off",
       desiredEnabled: false,
       effectiveEnabled: false,
-      effectiveToolsState: "unverified",
       selectedNode: null,
-      probe: null,
-      fullAvailability: null,
-      limitedAvailability: null,
+      probe: { outcome: "error" },
+      fullAvailability: { available: false },
     });
   });
 
@@ -171,58 +199,379 @@ describe("Windows Node MXC status inspection", () => {
     expect(result.effectiveEnabled).toBe(false);
   });
 
-  it.each(["full", "limited-dacl"] as const)(
-    "still verifies Gateway readiness and fails closed for %s",
-    async (requestedMode) => {
-      const request = vi.fn(async () => {
-        throw new Error("Test Gateway is unavailable");
-      });
-      const result = await inspectWindowsNodeMxc({
-        requestedMode,
-        desiredEnabled: true,
-        selectedNodeId: nodeId,
-        config: {},
-        gateway: { connected: true, request },
-        managedGateway: true,
-        gatewayGeneration: generation,
-        environment: {},
-        appData: dataRoot,
-        localAppData: dataRoot,
-        userProfile: dataRoot,
-        runtimeIntegrityError: "Test runtime is unavailable",
-      });
+  it("still verifies Gateway readiness and fails closed when Full is requested", async () => {
+    const request = vi.fn(async (_method: string, _params?: unknown) => {
+      throw new Error("Test Gateway is unavailable");
+    });
+    const result = await inspectWindowsNodeMxc({
+      requestedMode: "full",
+      desiredEnabled: true,
+      selectedNodeId: nodeId,
+      config: {},
+      gateway: { connected: true, request },
+      managedGateway: true,
+      gatewayGeneration: generation,
+      environment: {},
+      appData: dataRoot,
+      localAppData: dataRoot,
+      userProfile: dataRoot,
+      runtimeIntegrityError: "Test runtime is unavailable",
+    });
 
-      expect(request).toHaveBeenCalledWith("node.list", {});
+    expect(request).toHaveBeenCalledWith("node.list", {});
+    expect(request.mock.calls.map(([method]) => method)).not.toContain("tools.effective");
+    expect(request.mock.calls.map(([method]) => method)).not.toContain("sessions.list");
+    expect(result.effectiveEnabled).toBe(false);
+    expect(result.blockers).toContain("Could not list Gateway nodes: Test Gateway is unavailable");
+  });
+
+  async function fullRouteFixture() {
+    backendProbe.output = JSON.stringify({
+      contract: "microclaw.mxc-sdk-probe.v1",
+      supported: true,
+      windowsUnsupported: false,
+      probeErrored: false,
+      needsDaclAugmentation: false,
+      supportsProtectedPathDenies: true,
+      tier: "base-container",
+      warnings: [],
+      reasons: [],
+    });
+    const attestation = {
+      contract: "microclaw.windows-cwd.v1",
+      approvedRootOnly: true,
+      canonicalFinalPath: true,
+      rejectsReparseComponents: true,
+      durableApprovalBindsCwd: false,
+      durableApprovalBindsDeclaredAccess: false,
+      launchTimeRevalidation: true,
+      omittedCwdUsesIsolatedScratch: true,
+      hostFallbackAbsent: true,
+      activationLeaseContract: "microclaw.windows-activation.v1",
+      generationBoundActivation: true,
+      policyBoundActivation: true,
+      launchTimeLeaseRevalidation: true,
+      approvalProofContract: "microclaw.windows-node-approval.v2",
+      activeRunsRequireApprovalProof: true,
+      approvalProofOneUse: true,
+      approvalProofBindsPreparedPlan: true,
+      approvalProofPlanContract: "microclaw.windows-node-approval-plan.v2",
+      approvalProofBindsExecutableContent: true,
+      approvalProofBindsActivation: true,
+      launchTimeApprovalProofRevalidation: true,
+      durableApprovalStoreProtected: true,
+      durableApprovalsPresent: false,
+      readinessProofContract: "microclaw.windows-node-readiness.v1",
+      readinessProofBindsTransition: true,
+      readinessProofBindsPreparedPlan: true,
+      readinessProofExactBuiltInsOnly: true,
+      readinessProofOneUse: true,
+      launchTimeReadinessProofRevalidation: true,
+      exactFilesystemIsolationRequired: true,
+      degradedIsolationTierRejected: true,
+      requestedContainmentStrength: "full",
+      folderPolicyIsExclusiveBoundary: true,
+      durableApprovalsAllowed: true,
+      ambientAssessmentBound: false,
+      outboundNetworkEnabled: true,
+    };
+    const request = vi.fn(async (method: string) => {
+      if (method === "node.list")
+        return {
+          nodes: [
+            {
+              id: nodeId,
+              platform: "win32",
+              connected: true,
+              paired: true,
+              commands: [...WINDOWS_NODE_MXC_NODE_COMMANDS],
+            },
+          ],
+        };
+      if (method === "node.invoke") return { payload: attestation };
+      throw new Error(`Unexpected Gateway request: ${method}`);
+    });
+    const fingerprint = "a".repeat(64);
+    const bundledHost = {
+      processRunning: true,
+      processId: 123,
+      hostPath: process.execPath,
+      sdkProbePath: process.execPath,
+      runtimeVersion: "1.0.1",
+      cwdPolicyContract: "microclaw.windows-cwd.v1",
+      displayName: "MicroClaw Bundled Windows Node",
+      helperRevision: "f0592215f27100d9ecece33d3069daac76a4125c",
+      pendingApproval: null,
+      lastError: null,
+      nodeId,
+      gatewayGeneration: generation,
+      policyFingerprint: fingerprint,
+      activationLease: {
+        contract: "microclaw.windows-activation.v1",
+        mode: "active",
+        gatewayGeneration: generation,
+        policyFingerprint: fingerprint,
+        expiresAtUnixMs: Date.now() + 60_000,
+      },
+      requestedStrength: "full",
+      effectiveTier: "base-container",
+      ambientAccess: null,
+    } satisfies BundledWindowsNodeHostStatus;
+    const options = {
+      requestedMode: "full" as const,
+      desiredEnabled: true,
+      selectedNodeId: nodeId,
+      config: applyWindowsNodeCommandPolicy({ agents: { entries: { main: {} } } }, nodeId),
+      gateway: { connected: true, request: request as WindowsNodeMxcGateway["request"] },
+      managedGateway: true,
+      gatewayGeneration: generation,
+      bundledHost,
+      appData: dataRoot,
+      localAppData: dataRoot,
+      userProfile: dataRoot,
+    };
+    const initial = await inspectWindowsNodeMxc(options);
+    if (!initial.settingsFingerprint) throw new Error("Missing test settings fingerprint");
+    const smoke = {
+      profile: "full-smoke",
+      gatewayGeneration: generation,
+      nodeId,
+      settingsFingerprint: initial.settingsFingerprint,
+      probeTier: "base-container",
+      containmentStrength: "full",
+      ambientAccessHash: null,
+      checkedAt: new Date().toISOString(),
+      execution: { outcome: "passed", reason: "contained execution verified" },
+      deniedOutsideRoot: { outcome: "passed", reason: "outside-root denial verified" },
+    } satisfies StoredWindowsNodeMxcSmoke;
+    const readyOptions: InspectWindowsNodeMxcOptions = { ...options, storedSmoke: smoke };
+    return { options: readyOptions, request, bundledHost, smoke, attestation };
+  }
+
+  it("accepts a fully attested Full route without querying tool inventory APIs", async () => {
+    const { options, request } = await fullRouteFixture();
+    const result = await inspectWindowsNodeMxc(options);
+
+    expect(result).toMatchObject({
+      effectiveEnabled: true,
+      gatewayPolicyState: "active",
+      cwdAttestationReady: true,
+      blockers: [],
+    });
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "node.list",
+      "node.invoke",
+      "node.list",
+      "node.invoke",
+    ]);
+  });
+
+  it("renews repeated heartbeats without probing, even if a fresh SDK probe would time out", async () => {
+    const { options, request } = await fullRouteFixture();
+    vi.mocked(execFile).mockClear();
+    request.mockClear();
+    backendProbe.timedOut = true;
+    const renewLease = vi.fn(async () => undefined);
+    const failClosed = vi.fn(async () => undefined);
+    for (let tick = 0; tick < 3; tick += 1) {
+      await expect(
+        checkWindowsNodeMxcHealth({
+          isCurrent: () => true,
+          inspect: () => inspectWindowsNodeMxcHeartbeat(options),
+          renewLease,
+          failClosed,
+        }),
+      ).resolves.toBe(true);
+    }
+    expect(execFile).not.toHaveBeenCalled();
+    expect(renewLease).toHaveBeenCalledTimes(3);
+    expect(failClosed).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "node.list",
+      "node.invoke",
+      "node.list",
+      "node.invoke",
+      "node.list",
+      "node.invoke",
+    ]);
+
+    const readiness = await inspectWindowsNodeMxc(options);
+    expect(execFile).toHaveBeenCalledOnce();
+    expect(readiness.effectiveEnabled).toBe(false);
+    expect(readiness.probe?.reason).toContain("probe timed out");
+    await expect(inspectWindowsNodeMxcHeartbeat(options)).resolves.toEqual({
+      effectiveEnabled: true,
+      gatewayPolicyState: "active",
+      blockers: [],
+    });
+    expect(execFile).toHaveBeenCalledOnce();
+  });
+
+  type FullRouteFixture = Awaited<ReturnType<typeof fullRouteFixture>>;
+  it.each([
+    [
+      "missing host",
+      (f) => {
+        f.options.bundledHost = undefined;
+      },
+    ],
+    [
+      "stopped host",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, processRunning: false };
+      },
+    ],
+    [
+      "missing PID",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, processId: null };
+      },
+    ],
+    [
+      "different host generation",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, gatewayGeneration: "old" };
+      },
+    ],
+    [
+      "different node identity",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, nodeId: "c".repeat(64) };
+      },
+    ],
+    [
+      "host mode",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, requestedStrength: "off" };
+      },
+    ],
+    [
+      "unverified tier",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, effectiveTier: null };
+      },
+    ],
+    [
+      "weaker tier",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, effectiveTier: "appcontainer-dacl" };
+      },
+    ],
+    [
+      "missing lease",
+      (f) => {
+        f.options.bundledHost = { ...f.bundledHost, activationLease: null };
+      },
+    ],
+    [
+      "expired lease",
+      (f) => {
+        f.options.bundledHost = {
+          ...f.bundledHost,
+          activationLease: { ...f.bundledHost.activationLease, expiresAtUnixMs: Date.now() - 1 },
+        };
+      },
+    ],
+    [
+      "wrong lease policy",
+      (f) => {
+        f.options.bundledHost = {
+          ...f.bundledHost,
+          activationLease: { ...f.bundledHost.activationLease, policyFingerprint: "old" },
+        };
+      },
+    ],
+    [
+      "runtime integrity failure",
+      (f) => {
+        f.options.runtimeIntegrityError = "Runtime hash mismatch";
+      },
+    ],
+    [
+      "missing smoke",
+      (f) => {
+        f.options.storedSmoke = null;
+      },
+    ],
+    [
+      "stale smoke",
+      (f) => {
+        f.options.storedSmoke = { ...f.smoke, gatewayGeneration: "old" };
+      },
+    ],
+    [
+      "failed smoke",
+      (f) => {
+        f.options.storedSmoke = {
+          ...f.smoke,
+          execution: { outcome: "failed", reason: "Containment failed" },
+        };
+      },
+    ],
+    [
+      "mismatched smoke tier",
+      (f) => {
+        f.options.storedSmoke = { ...f.smoke, probeTier: "appcontainer-dacl" };
+      },
+    ],
+    [
+      "unmanaged Gateway",
+      (f) => {
+        f.options.managedGateway = false;
+      },
+    ],
+    [
+      "disconnected Gateway",
+      (f) => {
+        if (!f.options.gateway) throw new Error("Missing test Gateway");
+        f.options.gateway.connected = false;
+      },
+    ],
+    [
+      "route drift",
+      (f) => {
+        f.options.config = {};
+      },
+    ],
+    [
+      "invalid node attestation",
+      (f) => {
+        f.attestation.hostFallbackAbsent = false;
+      },
+    ],
+  ] satisfies [string, (fixture: FullRouteFixture) => void][])(
+    "rejects heartbeat with %s without launching an SDK probe",
+    async (_name, mutate) => {
+      const fixture = await fullRouteFixture();
+      vi.mocked(execFile).mockClear();
+      mutate(fixture);
+      const result = await inspectWindowsNodeMxcHeartbeat(fixture.options);
       expect(result.effectiveEnabled).toBe(false);
-      expect(result.blockers).toContain(
-        "Could not list Gateway nodes: Test Gateway is unavailable",
-      );
+      expect(result.blockers.length).toBeGreaterThan(0);
+      expect(execFile).not.toHaveBeenCalled();
     },
   );
 });
 
 describe("Windows Node MXC readiness smoke", () => {
-  it.each(["cwd-sensitive-root", "cwd-outside-approved-roots"])(
-    "accepts the bundled host's structured %s rejection before execution",
-    async (errorCode) => {
-      const response = deniedCwdResponse(errorCode);
-      response.payloadJSON = JSON.stringify(response.payload);
-      const request = readinessRequestWithCwdResponse(response);
-      const smoke = await runWindowsNodeMxcSmoke(
-        { connected: true, request } as unknown as WindowsNodeMxcGateway,
-        generation,
-        nodeId,
-        "settings-fingerprint",
-        strongProbe,
-        authorization(),
-      );
+  it("accepts the bundled host's structured outside-root rejection before execution", async () => {
+    const response = deniedCwdResponse("cwd-outside-approved-roots");
+    response.payloadJSON = JSON.stringify(response.payload);
+    const request = readinessRequestWithCwdResponse(response);
+    const smoke = await runWindowsNodeMxcSmoke(
+      { connected: true, request } as unknown as WindowsNodeMxcGateway,
+      generation,
+      nodeId,
+      "settings-fingerprint",
+      strongProbe,
+      authorization(),
+    );
 
-      expect(smoke.deniedOutsideRoot?.outcome).toBe("passed");
-      expect(smoke.execution.outcome).toBe("passed");
-      expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(true);
-      expect(request.mock.calls).toHaveLength(3);
-    },
-  );
+    expect(smoke.deniedOutsideRoot?.outcome).toBe("passed");
+    expect(smoke.execution.outcome).toBe("passed");
+    expect(isWindowsNodeMxcSmokePassed(smoke)).toBe(true);
+    expect(request.mock.calls).toHaveLength(3);
+  });
 
   it("accepts structured rejection without a duplicate serialized payload", async () => {
     const request = readinessRequestWithCwdResponse(deniedCwdResponse());
@@ -272,6 +621,7 @@ describe("Windows Node MXC readiness smoke", () => {
     ["a string exit code on a rejection", { exitCode: "0" }],
     ["missing rejection state", { executionState: undefined }],
     ["an unrelated policy denial", { errorCode: "approval-denied" }],
+    ["an obsolete custom-root denial", { errorCode: "cwd-sensitive-root" }],
     ["an extended error code", { errorCode: "cwd-outside-approved-roots-extra" }],
     ["timeout", { timedOut: true }],
     ["missing error code", { errorCode: undefined }],
@@ -387,78 +737,19 @@ describe("Windows Node MXC readiness smoke", () => {
     }
   });
 
-  it("runs only the scratch-based minimal execution smoke for Limited mode", async () => {
-    let now = 1_000;
-    const logs: string[] = [];
-    const request = vi.fn(async (_method: string, envelope: unknown) => {
-      const call = envelope as { command: string; params: Record<string, unknown> };
-      if (call.command === "system.run") {
-        throw new Error("Limited mode must not run the Full outside-root denial smoke");
-      }
-      if (call.command === "system.run.prepare") {
-        now += 60_000;
-        return { payload: { plan: preparedPlan() } };
-      }
-      if (call.command === WINDOWS_NODE_MXC_READINESS_COMMAND) {
-        const proof = call.params.microclawReadinessProof as { issuedAtUnixMs: number };
-        expect(proof.issuedAtUnixMs).toBe(now);
-        expect(call.params.cwd).toBeNull();
-        expect(call.params.systemRunPlan).toMatchObject({
-          cwd: null,
-          cwdBinding: WINDOWS_NODE_MXC_SCRATCH_BINDING,
-        });
-        return {
-          payload: {
-            stdout: "MICROCLAW_MXC_EXECUTION_OK",
-            stderr: "",
-            exitCode: 0,
-            timedOut: false,
-          },
-        };
-      }
-      throw new Error(`Unexpected command ${call.command}`);
-    });
-
-    const smoke = await runWindowsNodeMxcSmoke(
-      { connected: true, request } as unknown as WindowsNodeMxcGateway,
-      generation,
-      nodeId,
-      "settings-fingerprint",
-      limitedProbe,
-      authorization(),
-      "limited-dacl",
-      "d".repeat(64),
-      { now: () => now, log: (message) => logs.push(message) },
-    );
-
-    expect(smoke.profile).toBe("limited-minimal-smoke");
-    expect(smoke.deniedOutsideRoot).toBeNull();
-    expect(smoke.execution.outcome).toBe("passed");
-    expect(logs).toContainEqual(expect.stringContaining("proofIssueToDispatchMs=0"));
-    expect(request.mock.calls.map((call) => (call[1] as { command: string }).command)).toEqual([
-      "system.run.prepare",
-      WINDOWS_NODE_MXC_READINESS_COMMAND,
-    ]);
-  });
-
-  it("fails the minimal smoke when deterministic output does not match", async () => {
-    const request = vi.fn(async (_method: string, envelope: unknown) => {
-      const call = envelope as { command: string };
-      if (call.command === "system.run.prepare") return { payload: { plan: preparedPlan() } };
-      return { payload: { stdout: "unexpected", stderr: "", exitCode: 0, timedOut: false } };
-    });
-    const smoke = await runWindowsNodeMxcSmoke(
-      { connected: true, request } as unknown as WindowsNodeMxcGateway,
-      generation,
-      nodeId,
-      "settings-fingerprint",
-      limitedProbe,
-      authorization(),
-      "limited-dacl",
-      "d".repeat(64),
-    );
-
-    expect(smoke.execution.outcome).toBe("failed");
+  it("rejects retired DACL-tier smoke before invoking the node", async () => {
+    const request = vi.fn();
+    await expect(
+      runWindowsNodeMxcSmoke(
+        { connected: true, request } as unknown as WindowsNodeMxcGateway,
+        generation,
+        nodeId,
+        "settings-fingerprint",
+        retiredDaclProbe,
+        authorization(),
+      ),
+    ).rejects.toThrow(/BaseContainer/);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("fails before node invocation for stale generation, node, or transition authorization", async () => {
@@ -497,29 +788,32 @@ describe("Windows Node MXC readiness smoke", () => {
   it("rejects degraded containment before invoking the node", async () => {
     const request = vi.fn();
     const gateway = { connected: true, request } as unknown as WindowsNodeMxcGateway;
-    const degraded = classifyMxcProbe(
-      0,
-      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
-      "",
-    );
+    const degraded = retiredDaclProbe;
 
     await expect(
       runWindowsNodeMxcSmoke(gateway, generation, nodeId, "settings", degraded, authorization()),
-    ).rejects.toThrow(/cannot enforce the configured filesystem roots/);
+    ).rejects.toThrow(/BaseContainer/);
     expect(request).not.toHaveBeenCalled();
   });
 });
 
 describe("Windows Node MXC exact-backend preflight", () => {
+  it("requires a fresh SDK probe each time Full activation is preflighted", async () => {
+    const runner = vi
+      .fn()
+      .mockResolvedValueOnce(strongProbe)
+      .mockResolvedValueOnce(classifyMxcProbe(null, "", "", "probe timed out"));
+    await expect(
+      preflightWindowsNodeMxcBackend("C:\\MXC\\host.exe", "full", runner),
+    ).resolves.toEqual(strongProbe);
+    await expect(
+      preflightWindowsNodeMxcBackend("C:\\MXC\\host.exe", "full", runner),
+    ).rejects.toThrow("No eligible MXC exact-containment backend");
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
   it("accepts a proven exact backend", async () => {
-    const probe = classifyMxcProbe(
-      0,
-      JSON.stringify({
-        tier: "base-container",
-        probes: { baseContainerApiPresent: true },
-      }),
-      "",
-    );
+    const probe = strongProbe;
     const runner = vi.fn(async () => probe);
 
     await expect(
@@ -528,39 +822,31 @@ describe("Windows Node MXC exact-backend preflight", () => {
     expect(runner).toHaveBeenCalledWith("C:\\MXC\\wxc-exec.exe");
   });
 
-  it("accepts appcontainer-dacl only for an explicit Limited request", async () => {
-    const probe = classifyMxcProbe(
-      0,
-      JSON.stringify({ tier: "appcontainer-dacl", needsDaclAugmentation: true }),
-      "",
-    );
+  it("rejects retired appcontainer-dacl output regardless of requested mode", async () => {
     await expect(
-      preflightWindowsNodeMxcBackend("C:\\MXC\\wxc-exec.exe", "limited-dacl", async () => probe),
-    ).resolves.toBe(probe);
-    await expect(
-      preflightWindowsNodeMxcBackend("C:\\MXC\\wxc-exec.exe", "full", async () => probe),
+      preflightWindowsNodeMxcExactBackend("C:\\MXC\\wxc-exec.exe", async () => retiredDaclProbe),
     ).rejects.toThrow(/exact-containment backend/);
   });
 
-  it("reports the unavailable OS API and compiled-out BFS backend before startup", async () => {
+  it("reports retired DACL evidence before startup", async () => {
     const probe = classifyMxcProbe(
       0,
       JSON.stringify({
-        tier: "appcontainer-dacl",
+        contract: "microclaw.mxc-sdk-probe.v1",
+        supported: false,
+        windowsUnsupported: false,
+        probeErrored: false,
         needsDaclAugmentation: true,
-        probes: {
-          baseContainerApiPresent: false,
-          bfscfgPresent: false,
-          bfsCompiledIn: false,
-        },
+        supportsProtectedPathDenies: false,
+        tier: "appcontainer-dacl",
+        warnings: [],
+        reasons: ["Legacy DACL mode is retired"],
       }),
       "",
     );
 
     await expect(
       preflightWindowsNodeMxcExactBackend("C:\\MXC\\wxc-exec.exe", async () => probe),
-    ).rejects.toThrow(
-      /Base Container API is unavailable.*built without the appcontainer-bfs backend.*cannot safely install or emulate/,
-    );
+    ).rejects.toThrow(/Legacy DACL mode is retired/);
   });
 });

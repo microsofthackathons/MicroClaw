@@ -112,31 +112,6 @@ function snapshot(state: "locked" | "active", hash: string) {
   };
 }
 
-function legacyConfig(state: "locked" | "active") {
-  const base = config(state);
-  return {
-    ...base,
-    agents: {
-      list: [
-        {
-          id: "main",
-          tools: (base.agents as { entries: Record<string, { tools: unknown }> }).entries.main
-            .tools,
-        },
-      ],
-    },
-  };
-}
-
-function patchAck(hash: string) {
-  return {
-    ok: true,
-    hash,
-    changedPaths: ["agents.entries.main.tools.allow", "agents.entries.main.tools.deny"],
-    sentinel: { payload: { stats: { requiresRestart: false } } },
-  };
-}
-
 describe("MXC in-process policy promotion", () => {
   it("waits in the locked generation until every agent database is admitted", async () => {
     let now = 0;
@@ -325,14 +300,12 @@ describe("MXC in-process policy promotion", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("CAS-patches only agents and verifies the exact applied active revision", async () => {
+  it("waits for agent databases without rewriting the Gateway policy", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
       .mockResolvedValueOnce({ sessions: [] })
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockResolvedValueOnce(patchAck("active-hash"))
-      .mockResolvedValueOnce(snapshot("active", "active-hash"));
+      .mockResolvedValueOnce(snapshot("active", "locked-hash"));
 
     await expect(
       promoteWindowsNodeMxcPolicy({
@@ -345,65 +318,13 @@ describe("MXC in-process policy promotion", () => {
         requestTimeoutMs: 5_000,
         ...readinessOptions,
       }),
-    ).resolves.toMatchObject({ appliedHash: "active-hash-applied" });
+    ).resolves.toMatchObject({ appliedHash: "locked-hash-applied" });
 
-    expect(request).toHaveBeenCalledTimes(5);
-    expect(request.mock.calls[3][0]).toBe("config.patch");
-    expect(JSON.parse(request.mock.calls[3][1].raw)).toEqual({
-      agents: config("active").agents,
-    });
-    expect(request.mock.calls[3][1].replacePaths).toEqual([
-      "agents.entries.main.tools.allow",
-      "agents.entries.main.tools.deny",
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "sessions.list",
+      "config.get",
     ]);
-    expect(Object.keys(request.mock.calls[3][1]).sort()).toEqual([
-      "baseHash",
-      "raw",
-      "replacePaths",
-    ]);
-  });
-
-  it("uses an explicit whole-array replacement for a legacy agent roster", async () => {
-    const lockedConfig = legacyConfig("locked");
-    const activeConfig = legacyConfig("active");
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({
-        config: lockedConfig,
-        hash: "locked-hash",
-        configRevisionHash: "locked-applied",
-        appliedConfigHash: "locked-applied",
-      })
-      .mockResolvedValueOnce({ sessions: [] })
-      .mockResolvedValueOnce({
-        config: lockedConfig,
-        hash: "locked-hash",
-        configRevisionHash: "locked-applied",
-        appliedConfigHash: "locked-applied",
-      })
-      .mockResolvedValueOnce({
-        ...patchAck("active-hash"),
-        changedPaths: ["agents.list"],
-      })
-      .mockResolvedValueOnce({
-        config: activeConfig,
-        hash: "active-hash",
-        configRevisionHash: "active-applied",
-        appliedConfigHash: "active-applied",
-      });
-
-    await promoteWindowsNodeMxcPolicy({
-      gateway: { request },
-      nodeId,
-      backups: {},
-      expectedGeneration: generation,
-      currentGeneration: () => generation,
-      isCurrent: () => true,
-      requestTimeoutMs: 5_000,
-      ...readinessOptions,
-    });
-
-    expect(request.mock.calls[3][1].replacePaths).toEqual(["agents.list"]);
   });
 
   it("does not promote when the locked revision changes after readiness", async () => {
@@ -424,107 +345,9 @@ describe("MXC in-process policy promotion", () => {
         requestTimeoutMs: 5_000,
         ...readinessOptions,
       }),
-    ).rejects.toThrow(/locked policy changed while agent databases were preparing/);
+    ).rejects.toThrow(/Gateway policy changed while agent databases were preparing/);
 
     expect(request.mock.calls.every(([method]) => method !== "config.patch")).toBe(true);
-  });
-
-  it("does not expose raw config patch Gateway failures", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockResolvedValueOnce({ sessions: [] })
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockRejectedValueOnce(
-        Object.assign(new Error("sensitive patch detail"), {
-          code: "UNAVAILABLE",
-          details: { secret: "value" },
-        }),
-      )
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"));
-
-    let failure: unknown;
-    try {
-      await promoteWindowsNodeMxcPolicy({
-        gateway: { request },
-        nodeId,
-        backups: {},
-        expectedGeneration: generation,
-        currentGeneration: () => generation,
-        isCurrent: () => true,
-        requestTimeoutMs: 5_000,
-        ...readinessOptions,
-      });
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toBe("Gateway MXC policy patch request failed: UNAVAILABLE");
-    expect((failure as Error & { cause?: unknown }).cause).toBeUndefined();
-    expect(String(failure)).not.toContain("sensitive");
-  });
-
-  it("rolls back to the locked policy when active read-back drifts", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockResolvedValueOnce({ sessions: [] })
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockResolvedValueOnce(patchAck("active-hash"))
-      .mockResolvedValueOnce({
-        ...snapshot("active", "active-hash"),
-        appliedConfigHash: "stale-runtime-hash",
-      })
-      .mockResolvedValueOnce(snapshot("active", "active-hash"))
-      .mockResolvedValueOnce(patchAck("rollback-hash"))
-      .mockResolvedValueOnce(snapshot("locked", "rollback-hash"));
-
-    await expect(
-      promoteWindowsNodeMxcPolicy({
-        gateway: { request },
-        nodeId,
-        backups: {},
-        expectedGeneration: generation,
-        currentGeneration: () => generation,
-        isCurrent: () => true,
-        requestTimeoutMs: 5_000,
-        ...readinessOptions,
-      }),
-    ).rejects.toThrow(/has not been applied/);
-
-    expect(JSON.parse(request.mock.calls[6][1].raw)).toEqual({
-      agents: config("locked").agents,
-    });
-    expect(Object.keys(request.mock.calls[6][1]).sort()).toEqual([
-      "baseHash",
-      "raw",
-      "replacePaths",
-    ]);
-  });
-
-  it("fails closed when rollback cannot be proven", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockResolvedValueOnce({ sessions: [] })
-      .mockResolvedValueOnce(snapshot("locked", "locked-hash"))
-      .mockRejectedValueOnce(new Error("promotion failed"))
-      .mockRejectedValueOnce(new Error("rollback snapshot unavailable"));
-
-    await expect(
-      promoteWindowsNodeMxcPolicy({
-        gateway: { request },
-        nodeId,
-        backups: {},
-        expectedGeneration: generation,
-        currentGeneration: () => generation,
-        isCurrent: () => true,
-        requestTimeoutMs: 5_000,
-        ...readinessOptions,
-      }),
-    ).rejects.toThrow(/rollback also failed/);
   });
 
   it("rejects a stale generation before issuing config.patch", async () => {

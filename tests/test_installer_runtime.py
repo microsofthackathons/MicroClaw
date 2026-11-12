@@ -61,17 +61,25 @@ class InstallerRuntimeTests(unittest.TestCase):
             stderr="",
         )
 
-    def plugin(self, project="parallel-project", peer=True):
+    def plugin(self, project="parallel-project", peer=True, provider="parallel-free"):
         state = self.home / ".openclaw"
+        plugin_id = "parallel" if provider == "parallel-free" else provider
+        package_name = f"@openclaw/{plugin_id}-plugin"
         plugin = (
-            state / "npm" / "projects" / project / "node_modules" / "@openclaw" / "parallel-plugin"
+            state
+            / "npm"
+            / "projects"
+            / project
+            / "node_modules"
+            / "@openclaw"
+            / f"{plugin_id}-plugin"
         )
         self.write(plugin / "dist" / "index.js")
         self.write(
             plugin / "package.json",
             json.dumps(
                 {
-                    "name": "@openclaw/parallel-plugin",
+                    "name": package_name,
                     "version": OPENCLAW_TARGET_VERSION,
                     "openclaw": {"runtimeExtensions": ["./dist/index.js"]},
                 }
@@ -79,14 +87,14 @@ class InstallerRuntimeTests(unittest.TestCase):
         )
         self.write(
             plugin / "openclaw.plugin.json",
-            json.dumps({"id": "parallel", "contracts": {"webSearchProviders": ["parallel-free"]}}),
+            json.dumps({"id": plugin_id, "contracts": {"webSearchProviders": [provider]}}),
         )
         self.write(
             state / "openclaw.json",
             json.dumps(
                 {
-                    "tools": {"web": {"search": {"provider": "parallel-free"}}},
-                    "plugins": {"entries": {"parallel": {"enabled": True}}},
+                    "tools": {"web": {"search": {"provider": provider}}},
+                    "plugins": {"entries": {plugin_id: {"enabled": True}}},
                 }
             ),
         )
@@ -296,6 +304,21 @@ class InstallerRuntimeTests(unittest.TestCase):
         self.plugin("new-project")
         with unittest.mock.patch("deployer.windows_setup.os.path.samefile", return_value=True):
             self.assertTrue(self.setup._parallel_plugin_is_installed_locally(state))
+
+    def test_keyed_search_plugin_verification_checks_its_identity_and_host(self):
+        self.setup._desktop_runtime_root = self.runtime
+        for provider in ("brave", "tavily"):
+            with self.subTest(provider=provider):
+                state, plugin = self.plugin(provider=provider)
+                with unittest.mock.patch(
+                    "deployer.windows_setup.os.path.samefile", return_value=True
+                ):
+                    self.assertTrue(self.setup._search_plugin_is_installed_locally(state, provider))
+                    manifest = plugin / "openclaw.plugin.json"
+                    manifest.write_text(json.dumps({"id": "wrong"}), encoding="utf-8")
+                    self.assertFalse(
+                        self.setup._search_plugin_is_installed_locally(state, provider)
+                    )
 
     def test_parallel_repair_runs_under_the_bundled_host_and_checks_the_result(self):
         self.setup._desktop_runtime_root = self.runtime

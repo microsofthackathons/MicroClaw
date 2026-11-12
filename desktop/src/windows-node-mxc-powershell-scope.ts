@@ -9,11 +9,12 @@ import {
 
 export const POWERSHELL_FILESYSTEM_SCOPE_CONTRACT = "microclaw.powershell-filesystem-scope.v1";
 export const POWERSHELL_FILESYSTEM_SCOPE_MARKER = "[void]'microclaw.powershell-filesystem-scope.";
-export const POWERSHELL_FILESYSTEM_INITIALIZER =
-  "[void]'microclaw.powershell-filesystem-scope.v1';" +
+export const POWERSHELL_FILESYSTEM_BOOTSTRAP =
   "try{New-PSDrive -Name MicroClawCwd -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) -Scope Script -ErrorAction Stop|Out-Null;" +
   "Set-Location -LiteralPath 'MicroClawCwd:\\' -ErrorAction Stop}" +
   "catch{[Console]::Error.WriteLine('MicroClaw PowerShell filesystem initialization failed; command not executed.');exit 125};";
+export const POWERSHELL_FILESYSTEM_INITIALIZER =
+  "[void]'microclaw.powershell-filesystem-scope.v1';" + POWERSHELL_FILESYSTEM_BOOTSTRAP;
 
 export interface PowerShellFilesystemInitialization {
   contract: typeof POWERSHELL_FILESYSTEM_SCOPE_CONTRACT;

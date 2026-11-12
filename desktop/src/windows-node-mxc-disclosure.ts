@@ -1,27 +1,16 @@
 import type { WindowsNodeMxcRequestedMode } from "./windows-node-mxc-modes";
 
-export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION = 2 as const;
+export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION = 3 as const;
 
 export type WindowsNodeMxcDisclosureTargetMode = Exclude<WindowsNodeMxcRequestedMode, "off">;
 
-export type WindowsNodeMxcDisclosureGroupId = "disabled" | "paused" | "available-restricted";
+export type WindowsNodeMxcDisclosureGroupId = "contained" | "outside-mxc";
 
 export type WindowsNodeMxcDisclosureItemId =
+  | "windows-node-exec"
   | "gateway-native-filesystem"
-  | "browser-automation"
-  | "mcp"
-  | "screen"
-  | "camera"
-  | "location"
-  | "tts"
-  | "stt"
-  | "gateway-memory"
-  | "cron"
-  | "hooks-webhooks"
-  | "exec"
-  | "gateway-web"
-  | "wechat-message"
-  | "canvas-phase-1";
+  | "gateway-runtime"
+  | "canvas";
 
 export interface WindowsNodeMxcDisclosureItem {
   id: WindowsNodeMxcDisclosureItemId;
@@ -44,60 +33,30 @@ export const WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE = {
   version: WINDOWS_NODE_MXC_CAPABILITY_DISCLOSURE_VERSION,
   groups: [
     {
-      id: "disabled",
-      titleKey: "settings.windowsNodeMxcConsent.group.disabled",
-      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.disabled",
+      id: "contained",
+      titleKey: "settings.windowsNodeMxcConsent.group.contained",
+      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.contained",
+      items: [
+        {
+          id: "windows-node-exec",
+          translationKey: "settings.windowsNodeMxcConsent.item.windows-node-exec",
+        },
+      ],
+    },
+    {
+      id: "outside-mxc",
+      titleKey: "settings.windowsNodeMxcConsent.group.outside-mxc",
+      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.outside-mxc",
       items: [
         {
           id: "gateway-native-filesystem",
           translationKey: "settings.windowsNodeMxcConsent.item.gateway-native-filesystem",
         },
         {
-          id: "browser-automation",
-          translationKey: "settings.windowsNodeMxcConsent.item.browser-automation",
+          id: "gateway-runtime",
+          translationKey: "settings.windowsNodeMxcConsent.item.gateway-runtime",
         },
-        { id: "mcp", translationKey: "settings.windowsNodeMxcConsent.item.mcp" },
-        { id: "screen", translationKey: "settings.windowsNodeMxcConsent.item.screen" },
-        { id: "camera", translationKey: "settings.windowsNodeMxcConsent.item.camera" },
-        { id: "location", translationKey: "settings.windowsNodeMxcConsent.item.location" },
-        { id: "tts", translationKey: "settings.windowsNodeMxcConsent.item.tts" },
-        { id: "stt", translationKey: "settings.windowsNodeMxcConsent.item.stt" },
-      ],
-    },
-    {
-      id: "paused",
-      titleKey: "settings.windowsNodeMxcConsent.group.paused",
-      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.paused",
-      items: [
-        { id: "cron", translationKey: "settings.windowsNodeMxcConsent.item.cron" },
-        {
-          id: "hooks-webhooks",
-          translationKey: "settings.windowsNodeMxcConsent.item.hooks-webhooks",
-        },
-      ],
-    },
-    {
-      id: "available-restricted",
-      titleKey: "settings.windowsNodeMxcConsent.group.available-restricted",
-      summaryKey: "settings.windowsNodeMxcConsent.groupSummary.available-restricted",
-      items: [
-        { id: "exec", translationKey: "settings.windowsNodeMxcConsent.item.exec" },
-        {
-          id: "gateway-memory",
-          translationKey: "settings.windowsNodeMxcConsent.item.gateway-memory",
-        },
-        {
-          id: "gateway-web",
-          translationKey: "settings.windowsNodeMxcConsent.item.gateway-web",
-        },
-        {
-          id: "wechat-message",
-          translationKey: "settings.windowsNodeMxcConsent.item.wechat-message",
-        },
-        {
-          id: "canvas-phase-1",
-          translationKey: "settings.windowsNodeMxcConsent.item.canvas-phase-1",
-        },
+        { id: "canvas", translationKey: "settings.windowsNodeMxcConsent.item.canvas" },
       ],
     },
   ],

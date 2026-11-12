@@ -35,7 +35,6 @@ try {
         'resources\openclaw.asar',
         'resources\windows-node\RUNTIME.json',
         'resources\windows-node\host\microclaw-windows-node-host.exe',
-        'resources\windows-node\canvas-host\microclaw-windows-node-canvas-host.exe',
         'resources\windows-node\host-prep\microclaw-mxc-host-prep.exe',
         'resources\windows-node\mxc\wxc-exec.exe',
         'resources\windows-node\mxc\wxc-host-prep.exe',

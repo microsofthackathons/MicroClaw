@@ -6,6 +6,7 @@ import { MessageItemType, MessageType } from "../api/types.js";
 import { getContextToken } from "../messaging/inbound.js";
 import { sendMessageWeixin } from "../messaging/send.js";
 import { isActiveWeixinAccount } from "../auth/accounts.js";
+import { isMxcManagedWeixin } from "./mxc-policy.js";
 import { normalizeProviderInteger, providerMetadataShape, type ProviderFieldShape } from "../api/provider-metadata.js";
 import {
   WeixinMessageDeliveryError, WEIXIN_DELIVERY_DIAGNOSTIC_CONTRACT, isWeixinDeliveryKind,
@@ -80,6 +81,7 @@ export class WeixinRemoteApprovalTransport {
   get enabled(): boolean {
     return Boolean(
       !this.disposed &&
+      isMxcManagedWeixin() &&
       process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE &&
         process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN,
     );

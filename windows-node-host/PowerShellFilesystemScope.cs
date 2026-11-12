@@ -44,21 +44,18 @@ internal static class PowerShellFilesystemScope
 {
     internal const string Contract = "microclaw.powershell-filesystem-scope.v1";
     internal const string Marker = "[void]'microclaw.powershell-filesystem-scope.";
-    internal const string Initializer =
-        "[void]'microclaw.powershell-filesystem-scope.v1';" +
+    internal const string Bootstrap =
         "try{New-PSDrive -Name MicroClawCwd -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) -Scope Script -ErrorAction Stop|Out-Null;" +
         "Set-Location -LiteralPath 'MicroClawCwd:\\' -ErrorAction Stop}" +
         "catch{[Console]::Error.WriteLine('MicroClaw PowerShell filesystem initialization failed; command not executed.');exit 125};";
+    internal const string Initializer =
+        "[void]'microclaw.powershell-filesystem-scope.v1';" + Bootstrap;
 
     private sealed record Token(string Value, char? Quote, int Start, int End);
     private sealed record ScopedCommand(string Form, string Operation, string InitializedPayload);
 
-    internal static bool IsLimited(HostPolicy policy) =>
-        policy.RequestedStrength == "limited-dacl" && policy.EffectiveTier == "appcontainer-dacl";
-
     private static bool SupportsInitialization(HostPolicy policy) =>
-        IsLimited(policy) || (policy.RequestedStrength == "full" &&
-            policy.EffectiveTier is "base-container" or "appcontainer-bfs");
+        policy.RequestedStrength == "full" && policy.EffectiveTier == "base-container";
 
     internal static string Preview(IReadOnlyList<DeclaredAccess> access, string payload) =>
         $"# [declare-access]{string.Join(';', access.OrderBy(entry => entry.Path, StringComparer.Ordinal).Select(entry => $"{entry.Access}:{entry.Path}"))}[/declare-access]\n{payload}";

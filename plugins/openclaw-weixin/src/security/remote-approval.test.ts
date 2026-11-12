@@ -173,8 +173,12 @@ describe("WeChat remote approval ingress normalization", () => {
   it("makes monitor-generation transport shutdown terminal", () => {
     const previousPipe = process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE;
     const previousToken = process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN;
+    const previousCompat = process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT;
+    const previousLivePolicy = process.env.MICROCLAW_MXC_LIVE_POLICY_PATH;
     process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE = "\\\\.\\pipe\\test";
     process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN = "token";
+    process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+    delete process.env.MICROCLAW_MXC_LIVE_POLICY_PATH;
     try {
       const transport = new WeixinRemoteApprovalTransport({
         accountId: "bot@im.wechat",
@@ -188,6 +192,10 @@ describe("WeChat remote approval ingress normalization", () => {
       else process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_PIPE = previousPipe;
       if (previousToken === undefined) delete process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN;
       else process.env.MICROCLAW_MXC_WEIXIN_REMOTE_APPROVAL_TOKEN = previousToken;
+      if (previousCompat === undefined) delete process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT;
+      else process.env.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = previousCompat;
+      if (previousLivePolicy === undefined) delete process.env.MICROCLAW_MXC_LIVE_POLICY_PATH;
+      else process.env.MICROCLAW_MXC_LIVE_POLICY_PATH = previousLivePolicy;
     }
   });
 });

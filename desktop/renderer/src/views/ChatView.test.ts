@@ -1,11 +1,16 @@
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { reactive } from "vue";
+import { reactive, ref } from "vue";
 import { createBrowserOpenClawMock } from "@/browser-openclaw";
 import { ElMessage } from "element-plus";
 import { setLocale, t } from "@/i18n";
 import { useChatStore } from "@/stores/chat";
+import ModelSetupDialog from "@/components/ModelSetupDialog.vue";
+import {
+  windowsNodeMxcLifecycleStateKey,
+  type WindowsNodeMxcLifecycleState,
+} from "@/windows-node-mxc-lifecycle";
 import ChatView from "./ChatView.vue";
 
 const route = vi.hoisted(() => ({ params: { agentId: "main" } }));
@@ -74,6 +79,139 @@ describe("ChatView agent preparation", () => {
     await flushPromises();
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect((input.element as HTMLTextAreaElement).value).toBe("");
+    wrapper.unmount();
+  });
+
+  it("preserves drafts and blocks submission during live mode changes and failures", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useChatStore(pinia);
+    store.wsConnected = true;
+    const state = ref<WindowsNodeMxcLifecycleState | null>({
+      phase: "active",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const sendMessage = vi.spyOn(window.openclaw.chat, "sendMessage");
+    const wrapper = shallowMount(ChatView, {
+      global: {
+        plugins: [pinia],
+        provide: { [windowsNodeMxcLifecycleStateKey as symbol]: state },
+      },
+    });
+    const input = wrapper.get("textarea");
+    await input.setValue("Keep this draft");
+    for (const phase of [
+      "locking",
+      "updating-folders",
+      "updating-consent",
+      "updating-model",
+      "connecting-weixin",
+      "disconnecting-weixin",
+    ] as const) {
+      state.value = { ...state.value!, phase };
+      await wrapper.vm.$nextTick();
+      expect(store.wsConnected).toBe(true);
+      expect(wrapper.get(".home-input-send").attributes("disabled")).toBeDefined();
+      await input.trigger("keydown", { key: "Enter" });
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect((input.element as HTMLTextAreaElement).value).toBe("Keep this draft");
+    }
+
+    state.value = { ...state.value!, phase: "failed", detail: "Policy failed" };
+    await wrapper.vm.$nextTick();
+    expect(input.attributes("placeholder")).toContain("执行已锁定");
+    await input.trigger("keydown", { key: "Enter" });
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    state.value = { ...state.value!, phase: "idle", detail: null };
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".home-input-send").attributes("disabled")).toBeUndefined();
+    await input.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("preserves the draft if security locks during model setup preflight", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useChatStore(pinia);
+    store.wsConnected = true;
+    const state = ref<WindowsNodeMxcLifecycleState | null>({
+      phase: "active",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const response = await window.openclaw.model.session.get(store.sessionKey);
+    let finish!: (value: typeof response) => void;
+    vi.spyOn(window.openclaw.model.session, "get").mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const send = vi.spyOn(store, "sendMessage").mockResolvedValue(true);
+    const wrapper = shallowMount(ChatView, {
+      global: {
+        plugins: [pinia],
+        provide: { [windowsNodeMxcLifecycleStateKey as symbol]: state },
+      },
+    });
+    const input = wrapper.get("textarea");
+    await input.setValue("Keep this draft");
+    await input.trigger("keydown", { key: "Enter" });
+    state.value = { ...state.value!, phase: "locking" };
+    finish(response);
+    await flushPromises();
+
+    expect(send).not.toHaveBeenCalled();
+    expect((input.element as HTMLTextAreaElement).value).toBe("Keep this draft");
+    state.value = { ...state.value!, phase: "active" };
+    await wrapper.vm.$nextTick();
+    await input.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(send).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("does not submit a configured model's pending draft while security is locked", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useChatStore(pinia);
+    store.wsConnected = true;
+    const state = ref<WindowsNodeMxcLifecycleState | null>({
+      phase: "active",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
+    vi.spyOn(window.openclaw.config, "needsSetup")
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    const send = vi.spyOn(store, "sendMessage").mockResolvedValue(true);
+    const wrapper = shallowMount(ChatView, {
+      global: {
+        plugins: [pinia],
+        provide: { [windowsNodeMxcLifecycleStateKey as symbol]: state },
+      },
+    });
+    const input = wrapper.get("textarea");
+    await input.setValue("Keep this draft");
+    await input.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    const dialog = wrapper.findComponent(ModelSetupDialog);
+    expect(dialog.props("modelValue")).toBe(true);
+
+    state.value = { ...state.value!, phase: "locking" };
+    dialog.vm.$emit("update:modelValue", false);
+    dialog.vm.$emit("configured");
+    await flushPromises();
+    expect(send).not.toHaveBeenCalled();
+    expect((input.element as HTMLTextAreaElement).value).toBe("Keep this draft");
+    state.value = { ...state.value!, phase: "active" };
+    await wrapper.vm.$nextTick();
+    await input.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(send).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 });
@@ -146,9 +284,9 @@ describe("ChatView image drops", () => {
       ],
       0,
     );
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(2);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(2);
     await wrapper.findAll(".chat-attachment__remove")[0].trigger("click");
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
     await box.trigger("drop", { dataTransfer: data([image("first.png")]) });
     await flushPromises();
     expect(imported).toHaveBeenLastCalledWith(
@@ -162,7 +300,7 @@ describe("ChatView image drops", () => {
       expect.objectContaining({ fileName: "second.png" }),
       expect.objectContaining({ fileName: "first.png" }),
     ]);
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
     wrapper.unmount();
   });
 
@@ -186,7 +324,7 @@ describe("ChatView image drops", () => {
     expect(error).toHaveBeenCalledWith(
       t("chat.attachment.fileTooLarge", { file: "large.png", limit: "20 MB" }),
     );
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
     wrapper.unmount();
     error.mockRestore();
   });
@@ -222,7 +360,7 @@ describe("ChatView image drops", () => {
     send.mockResolvedValueOnce(false);
     await wrapper.get(".home-input-send").trigger("click");
     await flushPromises();
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
     expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Keep this draft");
     wrapper.unmount();
   });
@@ -272,10 +410,10 @@ describe("ChatView image drops", () => {
       rejections: [],
     });
     await flushPromises();
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
     store.sessionKey = originalKey;
     await flushPromises();
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
     wrapper.unmount();
   });
 
@@ -307,12 +445,12 @@ describe("ChatView image drops", () => {
         window.dispatchEvent(new Event("microclaw:clear-compose"));
         expect(store.sessionKey).toBe(sessionKey);
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("");
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
         await box.trigger("drop", { dataTransfer: data([image("new.png")]) });
         gate.resolve();
         await flushPromises();
 
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
         expect(queuedRead).not.toHaveBeenCalled();
         expect(imported).toHaveBeenCalledTimes(stage === "file-read" ? 1 : 2);
         expect(imported).toHaveBeenLastCalledWith(
@@ -350,7 +488,7 @@ describe("ChatView image drops", () => {
         }
         importing.resolve(imageResult("old.png"));
         await flushPromises();
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
       } finally {
         wrapper.unmount();
       }
@@ -371,7 +509,7 @@ describe("ChatView image drops", () => {
         const secondKey = store.sessionKey;
         await flushPromises();
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("");
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
         await wrapper.get("textarea").setValue("Second draft");
         await box.trigger("drop", { dataTransfer: data([image("second.png")]) });
         await flushPromises();
@@ -380,14 +518,14 @@ describe("ChatView image drops", () => {
         await flushPromises();
         expect(store.sessionKey).toBe(firstKey);
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("First draft");
-        expect(wrapper.get(".chat-attachment__name").text()).toBe("first.png");
+        expect(wrapper.get(".chat-attachment__image").attributes("alt")).toBe("first.png");
         await wrapper.get(".chat-attachment__remove").trigger("click");
         if (target === "session") store.sessionKey = secondKey;
         else await store.switchAgentSession("writer");
         await flushPromises();
         expect(store.sessionKey).toBe(secondKey);
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Second draft");
-        expect(wrapper.get(".chat-attachment__name").text()).toBe("second.png");
+        expect(wrapper.get(".chat-attachment__image").attributes("alt")).toBe("second.png");
       } finally {
         wrapper.unmount();
       }
@@ -398,7 +536,7 @@ describe("ChatView image drops", () => {
         expect((remounted.get("textarea").element as HTMLTextAreaElement).value).toBe(
           "Second draft",
         );
-        expect(remounted.get(".chat-attachment__name").text()).toBe("second.png");
+        expect(remounted.get(".chat-attachment__image").attributes("alt")).toBe("second.png");
       } finally {
         remounted.unmount();
       }
@@ -438,11 +576,11 @@ describe("ChatView image drops", () => {
         ]);
         gate.resolve();
         await flushPromises();
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
         store.sessionKey = firstKey;
         await flushPromises();
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("First draft");
-        expect(wrapper.get(".chat-attachment__name").text()).toBe("first.png");
+        expect(wrapper.get(".chat-attachment__image").attributes("alt")).toBe("first.png");
       } finally {
         wrapper.unmount();
       }
@@ -462,10 +600,10 @@ describe("ChatView image drops", () => {
       store.sessionKey = firstKey;
       importing.resolve(imageResult("old.png"));
       await flushPromises();
-      expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+      expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
       await box.trigger("drop", { dataTransfer: data([image("new.png")]) });
       await flushPromises();
-      expect(wrapper.get(".chat-attachment__name").text()).toBe("new.png");
+      expect(wrapper.get(".chat-attachment__image").attributes("alt")).toBe("new.png");
     } finally {
       wrapper.unmount();
     }
@@ -486,10 +624,10 @@ describe("ChatView image drops", () => {
     try {
       importing.resolve(imageResult("first.png"));
       await flushPromises();
-      expect(remounted.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+      expect(remounted.findAll(".chat-attachment__image")).toHaveLength(0);
       store.sessionKey = firstKey;
       await flushPromises();
-      expect(remounted.get(".chat-attachment__name").text()).toBe("first.png");
+      expect(remounted.get(".chat-attachment__image").attributes("alt")).toBe("first.png");
     } finally {
       remounted.unmount();
     }
@@ -521,10 +659,10 @@ describe("ChatView image drops", () => {
         store.sessionKey = "second-session";
         importing.resolve(imageResult("first.png"));
         await flushPromises();
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(0);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(0);
         store.sessionKey = firstKey;
         await flushPromises();
-        expect(wrapper.get(".chat-attachment__name").text()).toBe("first.png");
+        expect(wrapper.get(".chat-attachment__image").attributes("alt")).toBe("first.png");
       } finally {
         wrapper.unmount();
       }
@@ -552,13 +690,13 @@ describe("ChatView image drops", () => {
         sending.resolve(sent);
         await flushPromises();
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Second draft");
-        expect(wrapper.get(".chat-attachment__name").text()).toBe("second.png");
+        expect(wrapper.get(".chat-attachment__image").attributes("alt")).toBe("second.png");
         store.sessionKey = firstKey;
         await flushPromises();
         expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe(
           sent ? "" : "First draft",
         );
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(sent ? 0 : 1);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(sent ? 0 : 1);
       } finally {
         wrapper.unmount();
       }
@@ -576,7 +714,7 @@ describe("ChatView image drops", () => {
       expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe(
         "Keep this draft",
       );
-      expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+      expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
     } finally {
       wrapper.unmount();
     }
@@ -628,7 +766,7 @@ describe("ChatView image drops", () => {
             t("chat.attachment.pickerFailed", { error: "Error: import failed" }),
           );
         }
-        expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(1);
+        expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(1);
         expect(wrapper.get(".home-input-send").attributes("disabled")).toBeUndefined();
       } finally {
         wrapper.unmount();
@@ -668,7 +806,7 @@ describe("ChatView image drops", () => {
       [expect.objectContaining({ fileName: "second.png" })],
       png.byteLength,
     );
-    expect(wrapper.findAll(".chat-attachment__thumbnail")).toHaveLength(2);
+    expect(wrapper.findAll(".chat-attachment__image")).toHaveLength(2);
     wrapper.unmount();
   });
 });

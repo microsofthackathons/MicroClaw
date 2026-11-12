@@ -5,6 +5,13 @@ export interface MxcStatusSnapshot<T> {
   error: string | null;
 }
 
+export class MxcStatusContextChangedError extends Error {
+  constructor() {
+    super("MXC status changed during inspection; refresh the current state");
+    this.name = "MxcStatusContextChangedError";
+  }
+}
+
 /** Display snapshots are never used to satisfy a fresh enforcement check. */
 export class WindowsNodeMxcStatusCache<T> {
   private latest: { key: string; status: T; verifiedAt: number } | null = null;
@@ -50,8 +57,7 @@ export class WindowsNodeMxcStatusCache<T> {
     const operation = Promise.resolve()
       .then(() => this.hooks.inspect())
       .then((status) => {
-        if (this.hooks.key() !== key)
-          throw new Error("MXC status changed during inspection; refresh the current state");
+        if (this.hooks.key() !== key) throw new MxcStatusContextChangedError();
         this.latest = { key, status, verifiedAt: this.now() };
         this.failure = null;
         return status;

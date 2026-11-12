@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using OpenClaw.Shared;
+using OpenClaw.Shared.Mxc;
 
 namespace MicroClaw.WindowsNodeHost;
 
@@ -17,7 +18,9 @@ internal static class HostCommandRunner
             && string.Equals(argv[3], "/c", StringComparison.OrdinalIgnoreCase))
             return RunCanonicalCmdAsync(request, argv, cancellationToken);
 
-        return new LocalCommandRunner().RunAsync(request, cancellationToken);
+        var startInfo = UnsupportedWindowsCommandExecutor.CreateStartInfo(request, Path.GetTempPath());
+        return ChildProcessCapture.RunAsync(startInfo, request.TimeoutMs, cancellationToken,
+            outputLimit: 4 * 1024 * 1024);
     }
 
     private static Task<CommandResult> RunCanonicalCmdAsync(
@@ -81,6 +84,7 @@ internal static class ChildProcessCapture
 
         var timer = Stopwatch.StartNew();
         process.Start();
+        if (startInfo.RedirectStandardInput) process.StandardInput.Close();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         if (process.HasExited) exited.TrySetResult();

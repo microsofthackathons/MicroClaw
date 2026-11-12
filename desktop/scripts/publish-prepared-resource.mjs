@@ -29,7 +29,13 @@ function inventory(root) {
 export function publishPreparedResource(
   staging,
   destination,
-  { rename = renameSync, remove = rmSync, warn = console.warn } = {},
+  {
+    rename = renameSync,
+    remove = rmSync,
+    warn = console.warn,
+    sleep = (milliseconds) =>
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
+  } = {},
 ) {
   staging = path.resolve(staging);
   destination = path.resolve(destination);
@@ -60,9 +66,25 @@ export function publishPreparedResource(
     }
   }
   const backup = path.join(parent, `${path.basename(destination)}.previous-${randomUUID()}`);
+  const renameWithRetry = (source, target) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        rename(source, target);
+        return;
+      } catch (error) {
+        if (
+          process.platform !== "win32" ||
+          !["EPERM", "EACCES", "EBUSY"].includes(error.code) ||
+          attempt >= 9
+        )
+          throw error;
+        sleep(500);
+      }
+    }
+  };
   if (present) {
     try {
-      rename(destination, backup);
+      renameWithRetry(destination, backup);
     } catch (error) {
       throw new Error(
         "Cannot replace prepared resources while they are in use. The previous resources were preserved; close the development app before retrying.",
@@ -71,11 +93,11 @@ export function publishPreparedResource(
     }
   }
   try {
-    rename(staging, destination);
+    renameWithRetry(staging, destination);
   } catch (error) {
     if (present) {
       try {
-        rename(backup, destination);
+        renameWithRetry(backup, destination);
       } catch (rollback) {
         throw new AggregateError(
           [error, rollback],

@@ -149,12 +149,19 @@ watch(
 onMounted(async () => {
   // Guard: if setup isn't needed, redirect away immediately
   try {
-    const needs = await window.openclaw.config.needsSetup();
+    const needs =
+      (await window.openclaw.config.initialSetupRequired()) ||
+      (await window.openclaw.config.needsSetup());
     if (!needs) {
       router.replace("/chat");
       return;
     }
-  } catch {}
+  } catch (error) {
+    errorMsg.value = t("setup.checkFailed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
 
   // Pre-fill from .env if values exist
   try {
@@ -214,7 +221,8 @@ async function saveAndFinish() {
   saving.value = true;
   try {
     // Read existing config and merge — don't overwrite installer settings
-    const existing = (await window.openclaw.config.read()) || {};
+    const expectedConfig = await window.openclaw.config.read();
+    const existing = structuredClone(expectedConfig || {});
 
     const apiMapping = resolveApiValue(form.apiFormat);
     const modelId =
@@ -277,7 +285,10 @@ async function saveAndFinish() {
       };
     }
 
-    await window.openclaw.config.write(existing);
+    await window.openclaw.config.write(existing, expectedConfig, {
+      kind: "initial-setup",
+      providerKey: providerId,
+    });
     window.location.reload();
   } catch (err: any) {
     errorMsg.value = t("setup.saveFailed", { error: err.message || String(err) });

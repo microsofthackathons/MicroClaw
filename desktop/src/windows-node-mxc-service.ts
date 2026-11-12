@@ -14,23 +14,17 @@ import {
   type WindowsNodeRecord,
   classifyMxcProbe,
   classifyMxcSmoke,
-  classifyMissingEffectiveToolSession,
   describeMxcExactBackendEligibility,
-  extractEffectiveToolNames,
   getWindowsNodeMxcGatewayPolicyState,
   getMxcTierWarning,
-  listAgentSessionKeys,
   listConfiguredSandboxFolders,
   normalizeWindowsNodeRecord,
-  validateEffectiveToolNames,
   validateSelectedWindowsNode,
   validateWindowsNodeMxcSettings,
   type WindowsNodeMxcGatewayPolicyState,
 } from "./windows-node-mxc";
 import {
-  describeWindowsNodeMxcLimitedAvailability,
   selectWindowsNodeMxcAutomaticMode,
-  summarizeWindowsNodeMxcAmbientAccess,
   type WindowsNodeMxcAmbientAccessAssessment,
   type WindowsNodeMxcEffectiveStrength,
   type WindowsNodeMxcModeAvailability,
@@ -126,8 +120,6 @@ export interface WindowsNodeMxcRuntimeStatus {
   activationLeaseExpiresAt: string | null;
   gatewayPolicyState: WindowsNodeMxcGatewayPolicyState;
   gatewayPolicyReady: boolean;
-  effectiveToolsReady: boolean;
-  effectiveToolsState: "unverified" | "verified" | "drift";
   durableApprovalsPresent: boolean | null;
   probe: MxcProbeResult | null;
   fullAvailability: WindowsNodeMxcModeAvailability | null;
@@ -183,6 +175,31 @@ export function resolveWxcExecPath(
 export async function inspectWindowsNodeMxc(
   options: InspectWindowsNodeMxcOptions,
 ): Promise<WindowsNodeMxcRuntimeStatus> {
+  return inspectWindowsNodeMxcState(options, "readiness");
+}
+
+export type WindowsNodeMxcHeartbeatStatus = Pick<
+  WindowsNodeMxcRuntimeStatus,
+  "effectiveEnabled" | "gatewayPolicyState" | "blockers"
+>;
+
+export async function inspectWindowsNodeMxcHeartbeat(
+  options: InspectWindowsNodeMxcOptions,
+): Promise<WindowsNodeMxcHeartbeatStatus> {
+  const { effectiveEnabled, gatewayPolicyState, blockers } = await inspectWindowsNodeMxcState(
+    options,
+    "heartbeat",
+  );
+  return { effectiveEnabled, gatewayPolicyState, blockers };
+}
+
+async function inspectWindowsNodeMxcState(
+  options: InspectWindowsNodeMxcOptions,
+  inspection: "readiness" | "heartbeat",
+): Promise<WindowsNodeMxcRuntimeStatus> {
+  if (options.requestedMode === "limited-dacl") {
+    throw new Error("The retired DACL selection must be migrated to Full before use");
+  }
   const environment = options.environment ?? process.env;
   const appData = options.appData ?? environment.APPDATA ?? "";
   const localAppData = options.localAppData ?? environment.LOCALAPPDATA ?? "";
@@ -194,16 +211,34 @@ export async function inspectWindowsNodeMxc(
     ? "MicroClaw-managed policy"
     : resolveWindowsNodeSettingsPath(environment, appData);
   const companionPath = bundled ? bundled.hostPath : resolveWindowsCompanionPath(localAppData);
-  const wxcExecPath = bundled ? bundled.wxcExecPath : resolveWxcExecPath(environment, localAppData);
+  const wxcExecPath = bundled
+    ? bundled.sdkProbePath
+    : resolveWxcExecPath(environment, localAppData);
   const blockers: string[] = [];
   const warnings: string[] = [];
   const remediation: string[] = [];
+  const heartbeat = inspection === "heartbeat";
+  const heartbeatRuntimeReady =
+    desiredEnabled &&
+    bundled?.processRunning === true &&
+    bundled.processId !== null &&
+    bundled.processId > 0 &&
+    bundled.nodeId === selectedNodeId &&
+    bundled.gatewayGeneration === options.gatewayGeneration &&
+    bundled.requestedStrength === "full" &&
+    bundled.effectiveTier === "base-container";
+  if (heartbeat && !heartbeatRuntimeReady) {
+    blockers.push("MXC heartbeat requires the current running Full BaseContainer node");
+  }
+  if (heartbeat && options.runtimeIntegrityError) {
+    blockers.push(options.runtimeIntegrityError);
+  }
 
   const settings = bundled
     ? ({
         EnableNodeMode: true,
         NodeSystemRunEnabled: true,
-        NodeCanvasEnabled: true,
+        NodeCanvasEnabled: false,
         NodeScreenEnabled: false,
         NodeCameraEnabled: false,
         NodeLocationEnabled: false,
@@ -227,7 +262,7 @@ export async function inspectWindowsNodeMxc(
     );
   } else if (!settingsCheck.ready) {
     remediation.push(
-      "In Windows Companion, enable node mode and system tools; enable MXC and strict host-fallback blocking; enable Allow Windows UI APIs; disable network, clipboard, MCP, and all non-system node capabilities.",
+      "In Windows Companion, enable node mode and system commands, MXC with strict host-fallback blocking, Windows UI APIs, and outbound networking; set sandbox clipboard to None.",
     );
   }
 
@@ -253,11 +288,12 @@ export async function inspectWindowsNodeMxc(
     );
   }
 
-  const probe = !desiredEnabled
+  const probe = heartbeat
     ? null
     : options.runtimeIntegrityError
       ? classifyMxcProbe(null, "", "", options.runtimeIntegrityError)
       : await runMxcProbe(wxcExecPath);
+  const observedTier = heartbeat ? (bundled?.effectiveTier ?? null) : (probe?.tier ?? null);
   const backendEligibility = probe ? describeMxcExactBackendEligibility(probe) : null;
   const fullAvailability: WindowsNodeMxcModeAvailability | null = backendEligibility
     ? {
@@ -267,10 +303,8 @@ export async function inspectWindowsNodeMxc(
         remediation: backendEligibility.remediation,
       }
     : null;
-  const limitedAvailability = probe ? describeWindowsNodeMxcLimitedAvailability(probe) : null;
-  const selectedAvailability =
-    options.requestedMode === "limited-dacl" ? limitedAvailability : fullAvailability;
-  if (desiredEnabled && !selectedAvailability) {
+  const selectedAvailability = fullAvailability;
+  if (!heartbeat && desiredEnabled && !selectedAvailability) {
     blockers.push("MXC backend availability has not been verified");
   } else if (desiredEnabled && selectedAvailability && !selectedAvailability.available) {
     blockers.push(...selectedAvailability.blockers);
@@ -278,14 +312,9 @@ export async function inspectWindowsNodeMxc(
   }
   const tierWarning = options.requestedMode === "full" && probe ? getMxcTierWarning(probe) : null;
   if (tierWarning) warnings.push(tierWarning);
-  if (options.requestedMode === "limited-dacl") {
-    warnings.push(
-      "Limited filesystem containment is active: selected folders are additive grants and ambient Windows ACLs may permit access elsewhere.",
-    );
-  }
   if (probe) warnings.push(...probe.warnings);
   if (bundled && desiredEnabled) {
-    const expectedStrength = options.requestedMode === "limited-dacl" ? "limited-dacl" : "full";
+    const expectedStrength = "full";
     if (bundled.requestedStrength !== null && bundled.requestedStrength !== expectedStrength) {
       blockers.push(
         `Bundled node containment strength drifted from ${expectedStrength} to ${bundled.requestedStrength}`,
@@ -298,36 +327,13 @@ export async function inspectWindowsNodeMxc(
     ) {
       blockers.push(`Bundled node MXC tier drifted from ${bundled.effectiveTier} to ${probe.tier}`);
     }
-    if (
-      options.requestedMode === "limited-dacl" &&
-      bundled.ambientAccess !== null &&
-      options.ambientAccess != null &&
-      bundled.ambientAccess.hash !== options.ambientAccess.hash
-    ) {
-      blockers.push("Bundled node ambient-access assessment hash drifted");
-    }
   }
-  const ambientSummary = summarizeWindowsNodeMxcAmbientAccess(options.ambientAccess ?? null);
-  if (options.requestedMode === "limited-dacl") {
-    if (!options.ambientAccess) {
-      blockers.push("A current Limited-mode ambient filesystem access assessment is required");
-    }
-    if (ambientSummary.sensitiveAccessible.length > 0) {
-      blockers.push(
-        `Limited containment can access sensitive path categories: ${ambientSummary.sensitiveAccessible
-          .map((entry) => entry.category)
-          .join(", ")}`,
-      );
-    }
-    if (ambientSummary.ordinaryAccessible.length > 0) {
-      warnings.push(
-        `Known Limited-mode ambient access: ${ambientSummary.ordinaryAccessible
-          .map((entry) => `${entry.category} (${entry.status})`)
-          .join(", ")}`,
-      );
-    }
-  }
-  if (bundled && !bundled.processRunning && selectedAvailability?.available && desiredEnabled) {
+  if (
+    bundled &&
+    !bundled.processRunning &&
+    (heartbeat || selectedAvailability?.available) &&
+    desiredEnabled
+  ) {
     blockers.push(bundled.lastError ?? "Bundled MicroClaw Windows node host is not running");
     remediation.push("Restart MicroClaw so it can start its app-owned Windows node host.");
   }
@@ -335,15 +341,13 @@ export async function inspectWindowsNodeMxc(
   const gatewayPolicyState = getWindowsNodeMxcGatewayPolicyState(options.config, selectedNodeId);
   const gatewayPolicyReady = gatewayPolicyState !== "drift";
   if (gatewayPolicyState === "drift") {
-    blockers.push("Gateway agent tool policy drifted from the diagnostic-only locked MXC policy");
+    blockers.push("Gateway node-exec routing no longer matches the app-owned Windows node");
   } else if (gatewayPolicyState === "locked") {
     blockers.push("Gateway agent execution remains diagnostic-only and locked");
   }
 
   let nodes: WindowsNodeRecord[] = [];
   let selectedNode: WindowsNodeRecord | null = null;
-  let effectiveToolsReady = false;
-  let effectiveToolsState: WindowsNodeMxcRuntimeStatus["effectiveToolsState"] = "unverified";
   let durableApprovalsPresent: boolean | null = null;
   let cwdAttestationReady = false;
   if (!selectedNodeId) {
@@ -393,54 +397,19 @@ export async function inspectWindowsNodeMxc(
       blockers.push(`Could not list Gateway nodes: ${messageOf(error)}`);
     }
 
-    if (selectedNodeId) {
-      const agentIds = listAgentIds(options.config);
+    if (selectedNodeId && !bundled) {
       try {
-        const expectedToolsState = gatewayPolicyState === "active" ? "active" : "locked";
-        const sessionKeys = await listAgentSessionKeys(options.gateway, agentIds);
-        const effectiveChecks = await Promise.all(
-          agentIds.map(async (agentId) => {
-            const sessionKey = sessionKeys.get(agentId);
-            if (!sessionKey) {
-              return classifyMissingEffectiveToolSession(agentId, expectedToolsState);
-            }
-            const result = await options.gateway!.request("tools.effective", {
-              agentId,
-              sessionKey,
-            });
-            const check = validateEffectiveToolNames(
-              extractEffectiveToolNames(result),
-              expectedToolsState,
-            );
-            return {
-              ready: check.ready,
-              blockers: check.blockers.map((blocker) => `Agent "${agentId}": ${blocker}`),
-              warnings: [],
-            };
-          }),
-        );
-        effectiveToolsReady = effectiveChecks.every((check) => check.ready);
-        effectiveToolsState = effectiveToolsReady ? "verified" : "drift";
-        blockers.push(...effectiveChecks.flatMap((check) => check.blockers));
-        warnings.push(...effectiveChecks.flatMap((check) => check.warnings));
+        const approvals = await options.gateway.request("exec.approvals.node.get", {
+          nodeId: selectedNodeId,
+        });
+        durableApprovalsPresent = hasDurableApprovals(approvals);
       } catch (error) {
-        blockers.push(`Could not verify effective Gateway tools: ${messageOf(error)}`);
+        blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
       }
-
-      if (!bundled) {
-        try {
-          const approvals = await options.gateway.request("exec.approvals.node.get", {
-            nodeId: selectedNodeId,
-          });
-          durableApprovalsPresent = hasDurableApprovals(approvals);
-        } catch (error) {
-          blockers.push(`Could not verify selected-node durable approvals: ${messageOf(error)}`);
-        }
-        if (durableApprovalsPresent) {
-          blockers.push(
-            "Selected node has durable exec approvals, which the pinned Windows Node does not bind to cwd",
-          );
-        }
+      if (durableApprovalsPresent) {
+        blockers.push(
+          "Selected node has durable exec approvals, which the pinned Windows Node does not bind to cwd",
+        );
       }
     }
   }
@@ -459,15 +428,13 @@ export async function inspectWindowsNodeMxc(
     options.gatewayGeneration,
     selectedNodeId,
     settingsFingerprint,
-    probe?.tier ?? null,
-    options.requestedMode === "limited-dacl" ? "limited-dacl" : "full",
-    options.ambientAccess?.hash ?? null,
+    observedTier,
+    "full",
+    null,
   );
   if (!smoke || !isWindowsNodeMxcSmokePassed(smoke)) {
     blockers.push(
-      options.requestedMode === "limited-dacl"
-        ? "A current Limited minimal contained execution smoke proof is required"
-        : "Current Full contained execution and outside-root denial smoke proofs are required",
+      "Current Full contained execution and outside-root denial smoke proofs are required",
     );
     remediation.push(
       bundled
@@ -497,28 +464,14 @@ export async function inspectWindowsNodeMxc(
   }
 
   const effectiveEnabled =
-    desiredEnabled &&
-    gatewayPolicyState === "active" &&
-    effectiveToolsReady &&
-    blockers.length === 0;
-  const ambientSafe =
-    options.requestedMode !== "limited-dacl" ||
-    (options.ambientAccess != null && ambientSummary.sensitiveAccessible.length === 0);
+    desiredEnabled && gatewayPolicyState === "active" && blockers.length === 0;
   const containmentAttested =
-    desiredEnabled &&
-    ambientSafe &&
-    (options.requestedMode === "limited-dacl"
-      ? limitedAvailability?.available === true
-      : fullAvailability?.available === true);
+    desiredEnabled && (heartbeat ? heartbeatRuntimeReady : fullAvailability?.available === true);
 
   return {
     requestedMode: options.requestedMode,
-    effectiveStrength: containmentAttested
-      ? options.requestedMode === "limited-dacl"
-        ? "limited-dacl"
-        : "full"
-      : "off",
-    effectiveTier: containmentAttested ? (probe?.tier ?? null) : null,
+    effectiveStrength: containmentAttested ? "full" : "off",
+    effectiveTier: containmentAttested ? observedTier : null,
     desiredEnabled,
     effectiveEnabled,
     selectedNodeId,
@@ -546,13 +499,11 @@ export async function inspectWindowsNodeMxc(
       : null,
     gatewayPolicyState,
     gatewayPolicyReady,
-    effectiveToolsReady,
-    effectiveToolsState,
     durableApprovalsPresent,
     probe,
     fullAvailability,
-    limitedAvailability,
-    ambientAccess: options.ambientAccess ?? null,
+    limitedAvailability: null,
+    ambientAccess: null,
     smoke,
     blockers: [...new Set(blockers)],
     warnings: [...new Set(warnings)],
@@ -561,27 +512,22 @@ export async function inspectWindowsNodeMxc(
 }
 
 export function shouldStopManagedGatewayForWindowsNodeMxc(
-  status: Pick<
-    WindowsNodeMxcRuntimeStatus,
-    "effectiveEnabled" | "effectiveToolsState" | "gatewayPolicyState"
-  >,
+  status: Pick<WindowsNodeMxcRuntimeStatus, "effectiveEnabled" | "gatewayPolicyState">,
 ): boolean {
-  if (status.gatewayPolicyState === "drift" || status.effectiveToolsState === "drift") return true;
+  if (status.gatewayPolicyState === "drift") return true;
   return status.gatewayPolicyState === "active" && !status.effectiveEnabled;
 }
 
 export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWindowsNodeMxcSmoke {
   if (!isRecord(value)) return false;
   return (
-    (value.profile === "full-smoke" || value.profile === "limited-minimal-smoke") &&
+    value.profile === "full-smoke" &&
     typeof value.gatewayGeneration === "string" &&
     typeof value.nodeId === "string" &&
     typeof value.settingsFingerprint === "string" &&
     typeof value.probeTier === "string" &&
-    (value.containmentStrength === "full" || value.containmentStrength === "limited-dacl") &&
-    (value.ambientAccessHash === null ||
-      (typeof value.ambientAccessHash === "string" &&
-        /^[a-f0-9]{64}$/.test(value.ambientAccessHash))) &&
+    value.containmentStrength === "full" &&
+    value.ambientAccessHash === null &&
     typeof value.checkedAt === "string" &&
     isMxcSmokeResult(value.execution) &&
     (value.deniedOutsideRoot === null || isMxcSmokeResult(value.deniedOutsideRoot))
@@ -590,9 +536,12 @@ export function isCurrentWindowsNodeMxcSmoke(value: unknown): value is StoredWin
 
 export function isWindowsNodeMxcSmokePassed(smoke: StoredWindowsNodeMxcSmoke): boolean {
   if (smoke.execution.outcome !== "passed") return false;
-  return smoke.profile === "limited-minimal-smoke"
-    ? smoke.containmentStrength === "limited-dacl" && smoke.deniedOutsideRoot === null
-    : smoke.containmentStrength === "full" && smoke.deniedOutsideRoot?.outcome === "passed";
+  return (
+    smoke.profile === "full-smoke" &&
+    smoke.containmentStrength === "full" &&
+    smoke.ambientAccessHash === null &&
+    smoke.deniedOutsideRoot?.outcome === "passed"
+  );
 }
 
 export function selectCurrentWindowsNodeMxcSmoke(
@@ -610,8 +559,7 @@ export function selectCurrentWindowsNodeMxcSmoke(
     value.settingsFingerprint === settingsFingerprint &&
     value.probeTier === probeTier &&
     value.containmentStrength === containmentStrength &&
-    value.profile ===
-      (containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke") &&
+    value.profile === "full-smoke" &&
     value.ambientAccessHash === ambientAccessHash
     ? value
     : null;
@@ -640,6 +588,13 @@ export function validateBundledCwdAttestation(
   blockers: string[];
   durableApprovalsPresent: boolean | null;
 } {
+  if (requestedMode !== "full") {
+    return {
+      ready: false,
+      blockers: ["Full MXC containment is required for this attestation"],
+      durableApprovalsPresent: null,
+    };
+  }
   const record = findAttestationRecord(value);
   const expected = {
     contract: "microclaw.windows-cwd.v1",
@@ -670,12 +625,12 @@ export function validateBundledCwdAttestation(
     readinessProofExactBuiltInsOnly: true,
     readinessProofOneUse: true,
     launchTimeReadinessProofRevalidation: true,
-    exactFilesystemIsolationRequired: requestedMode === "full",
-    degradedIsolationTierRejected: requestedMode === "full",
-    requestedContainmentStrength: requestedMode === "limited-dacl" ? "limited-dacl" : "full",
-    folderPolicyIsExclusiveBoundary: requestedMode === "full",
-    durableApprovalsAllowed: requestedMode === "full",
-    ambientAssessmentBound: requestedMode === "limited-dacl",
+    exactFilesystemIsolationRequired: true,
+    degradedIsolationTierRejected: true,
+    requestedContainmentStrength: "full",
+    folderPolicyIsExclusiveBoundary: true,
+    durableApprovalsAllowed: true,
+    ambientAssessmentBound: false,
     outboundNetworkEnabled: true,
   };
   const blockers = Object.entries(expected)
@@ -717,15 +672,12 @@ export async function runWindowsNodeMxcSmoke(
   if (!gateway.connected) throw new Error("MicroClaw managed Gateway is not connected");
   if (!nodeId.trim()) throw new Error("A stable Windows node ID is required");
   if (!settingsFingerprint) throw new Error("Strict Windows Companion settings are not loaded");
-  const tier = probe.tier?.toLowerCase();
-  const tierAccepted =
-    containmentStrength === "full"
-      ? probe.outcome === "supported" && !probe.degraded
-      : tier === "appcontainer-dacl" && probe.outcome !== "error";
-  if (!tierAccepted || !probe.tier) {
+  if (containmentStrength !== "full" || ambientAccessHash !== null) {
+    throw new Error("Readiness proofs support Full BaseContainer only");
+  }
+  if (!describeMxcExactBackendEligibility(probe).eligible || !probe.tier) {
     throw new Error(
-      probe.reason ??
-        "Exact filesystem isolation requires the base-container or appcontainer-bfs MXC tier",
+      probe.reason ?? "Exact filesystem isolation requires the MXC BaseContainer tier",
     );
   }
   if (
@@ -738,10 +690,9 @@ export async function runWindowsNodeMxcSmoke(
   const minter = createWindowsNodeMxcReadinessProofMinter(authorization.proofContext, {
     now: dependencies.now,
   });
-  const profile = containmentStrength === "limited-dacl" ? "limited-minimal-smoke" : "full-smoke";
+  const profile = "full-smoke";
   const log = dependencies.log ?? console.info;
-  const deniedOutsideRoot =
-    containmentStrength === "full" ? await invokeDeniedCwdSmoke(gateway, nodeId, log) : null;
+  const deniedOutsideRoot = await invokeDeniedCwdSmoke(gateway, nodeId, log);
   const execution = await invokeInternalReadinessProbe(
     gateway,
     nodeId,
@@ -805,10 +756,7 @@ function describeDeniedCwdSmokeResponse(value: unknown, nodeId: string): string 
       response.nodeId.toLowerCase() === nodeId.toLowerCase(),
     rejectedBeforeExecution: payload?.executionState === "rejectedBeforeExecution",
     cwdErrorCode:
-      payload?.errorCode === "cwd-sensitive-root" ||
-      payload?.errorCode === "cwd-outside-approved-roots"
-        ? payload.errorCode
-        : "other-or-missing",
+      payload?.errorCode === "cwd-outside-approved-roots" ? payload.errorCode : "other-or-missing",
     exitCode:
       payload?.exitCode === undefined
         ? "missing"
@@ -845,8 +793,7 @@ function classifyDeniedCwdSmokeResponse(value: unknown, nodeId: string): MxcSmok
     (payload.stdout !== undefined && payload.stdout !== "") ||
     typeof payload.error !== "string" ||
     !payload.error.trim() ||
-    (payload.errorCode !== "cwd-sensitive-root" &&
-      payload.errorCode !== "cwd-outside-approved-roots") ||
+    payload.errorCode !== "cwd-outside-approved-roots" ||
     !payload.error.startsWith(`${payload.errorCode}:`)
   ) {
     return failed;
@@ -871,10 +818,7 @@ function classifyDeniedCwdSmokeResponse(value: unknown, nodeId: string): MxcSmok
 
 export function classifyDeniedCwdSmoke(message: string): MxcSmokeResult {
   const normalized = message.toLowerCase();
-  if (
-    normalized.includes("cwd-sensitive-root") ||
-    normalized.includes("cwd-outside-approved-root")
-  ) {
+  if (normalized.includes("cwd-outside-approved-root")) {
     return {
       outcome: "passed",
       reason: "The bundled node denied a protected CWD outside approved roots",
@@ -1050,19 +994,6 @@ function extractNodeRecords(payload: unknown): WindowsNodeRecord[] {
     .filter((entry): entry is WindowsNodeRecord => entry !== null);
 }
 
-function listAgentIds(config: unknown): string[] {
-  if (!config || typeof config !== "object" || Array.isArray(config)) return [];
-  const agents = (config as Record<string, unknown>).agents;
-  if (!agents || typeof agents !== "object" || Array.isArray(agents)) return [];
-  const list = (agents as Record<string, unknown>).list;
-  if (!Array.isArray(list)) return [];
-  return list.flatMap((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-    const id = (entry as Record<string, unknown>).id;
-    return typeof id === "string" && id.trim() ? [id.trim()] : [];
-  });
-}
-
 function hasDurableApprovals(payload: unknown): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   const root = payload as Record<string, unknown>;
@@ -1105,34 +1036,28 @@ export async function probeWindowsNodeMxcAutomaticMode(
   return selectWindowsNodeMxcAutomaticMode(await probeRunner(wxcExecPath));
 }
 
+export async function probeWindowsNodeMxcAvailability(hostPath: string): Promise<MxcProbeResult> {
+  return runMxcProbe(hostPath);
+}
+
 export async function preflightWindowsNodeMxcBackend(
   wxcExecPath: string,
   requestedMode: Exclude<WindowsNodeMxcRequestedMode, "off">,
   probeRunner: (path: string) => Promise<MxcProbeResult> = runMxcProbe,
 ): Promise<MxcProbeResult> {
-  if (requestedMode === "full") {
-    return preflightWindowsNodeMxcExactBackend(wxcExecPath, probeRunner);
-  }
-  const probe = await probeRunner(wxcExecPath);
-  const eligibility = describeWindowsNodeMxcLimitedAvailability(probe);
-  if (!eligibility.available) {
-    throw new Error(
-      `No eligible MXC Limited DACL backend is available. ${eligibility.summary}${
-        eligibility.remediation[0] ? ` ${eligibility.remediation[0]}` : ""
-      }`,
-    );
-  }
-  return probe;
+  if (requestedMode !== "full")
+    throw new Error("The retired DACL selection must be migrated to Full before use");
+  return preflightWindowsNodeMxcExactBackend(wxcExecPath, probeRunner);
 }
 
 async function runMxcProbe(wxcExecPath: string): Promise<MxcProbeResult> {
   if (!fs.existsSync(wxcExecPath)) {
-    return classifyMxcProbe(null, "", "", `wxc-exec.exe not found at ${wxcExecPath}`);
+    return classifyMxcProbe(null, "", "", `Windows node host not found at ${wxcExecPath}`);
   }
   return new Promise((resolve) => {
     execFile(
       wxcExecPath,
-      ["--probe"],
+      ["--mxc-probe"],
       {
         windowsHide: true,
         timeout: 15_000,
@@ -1141,7 +1066,7 @@ async function runMxcProbe(wxcExecPath: string): Promise<MxcProbeResult> {
       },
       (error, stdout, stderr) => {
         if (error && "killed" in error && error.killed) {
-          resolve(classifyMxcProbe(null, "", "wxc-exec --probe timed out", "probe timed out"));
+          resolve(classifyMxcProbe(null, "", "MXC SDK probe timed out", "probe timed out"));
           return;
         }
         const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;

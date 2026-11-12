@@ -40,23 +40,25 @@ async function accept(params: Parameters<typeof planWeixinRemoteApprovalNativeTr
 }
 
 describe("direct sandbox toggle planning", () => {
-  it.each(["full", "limited-dacl"] as const)(
-    "plans %s directly and binds the fresh eligible account without durable consent",
-    async (requestedMode) => {
-      const params = { ...activation(), requestedMode };
-      const result = await accept(params);
-      expect(params.readOptions).toHaveBeenCalledTimes(2);
-      expect(result.limitedFilesystemAcknowledged).toBe(requestedMode === "limited-dacl");
-      expect(result.selection).toEqual({ enabled: true, owner });
-      expect(result.plan).toMatchObject({
-        action: "persist",
-        configuration: { enabled: true, owner },
-      });
-      if (result.plan.action !== "persist") throw new Error("Missing enrollment plan");
-      expect(result.plan.configuration.consentScope).toBeUndefined();
-      expect(weixinRemoteApprovalConsentHash(result.plan.configuration)).toBeNull();
-    },
-  );
+  it("plans Full directly and binds the fresh eligible account without durable consent", async () => {
+    const params = activation();
+    const result = await accept(params);
+    expect(params.readOptions).toHaveBeenCalledTimes(2);
+    expect(result.selection).toEqual({ enabled: true, owner });
+    expect(result.plan).toMatchObject({
+      action: "persist",
+      configuration: { enabled: true, owner },
+    });
+    if (result.plan.action !== "persist") throw new Error("Missing enrollment plan");
+    expect(result.plan.configuration.consentScope).toBeUndefined();
+    expect(weixinRemoteApprovalConsentHash(result.plan.configuration)).toBeNull();
+  });
+
+  it("rejects a retired DACL transition", async () => {
+    await expect(accept({ ...activation(), requestedMode: "limited-dacl" })).rejects.toThrow(
+      /retired DACL/,
+    );
+  });
 
   it.each([
     { invariantState: "none", account: null, enableAvailable: false },

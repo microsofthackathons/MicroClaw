@@ -572,10 +572,7 @@ export class WindowsNodeMxcWeixinRemoteApprovalBroker {
     if (
       input.requests.some(({ approval }) => approval.providerInitialization) &&
       !(
-        (input.security.requestedMode === "limited-dacl" &&
-          input.security.effectiveMode === "appcontainer-dacl") ||
-        (input.security.requestedMode === "full" &&
-          ["base-container", "appcontainer-bfs"].includes(input.security.effectiveMode))
+        input.security.requestedMode === "full" && input.security.effectiveMode === "base-container"
       )
     )
       return reject("security-binding-invalid");

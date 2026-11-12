@@ -159,113 +159,73 @@ describe("desktop startup order", () => {
     expect(service).toContain("await startGateway();");
   });
 
-  it("stops the standard Gateway before Off-to-MXC preflight so paused ingress cannot race", () => {
+  it("changes sandboxing live without restarting the managed Gateway", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
-    const handler = source.slice(
-      source.search(/ipcMain\.handle\(\s*"windows-node-mxc:set-enabled"/u),
-      source.indexOf('"windows-node-mxc:approval-respond"'),
+    const changeMode = source.slice(
+      source.indexOf("async function changeWindowsNodeMxcMode("),
+      source.indexOf("async function applyRunningWindowsNodeMxcFolders("),
     );
-    const suspensionBranch = handler.indexOf("if (suspendCronBeforePreflight)");
-    const gatewayStop = handler.indexOf(
-      "await stopGatewayForSecurityTransition(configuredPort)",
-      suspensionBranch,
-    );
-    const preflight = handler.indexOf(
-      "await prepareWindowsNodeMxcContainment(requestedMode)",
-      suspensionBranch,
-    );
-
-    expect(suspensionBranch).toBeGreaterThan(-1);
-    expect(handler.indexOf("closeWindowsNodeMxcIngress()", suspensionBranch)).toBeGreaterThan(
-      suspensionBranch,
-    );
-    expect(gatewayStop).toBeGreaterThan(suspensionBranch);
-    expect(preflight).toBeGreaterThan(gatewayStop);
-    expect(handler).toContain("Restoring standard Gateway after MXC preflight failure");
+    expect(changeMode).toContain("applyLiveSandboxMode({");
+    expect(changeMode).toContain("closeWindowsNodeMxcIngress()");
+    expect(changeMode).not.toContain("stopGatewayForSecurityTransition");
+    expect(changeMode).not.toContain("startGateway(");
+    expect(changeMode).not.toContain("restartManagedGateway(");
   });
 
-  it("performs one tracked containment validation before mutation and reuses it for readiness", () => {
+  it("preflights BaseContainer before locking and publishes the verified tier", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
-    const handler = source.slice(
-      source.search(/ipcMain\.handle\(\s*"windows-node-mxc:set-enabled"/u),
-      source.indexOf('"windows-node-mxc:approval-respond"'),
+    const changeMode = source.slice(
+      source.indexOf("async function changeWindowsNodeMxcMode("),
+      source.indexOf("async function applyRunningWindowsNodeMxcFolders("),
     );
-    const planning = handler.indexOf("await planWeixinRemoteApprovalNativeTransition(");
-    const validating = handler.indexOf(
-      'setWindowsNodeMxcLifecycleState("validating", validationDetail)',
-    );
-    const preparations = handler.match(/await prepareWindowsNodeMxcContainment\(requestedMode\)/gu);
-    const preparation = handler.indexOf("await prepareWindowsNodeMxcContainment(requestedMode)");
-    const policyMutation = handler.indexOf("applyWindowsNodeMxcGatewayPolicy(");
-    const remoteApprovalPersistence = handler.indexOf(
-      "persistWindowsNodeMxcWeixinRemoteApprovalPlan(",
-    );
-    const settingsMutation = handler.indexOf(
-      'settingsStore.set("windowsNodeMxcSelection", nextSelection)',
-    );
-    const readiness = handler.indexOf(
-      "await runAutomaticWindowsNodeMxcReadiness(preparedContainment)",
-    );
-
-    expect(planning).toBeGreaterThan(-1);
-    expect(handler.indexOf("assertTrustedRendererIpc(event)")).toBeLessThan(planning);
-    expect(handler.indexOf("assertNativeWeixinRemoteApprovalAuthority(params)")).toBeLessThan(
-      handler.indexOf("windowsNodeMxcLifecycleOperations.acquire<"),
-    );
-    expect(handler).toContain(
-      "readOptions: () => getWeixinRemoteApprovalActivationOptions(readConfig())",
-    );
-    expect(handler).toContain("selection: remoteApprovalSelection");
-    expect(handler).not.toContain("params?.remoteApproval");
-    expect(validating).toBeGreaterThan(planning);
-    expect(preparations).toHaveLength(1);
-    expect(preparation).toBeGreaterThan(validating);
-    expect(policyMutation).toBeGreaterThan(preparation);
-    expect(remoteApprovalPersistence).toBeGreaterThan(policyMutation);
-    expect(settingsMutation).toBeGreaterThan(remoteApprovalPersistence);
-    expect(readiness).toBeGreaterThan(settingsMutation);
-    expect(handler).toContain("mxc-validation-failed");
-    expect(handler).toContain('settingsStore.delete("windowsNodeMxcAmbientAccess")');
-    const automatic = source.slice(
-      source.indexOf("async function runAutomaticWindowsNodeMxcReadiness("),
-      source.indexOf("async function startApplicationServices("),
-    );
-    expect(automatic).toContain(
-      'await startGatewayWithWindowsNodeMxcPolicy("locked", preparedContainment)',
-    );
-    expect(automatic).toContain(
-      "assertPreparedWindowsNodeMxcContainment(preparedContainment, requestedMode)",
-    );
-    expect(source).toContain("prepared.transitionId !== windowsNodeMxcReadinessTransitionId");
-    const guardFailure = handler.indexOf("if (!transitionMutationStarted && !validationStarted)");
-    const failureEvent = handler.indexOf('setWindowsNodeMxcLifecycleState("failed", detail)');
-    expect(guardFailure).toBeGreaterThan(preparation);
-    expect(failureEvent).toBeGreaterThan(guardFailure);
-    expect(handler.slice(guardFailure, failureEvent)).toContain("throw error;");
+    const preflight = changeMode.indexOf("preflightWindowsNodeMxcBackend(");
+    const lock = changeMode.indexOf("lock: async");
+    const persist = changeMode.indexOf("persist: async");
+    const publish = changeMode.indexOf("publish: async");
+    expect(preflight).toBeGreaterThan(-1);
+    expect(preflight).toBeLessThan(lock);
+    expect(lock).toBeLessThan(persist);
+    expect(persist).toBeLessThan(publish);
+    expect(changeMode).toContain('probe.tier !== "base-container"');
+    expect(changeMode).toContain("applyLiveSandboxMode");
+    expect(changeMode).toContain("bundledWindowsNodeHost.applyLiveSandboxMode");
+    expect(changeMode).toContain("effectiveTier,");
   });
 
-  it("blocks Gateway restart and generic config mutation before they can change Hooks state", () => {
+  it("guards Gateway restart and delegates config changes to the lifecycle-aware writer", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
     const restartHandler = source.slice(
       source.indexOf('ipcMain.handle("gateway:restart"'),
       source.indexOf("// --- Config ---"),
     );
     const configWriteHandler = source.slice(
-      source.indexOf('ipcMain.handle("config:write"'),
+      source.indexOf('"config:write",'),
       source.indexOf("// --- Skills ---"),
     );
     const restartGuard = restartHandler.indexOf("assertWindowsNodeMxcConfigurationMutable()");
     const restartMutation = restartHandler.indexOf("restartManagedGateway");
-    const configGuard = configWriteHandler.indexOf("isWindowsNodeMxcDesired()");
-    const configMutation = configWriteHandler.indexOf("fs.writeFileSync");
-
     expect(restartGuard).toBeGreaterThan(-1);
     expect(restartMutation).toBeGreaterThan(restartGuard);
-    expect(configGuard).toBeGreaterThan(-1);
-    expect(configMutation).toBeGreaterThan(configGuard);
-    expect(configWriteHandler).toContain(
-      "config:write is blocked while Windows Node + MXC mode is enabled",
+    expect(configWriteHandler).toContain("writeGuardedConfig(");
+    expect(configWriteHandler).toContain("assertWindowsNodeMxcConfigurationMutable()");
+    expect(configWriteHandler).toContain("requireEffectiveWindowsNodeMxc(true)");
+    expect(configWriteHandler).toContain("startServices: startApplicationServices");
+  });
+
+  it("prepares enabled model and WeChat plugins regardless of containment mode", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8");
+    const pluginPreparation = source.slice(
+      source.indexOf("function ensurePluginsAllow()"),
+      source.indexOf("function prepareAgentPersonas("),
     );
+    expect(pluginPreparation).toContain("ensureSelectedModelProviderPlugins(config)");
+    expect(pluginPreparation).not.toContain("isWindowsNodeMxcDesired()");
+    const convergence = source.slice(
+      source.indexOf("const convergence = convergeWeixinPluginRuntime"),
+      source.indexOf('console.info("[weixin] Deferred plugin convergence'),
+    );
+    expect(convergence).toContain("ensureDefaultWeixinPlugin(config)");
+    expect(convergence).not.toContain("isWindowsNodeMxcDesired()");
   });
 
   it("keeps an in-progress MXC lifecycle alive across renderer loss", () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { migrateMxcOnlySecuritySettings } from "./mxc-only-settings";
 
 describe("MXC-only security settings", () => {
-  it("starts without sandboxing and never restores the retired backend", () => {
+  it("migrates legacy sandbox intent to MXC without restoring the retired backend", () => {
     const original = {
       securityMode: "appcontainer",
       sandboxEnabled: true,
@@ -19,7 +19,7 @@ describe("MXC-only security settings", () => {
       language: "en-US",
       windowsNodeMxcSelection: {
         version: 1,
-        requestedMode: "off",
+        requestedMode: "full",
         limitedFilesystemAcknowledgedAt: null,
       },
       windowsNodeMxcFolders: { rw: ["C:\\Work"], ro: ["D:\\Reference"] },
@@ -28,7 +28,7 @@ describe("MXC-only security settings", () => {
   });
 
   it.each(["off", "full", "limited-dacl"])(
-    "preserves the explicit native %s selection and its folder policy",
+    "migrates the explicit native %s selection and preserves its folder policy",
     (requestedMode) => {
       const acknowledgedAt = "2026-10-21T16:38:38.272Z";
       const migrated = migrateMxcOnlySecuritySettings({
@@ -45,8 +45,8 @@ describe("MXC-only security settings", () => {
       });
       expect(migrated.windowsNodeMxcSelection).toEqual({
         version: 1,
-        requestedMode,
-        limitedFilesystemAcknowledgedAt: requestedMode === "limited-dacl" ? acknowledgedAt : null,
+        requestedMode: requestedMode === "limited-dacl" ? "full" : requestedMode,
+        limitedFilesystemAcknowledgedAt: null,
       });
       expect(migrated.windowsNodeMxcFolders).toEqual({ rw: ["C:\\Native"], ro: [] });
       expect(migrated.windowsNodeMxcToolBackups).toEqual({ main: null });
@@ -65,9 +65,9 @@ describe("MXC-only security settings", () => {
     ).toBe("full");
   });
 
-  it("defaults a fresh installation to unsandboxed execution", () => {
+  it("defaults a fresh installation to MXC sandboxing", () => {
     expect(migrateMxcOnlySecuritySettings({})).toMatchObject({
-      windowsNodeMxcSelection: { requestedMode: "off" },
+      windowsNodeMxcSelection: { requestedMode: "full" },
       windowsNodeMxcFolders: { rw: [], ro: [] },
     });
   });

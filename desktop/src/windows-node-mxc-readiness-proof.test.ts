@@ -63,10 +63,10 @@ describe("Windows Node MXC internal readiness proof", () => {
       policyFingerprint: "a".repeat(64),
       nodeId: "b".repeat(64),
       probeKind: "execution",
-      planSha256: "35fc1fc5eb08a374a0247f7dde073db0ca0578d26158bbd6fdc5110ac6e50bda",
+      planSha256: "5418872bcea032cc306dc751f879db4842ed0d7afca7c777c15fa28f6439558c",
       issuedAtUnixMs: 1_735_689_600_000,
       expiresAtUnixMs: 1_735_689_600_000 + WINDOWS_NODE_MXC_READINESS_PROOF_TTL_MS,
-      signature: "223e2c971807546fe05478ebf9e28790b3b6339a92504e7f9fd6a559aab167c7",
+      signature: "e50c01fe2ff92f1a0ba2e66a7b75cae83a17e8bd6b3a76cb3a5d388ec40d9c31",
     });
   });
 

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -21,9 +22,20 @@ class BuildArchiveTests(unittest.TestCase):
         self.files = {
             "MicroClawDesktop.exe": b"application fixture" * 100,
             "resources/app.asar": b"resource fixture" * 100,
+            "resources/"
+            + "/".join(["long-folder-" + "x" * 50] * 4)
+            + "/worker.dll": b"worker fixture",
         }
         for name, content in self.files.items():
-            (payload / name).write_bytes(content)
+            target = payload / name
+            if os.name == "nt":
+                target = Path("\\\\?\\" + str(target))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        long_tree = payload / "resources" / ("long-folder-" + "x" * 50)
+        if os.name == "nt":
+            long_tree = Path("\\\\?\\" + str(long_tree))
+        self.addCleanup(shutil.rmtree, long_tree)
         (self.root / "dist").mkdir()
         source = (ROOT / "build.ps1").read_text(encoding="utf-8-sig")
         parameters = source[: source.index("Set-StrictMode")]
