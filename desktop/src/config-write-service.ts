@@ -2,6 +2,7 @@ import {
   assertConfigWriteAllowed,
   assertInitialModelSetupChange,
   assertWindowsNodeMxcSearchOnlyChange,
+  isPluginOnlyChange,
 } from "./config-write-policy";
 import { parseModelConfigUpdate, type ModelConfigUpdate } from "./model-config-application";
 import { assertModelConfigUnchanged } from "./model-setup";
@@ -9,7 +10,7 @@ import {
   applyWindowsNodeCommandPolicy,
   validateWindowsNodeMxcGatewayPolicy,
 } from "./windows-node-mxc";
-import { assertWindowsNodeMxcModelOnlyChange } from "./windows-node-mxc-model-config";
+import { assertWindowsNodeMxcModelOrPluginChange } from "./windows-node-mxc-model-config";
 
 interface ConfigWriteDependencies {
   readConfig(): unknown;
@@ -24,6 +25,7 @@ interface ConfigWriteDependencies {
   nodeId(): string;
   persist(config: Record<string, unknown>): void;
   applyModel(params: ModelConfigUpdate): Promise<void>;
+  applyPlugins(config: unknown, expectedConfig: unknown): Promise<void>;
   applySearch(config: unknown, expectedConfig: unknown, assertCurrent: () => void): Promise<void>;
   startServices(): Promise<void>;
 }
@@ -114,7 +116,7 @@ export async function writeGuardedConfig(
     });
     assertInitialModelSetupChange(current, config, params.providerKey);
     if (deps.isGatewayConnected()) {
-      assertWindowsNodeMxcModelOnlyChange(current ?? {}, config);
+      assertWindowsNodeMxcModelOrPluginChange(current ?? {}, config);
       await deps.applyModel(params);
       return;
     }
@@ -135,6 +137,17 @@ export async function writeGuardedConfig(
         { cause },
       );
     }
+    return;
+  }
+
+  if (mxcEnabled && !search && isPluginOnlyChange(current, config)) {
+    await deps.requireActiveContainment();
+    assertCurrent();
+    const policy = validateWindowsNodeMxcGatewayPolicy(config, deps.nodeId(), "active");
+    if (!policy.ready) {
+      throw new Error(`Gateway command routing is not ready: ${policy.blockers.join("; ")}`);
+    }
+    await deps.applyPlugins(config, expectedConfig);
     return;
   }
 

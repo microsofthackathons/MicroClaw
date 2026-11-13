@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { ModelConfigRestartRequiredError } from "./model-setup";
+import { ensureGitHubCopilotProviderPlugin } from "./model-provider-plugins";
 import {
-  assertWindowsNodeMxcModelOnlyChange,
-  assertWindowsNodeMxcModelSettingsUnchanged,
+  assertWindowsNodeMxcModelOrPluginChange,
+  assertWindowsNodeMxcModelAndPluginSettingsUnchanged,
   runWindowsNodeMxcModelUpdate,
 } from "./windows-node-mxc-model-config";
 
@@ -17,21 +18,27 @@ function config() {
   };
 }
 
-describe("MXC model-only configuration boundary", () => {
+describe("MXC model and plugin configuration boundary", () => {
   it("binds restarted model settings while allowing Gateway-owned metadata to change", () => {
     const before = config();
     expect(() =>
-      assertWindowsNodeMxcModelSettingsUnchanged(before, {
+      assertWindowsNodeMxcModelAndPluginSettingsUnchanged(before, {
         ...before,
         meta: { lastTouchedAt: "new" },
       }),
     ).not.toThrow();
     expect(() =>
-      assertWindowsNodeMxcModelSettingsUnchanged(before, {
+      assertWindowsNodeMxcModelAndPluginSettingsUnchanged(before, {
         ...before,
         models: { providers: { unexpected: {} } },
       }),
-    ).toThrow("saved model settings changed");
+    ).toThrow("saved model or plugin settings changed");
+    expect(() =>
+      assertWindowsNodeMxcModelAndPluginSettingsUnchanged(before, {
+        ...before,
+        plugins: { entries: { "github-copilot": { enabled: false } } },
+      }),
+    ).toThrow("saved model or plugin settings changed");
   });
   it("allows provider credentials, model definitions and selectors without mutating its inputs", () => {
     const before = config();
@@ -57,7 +64,7 @@ describe("MXC model-only configuration boundary", () => {
       },
     };
     const original = structuredClone(after);
-    expect(() => assertWindowsNodeMxcModelOnlyChange(before, after)).not.toThrow();
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(before, after)).not.toThrow();
     expect(after).toEqual(original);
   });
 
@@ -69,30 +76,91 @@ describe("MXC model-only configuration boundary", () => {
       agents: { defaults: { model: "qwen/qwen-plus" } },
       meta: { lastTouchedAt: "now", lastTouchedVersion: "version" },
     };
-    expect(() => assertWindowsNodeMxcModelOnlyChange(before, after)).not.toThrow();
-    expect(() => assertWindowsNodeMxcModelOnlyChange(after, before)).not.toThrow();
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(before, after)).not.toThrow();
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(after, before)).not.toThrow();
   });
 
-  it.each([
-    "tools",
-    "gateway",
-    "plugins",
-    "hooks",
-    "cron",
-    "sandbox",
-    "permissions",
-    "channels",
-    "unknown",
-  ])("rejects a %s change even when it accompanies a model update", (key) => {
+  it("allows only new, enabled Gateway migration markers during an update", () => {
     const before = config();
+    const after = {
+      ...before,
+      plugins: { entries: { "github-copilot": { enabled: true } } },
+      meta: {
+        lastTouchedVersion: "2026.10.10",
+        migrations: { modelPolicyAllowlist: true, utilityModelSeparation: true },
+      },
+    };
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(before, after)).not.toThrow();
+    expect(after.meta.migrations).toEqual({
+      modelPolicyAllowlist: true,
+      utilityModelSeparation: true,
+    });
     expect(() =>
-      assertWindowsNodeMxcModelOnlyChange(before, {
-        ...before,
-        models: { providers: { qwen: {} } },
-        [key]: { changed: true },
+      assertWindowsNodeMxcModelOrPluginChange(before, {
+        ...after,
+        meta: { migrations: { modelPolicyAllowlist: false } },
       }),
     ).toThrow("Other Gateway configuration remains locked");
+    expect(() =>
+      assertWindowsNodeMxcModelOrPluginChange(before, {
+        ...after,
+        meta: { migrations: { unexpected: true } },
+      }),
+    ).toThrow("Other Gateway configuration remains locked");
+    const existing = { ...before, meta: { migrations: { modelPolicyAllowlist: false } } };
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(existing, after)).toThrow(
+      "Other Gateway configuration remains locked",
+    );
   });
+
+  it("allows unrestricted plugin configuration changes alongside model updates", () => {
+    const before = {
+      ...config(),
+      plugins: { allow: ["old"], entries: { old: { enabled: true } } },
+    };
+    const after = {
+      ...config(),
+      models: { providers: { copilot: {} } },
+      plugins: {
+        allow: ["github-copilot"],
+        deny: ["old"],
+        entries: { "github-copilot": { enabled: true, config: { option: "value" } } },
+      },
+    };
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(before, after)).not.toThrow();
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(after, before)).not.toThrow();
+  });
+
+  it("allows the Copilot provider helper to enable a denied plugin during model setup", () => {
+    const before = {
+      ...config(),
+      plugins: {
+        allow: ["other"],
+        deny: ["github-copilot"],
+        entries: { "github-copilot": { enabled: false } },
+      },
+    };
+    const after = structuredClone(before);
+    expect(ensureGitHubCopilotProviderPlugin(after)).toBe(true);
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(before, after)).not.toThrow();
+    expect(after.plugins.entries["github-copilot"].enabled).toBe(true);
+    expect(after.plugins.allow).toContain("github-copilot");
+    expect(after.plugins.deny).not.toContain("github-copilot");
+  });
+
+  it.each(["tools", "gateway", "hooks", "cron", "sandbox", "permissions", "channels", "unknown"])(
+    "rejects a %s change even when it accompanies a model update",
+    (key) => {
+      const before = config();
+      expect(() =>
+        assertWindowsNodeMxcModelOrPluginChange(before, {
+          ...before,
+          models: { providers: { qwen: {} } },
+          [key]: { changed: true },
+        }),
+      ).toThrow("Other Gateway configuration remains locked");
+    },
+  );
 
   it.each([
     { defaults: { tools: { allow: ["*"] } } },
@@ -102,7 +170,7 @@ describe("MXC model-only configuration boundary", () => {
   ])("rejects agent policy and roster changes: %j", (agents) => {
     const before = config();
     expect(() =>
-      assertWindowsNodeMxcModelOnlyChange(before, {
+      assertWindowsNodeMxcModelOrPluginChange(before, {
         ...before,
         agents: { ...before.agents, ...agents },
       }),
@@ -117,7 +185,7 @@ describe("MXC model-only configuration boundary", () => {
     { models: [] },
     { models: { providers: null } },
   ])("rejects malformed configuration: %j", (after) => {
-    expect(() => assertWindowsNodeMxcModelOnlyChange(config(), after)).toThrow();
+    expect(() => assertWindowsNodeMxcModelOrPluginChange(config(), after)).toThrow();
   });
 });
 
@@ -163,6 +231,35 @@ describe("MXC model update transaction", () => {
     await expect(runWindowsNodeMxcModelUpdate(state.hooks)).resolves.toBe("selected");
     expect(state.calls).toEqual(["pause", "apply", "verify", "resume"]);
     expect(state.hooks.restartSavedConfig).not.toHaveBeenCalled();
+  });
+
+  it("accepts plugin activation during the guarded model update", async () => {
+    const state = transaction();
+    state.hooks.apply.mockImplementation(async () => {
+      state.setConfig({
+        ...config(),
+        plugins: { entries: { "github-copilot": { enabled: true } } },
+      });
+      return "selected";
+    });
+    await expect(runWindowsNodeMxcModelUpdate(state.hooks)).resolves.toBe("selected");
+    expect(state.calls).toEqual(["pause", "verify", "resume"]);
+  });
+
+  it("accepts Gateway migration markers written when the plugin is activated", async () => {
+    const state = transaction();
+    state.hooks.apply.mockImplementation(async () => {
+      state.setConfig({
+        ...config(),
+        plugins: { entries: { "github-copilot": { enabled: true } } },
+        meta: {
+          migrations: { modelPolicyAllowlist: true, utilityModelSeparation: true },
+        },
+      });
+      return "selected";
+    });
+    await expect(runWindowsNodeMxcModelUpdate(state.hooks)).resolves.toBe("selected");
+    expect(state.hooks.resume).toHaveBeenCalledOnce();
   });
 
   it("restarts only an explicitly acknowledged saved revision, never repeating the write", async () => {

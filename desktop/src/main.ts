@@ -40,7 +40,11 @@ import {
 } from "./internal-features";
 import { registerLocalModelHandlers } from "./local-model-ipc";
 import { SessionModelService, sessionModelChatKey } from "./session-model-service";
-import { applyModelConfig, parseModelConfigUpdate } from "./model-config-application";
+import {
+  applyGatewayConfiguration,
+  applyModelConfig,
+  parseModelConfigUpdate,
+} from "./model-config-application";
 import { resolveGatewayRestartReason } from "./gateway-restart-reason";
 import { registerSessionModelHandlers } from "./session-model-ipc";
 import type { LocalModelReceipt } from "./local-model-types";
@@ -297,8 +301,8 @@ import { applyLiveSandboxMode } from "./windows-node-mxc-live-mode";
 import { checkWindowsNodeMxcHealth } from "./windows-node-mxc-health-check";
 import { WindowsNodeMxcStatusCache, type MxcStatusSnapshot } from "./windows-node-mxc-status-cache";
 import {
-  assertWindowsNodeMxcModelOnlyChange,
-  assertWindowsNodeMxcModelSettingsUnchanged,
+  assertWindowsNodeMxcModelOrPluginChange,
+  assertWindowsNodeMxcModelAndPluginSettingsUnchanged,
   runWindowsNodeMxcModelUpdate,
 } from "./windows-node-mxc-model-config";
 import {
@@ -673,7 +677,7 @@ function applyModelConfiguration(input: unknown): Promise<void> {
   const params = parseModelConfigUpdate(input);
   if (isWindowsNodeMxcDesired()) {
     assertModelConfigUnchanged(params.expectedConfig, readConfig());
-    assertWindowsNodeMxcModelOnlyChange(params.expectedConfig, params.config);
+    assertWindowsNodeMxcModelOrPluginChange(params.expectedConfig, params.config);
   }
   return withWindowsNodeMxcModelUpdate(
     () =>
@@ -721,16 +725,19 @@ function prepareProviderCatalogModel(modelRef: string, expectedConfig: unknown):
 async function withWindowsNodeMxcModelUpdate<T>(
   operation: () => Promise<T>,
   resultAfterRestart: () => T,
+  label: "model" | "plugin" = "model",
 ): Promise<T> {
   if (!isWindowsNodeMxcDesired() || windowsNodeMxcModelUpdateInProgress) return operation();
   localModelService.assertIdle();
   sessionModelService.assertIdle();
   if (githubCopilotLoginInProgress || activeModelSessions.size > 0)
-    throw new Error("Finish the current sign-in or chat response before changing the model");
+    throw new Error(
+      `Finish the current sign-in or chat response before changing ${label} settings`,
+    );
   const requestedMode = getWindowsNodeMxcRequestedMode();
   await requireEffectiveWindowsNodeMxc(true);
   if (getWindowsNodeMxcRequestedMode() !== requestedMode)
-    throw new Error("Containment mode changed before model setup");
+    throw new Error(`Containment mode changed before ${label} setup`);
   let client = gwClient;
   let generation = gatewayGenerationId;
   let child = gatewayProcess;
@@ -746,23 +753,26 @@ async function withWindowsNodeMxcModelUpdate<T>(
       windowsNodeMxcApprovalProofContext !== proofContext ||
       !isManagedGatewayProcessAlive()
     )
-      throw new Error("The managed MXC runtime changed during model setup");
+      throw new Error(`The managed MXC runtime changed during ${label} setup`);
   };
   return windowsNodeMxcLifecycleOperations.run(
     { kind: "update-model" },
     async () => {
       if (activeModelSessions.size > 0 || githubCopilotLoginInProgress)
-        throw new Error("Finish the current sign-in or chat response before changing the model");
+        throw new Error(
+          `Finish the current sign-in or chat response before changing ${label} settings`,
+        );
       windowsNodeMxcModelUpdateInProgress = true;
       try {
         return await runWindowsNodeMxcModelUpdate({
+          label: label === "model" ? "Model" : "Plugin",
           readConfig,
           pause: async () => {
             assertCurrent();
             windowsNodeMxcActivationInProgress = true;
             setWindowsNodeMxcLifecycleState(
               "updating-model",
-              "Applying model settings with containment locked",
+              `Applying ${label} settings with containment locked`,
             );
             closeWindowsNodeMxcIngress();
             bundledWindowsNodeHost.revokeActivationLease();
@@ -783,12 +793,14 @@ async function withWindowsNodeMxcModelUpdate<T>(
             );
             assertCurrent();
             if (snapshot.valid !== true || snapshot.hash !== hash)
-              throw new Error("The saved model configuration changed before the required restart");
+              throw new Error(
+                `The saved ${label} configuration changed before the required restart`,
+              );
             const saved = structuredClone(readConfig());
             await stopGatewayForSecurityTransition(gatewayPort);
             windowsNodeMxcActivationInProgress = false;
             await runAutomaticWindowsNodeMxcReadiness(undefined, false);
-            assertWindowsNodeMxcModelSettingsUnchanged(saved, readConfig());
+            assertWindowsNodeMxcModelAndPluginSettingsUnchanged(saved, readConfig());
             client = gwClient;
             generation = gatewayGenerationId;
             child = gatewayProcess;
@@ -809,12 +821,12 @@ async function withWindowsNodeMxcModelUpdate<T>(
               !snapshot.configRevisionHash ||
               snapshot.appliedConfigHash !== snapshot.configRevisionHash
             )
-              throw new Error("The Gateway has not applied the saved model configuration");
+              throw new Error(`The Gateway has not applied the saved ${label} configuration`);
             await bundledWindowsNodeHost.setActivationLease("active", 120_000);
             const status = await getWindowsNodeMxcStatus();
             assertCurrent();
             assertWindowsNodeMxcBaseReady(status, "active", true);
-            if (!status.effectiveEnabled) throw new Error("MXC model update attestation failed");
+            if (!status.effectiveEnabled) throw new Error(`MXC ${label} update attestation failed`);
           },
           resume: () => {
             assertCurrent();
@@ -824,7 +836,7 @@ async function withWindowsNodeMxcModelUpdate<T>(
           },
           failClosed: () =>
             failClosedWindowsNodeMxc(
-              "Model configuration could not be confirmed; reload settings and retry containment readiness",
+              `${label === "model" ? "Model" : "Plugin"} configuration could not be confirmed; reload settings and retry containment readiness`,
             ),
         });
       } finally {
@@ -7600,6 +7612,31 @@ function registerIpcHandlers(): void {
               writeConfigTextAtomically(JSON.stringify(next, null, 2));
             },
             applyModel: applyModelConfiguration,
+            applyPlugins: (next, expected) =>
+              withWindowsNodeMxcModelUpdate(
+                () =>
+                  applyGatewayConfiguration(
+                    {
+                      gateway: () => gwClient,
+                      readConfig,
+                      assertMutable: assertCloudModelMutable,
+                      log: (message) => {
+                        console.info(message);
+                        sendToWindow(mainWindow, "gateway:log", message);
+                        electronLifecycleDiagnostics.log("plugin-config-application", { message });
+                      },
+                    },
+                    {
+                      config: next,
+                      expectedConfig: expected,
+                      context: "[plugin-config]",
+                      note: "Plugin settings",
+                      label: "plugin",
+                    },
+                  ),
+                () => undefined,
+                "plugin",
+              ),
             applySearch: (next, expected, assertCurrent) =>
               applySearchConfig(
                 {

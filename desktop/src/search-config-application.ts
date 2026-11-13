@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
+import { removeGatewayAddedMigrationMarkers } from "./gateway-config-migrations";
 import { assertModelConfigUnchanged } from "./model-setup";
 import {
   assertSearchProviderPluginActive,
@@ -54,17 +55,8 @@ function withoutTargetPluginChanges(
     const meta = object(config.meta);
     delete meta.lastTouchedVersion;
     if (Object.hasOwn(meta, "migrations")) {
-      const migrations = object(meta.migrations);
-      const expectedMigrations = optionalObject(optionalObject(expected.meta).migrations);
-      for (const marker of ["modelPolicyAllowlist", "utilityModelSeparation"]) {
-        if (!Object.hasOwn(expectedMigrations, marker) && migrations[marker] === true)
-          delete migrations[marker];
-      }
-      if (
-        !Object.hasOwn(optionalObject(expected.meta), "migrations") &&
-        !Object.keys(migrations).length
-      )
-        delete meta.migrations;
+      object(meta.migrations);
+      removeGatewayAddedMigrationMarkers(meta, optionalObject(expected.meta));
     }
     if (!Object.hasOwn(expected, "meta") && Object.keys(meta).length === 0) delete config.meta;
   }

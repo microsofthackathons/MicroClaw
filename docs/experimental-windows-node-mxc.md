@@ -141,6 +141,10 @@ configured. An existing allowlist is preserved; if it excludes the bundled
 is explicitly enabled. Browser control is a Gateway capability outside MXC,
 not the Windows Node command-execution sandbox.
 
+Plugin settings can be changed while MXC is on, including enabling a model
+provider plugin. Gateway configuration writes retain revision checks and
+containment readiness checks; a plugin change may require a Gateway restart.
+
 Web-search settings remain available in either mode. When a selected provider
 needs its OpenClaw plugin, MicroClaw installs or enables the plugin matching the
 running Gateway version, applies the search configuration, and verifies its
