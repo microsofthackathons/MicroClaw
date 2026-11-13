@@ -97,6 +97,10 @@ function Get-FileSetId {
     }
 }
 
+. "$root\scripts\windows\npm-registry.ps1"
+Invoke-WithMicroClawNpmRegistry -DefaultConfigPath "$root\deployer\assets\npm-registry.json" -Operation {
+param([string]$buildRegistry)
+
 Start-BuildStage 'Preflight: resolve Node.js'
 . "$root\scripts\windows\node-runtime.ps1"
 
@@ -195,6 +199,7 @@ try {
 Start-BuildStage 'Step 1/7: check native cache'
 Write-Host "`n=== Step 1/7: Build security helpers ===" -ForegroundColor Cyan
 $nativeContext = @(
+    $buildRegistry,
     (& node --version),
     (& dotnet --info | Out-String),
     (& git -C "$root\third_party\openclaw-windows-node\source" rev-parse HEAD)
@@ -205,20 +210,8 @@ $nativeCache = Get-BuildCache -Stage native -Context $nativeContext `
 Start-BuildStage 'Step 1/7: prepare packaged resources'
 if (-not $nativeCache.hit) {
     Push-Location "$root\desktop"
-    $previousResourceRegistry = $env:MICROCLAW_NPM_REGISTRY
     try {
-        if (-not $env:MICROCLAW_NPM_REGISTRY) {
-            $env:MICROCLAW_NPM_REGISTRY = if ($env:MSIX_NPM_REGISTRY) {
-                $env:MSIX_NPM_REGISTRY
-            } else {
-                'https://repo.huaweicloud.com/repository/npm/'
-            }
-        }
-        $resourceRegistryUri = $null
-        if (-not [Uri]::TryCreate($env:MICROCLAW_NPM_REGISTRY, [UriKind]::Absolute, [ref]$resourceRegistryUri) -or
-            $resourceRegistryUri.Scheme -notin @('http', 'https') -or -not $resourceRegistryUri.Host) {
-            throw 'OpenClaw resource npm registry must be an absolute HTTP(S) URL'
-        }
+        $resourceRegistryUri = [Uri]$buildRegistry
         Write-Host ("  OpenClaw resource npm registry: {0}://{1}" -f `
             $resourceRegistryUri.Scheme, $resourceRegistryUri.Authority)
         npm run prepare-packaged-resources
@@ -228,7 +221,6 @@ if (-not $nativeCache.hit) {
             exit 1
         }
     } finally {
-        $env:MICROCLAW_NPM_REGISTRY = $previousResourceRegistry
         Pop-Location
     }
     Start-BuildStage 'Step 1/7: save native cache'
@@ -240,7 +232,7 @@ Start-BuildStage 'Preflight: verify core resource target'
 if ($LASTEXITCODE -ne 0) { throw 'Packaged OpenClaw resources do not match the installer target' }
 
 Start-BuildStage 'Preflight: desktop toolchain context'
-$desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString())
+$desktopContext = @((& node --version), (& npm --version), $PSVersionTable.PSVersion.ToString(), $buildRegistry)
 $signingConfigured = [bool]($env:CSC_LINK -or $env:WIN_CSC_LINK -or $env:CSC_NAME -or
     $env:WIN_CSC_SUBJECT_NAME -or $env:WIN_CSC_SHA1 -or $env:TRUSTED_SIGNING_ENDPOINT -or
     $env:TRUSTED_SIGNING_ACCOUNT -or $env:TRUSTED_SIGNING_PROFILE)
@@ -365,6 +357,7 @@ $installManifest = [ordered]@{
     managedSkillsId = Get-FileSetId -Files $skillsFiles -BasePath "$root\skills"
     openClawVersion = $OpenClawVersion
     mxcSchema = 1
+    npmRegistry = $buildRegistry
 }
 $installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
 Write-Host "  Install manifest: $manifestPath" -ForegroundColor DarkGray
@@ -674,3 +667,4 @@ Write-Host "  Installer dir:   $root\dist\MicroClawInstaller\"
 if ($IncludeInstallerZip) { Write-Host "  Installer zip:   $installerZip" }
 Write-Host "  Portable:        $zipPath"
 Write-BuildTimingSummary
+}

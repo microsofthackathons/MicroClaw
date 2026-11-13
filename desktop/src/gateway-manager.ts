@@ -5,6 +5,7 @@ import * as net from "net";
 import * as http from "http";
 import * as fs from "fs";
 import { loadStateDirEnv, resolveNodePath, resolveOpenClawEntry } from "./path-resolver";
+import { microClawNpmEnvironment } from "./npm-registry";
 import {
   CREATE_NO_WINDOW,
   COMPILE_CACHE_SUBDIR,
@@ -149,8 +150,7 @@ export class GatewayManager extends EventEmitter {
     const spawnOpts: any = {
       cwd: path.dirname(entryPath),
       env: {
-        ...process.env,
-        ...loadStateDirEnv(this.stateDir),
+        ...microClawNpmEnvironment({ ...process.env, ...loadStateDirEnv(this.stateDir) }),
         OPENCLAW_STATE_DIR: this.stateDir,
         NODE_ENV: "production",
         NODE_COMPILE_CACHE: compileCacheDir,

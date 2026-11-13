@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+from deployer.npm_registry import normalize_npm_registry
+
 MANIFEST_NAME = "install-manifest.json"
 SCHEMA_VERSION = 2
 _BUILD_KEYS = (
@@ -67,7 +69,7 @@ def build_identity_matches(bundled: dict | None, persisted: dict | None) -> bool
 
 
 def normalize_registry(value: str) -> str:
-    return value.strip().rstrip("/").casefold()
+    return normalize_npm_registry(value)
 
 
 def committed_install_manifest(bundled: dict, npm_registry: str) -> dict:
