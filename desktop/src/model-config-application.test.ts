@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyModelConfig, type ModelConfigUpdate } from "./model-config-application";
+import {
+  applyGatewayConfiguration,
+  applyModelConfig,
+  type ModelConfigUpdate,
+} from "./model-config-application";
+import { ensureGitHubCopilotProviderPlugin } from "./model-provider-plugins";
+import { runWindowsNodeMxcModelUpdate } from "./windows-node-mxc-model-config";
 
 function fixture() {
   const before = {
@@ -64,6 +70,103 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("applyModelConfig", () => {
+  it("applies Copilot activation through the MXC model transaction", async () => {
+    const state = fixture();
+    const next = structuredClone(state.input.expectedConfig) as Record<string, unknown>;
+    ensureGitHubCopilotProviderPlugin(next);
+    state.input = {
+      ...state.input,
+      config: next,
+      action: "copilot-prepare",
+      providerKey: "github-copilot",
+    };
+    const hooks = {
+      readConfig: state.deps.readConfig,
+      pause: vi.fn(async () => {}),
+      apply: () => applyModelConfig(state.deps, state.input),
+      restartSavedConfig: vi.fn(async () => {}),
+      verify: vi.fn(async () => {}),
+      resume: vi.fn(),
+      failClosed: vi.fn(async () => {}),
+    };
+    await runWindowsNodeMxcModelUpdate(hooks);
+    expect(state.saved()).toEqual(next);
+    expect(hooks.resume).toHaveBeenCalledOnce();
+    expect(hooks.failClosed).not.toHaveBeenCalled();
+  });
+
+  it("applies plugin settings through the same revision-guarded Gateway path", async () => {
+    const state = fixture();
+    const next = {
+      ...(state.input.expectedConfig as object),
+      plugins: { entries: { "github-copilot": { enabled: true } } },
+    };
+    await applyGatewayConfiguration(state.deps, {
+      config: next,
+      expectedConfig: state.input.expectedConfig,
+      context: "[plugin-config]",
+      note: "Plugin settings",
+      label: "plugin",
+    });
+    expect(state.gateway.request).toHaveBeenCalledWith(
+      "config.apply",
+      { baseHash: "before", raw: JSON.stringify(next), note: "Plugin settings" },
+      30_000,
+    );
+    expect(state.saved()).toEqual(next);
+  });
+
+  it("does not report success when the Gateway did not save the requested plugin settings", async () => {
+    const state = fixture();
+    const next = {
+      ...(state.input.expectedConfig as object),
+      plugins: { entries: { "github-copilot": { enabled: true } } },
+    };
+    state.gateway.request.mockImplementation(async (method) => {
+      if (method === "config.apply") return { ok: true, hash: "before" };
+      return state.snapshot();
+    });
+    await expect(
+      applyGatewayConfiguration(state.deps, {
+        config: next,
+        expectedConfig: state.input.expectedConfig,
+        context: "[plugin-config]",
+        note: "Plugin settings",
+        label: "plugin",
+      }),
+    ).rejects.toMatchObject({
+      cause: { message: "The saved plugin settings do not match the requested settings" },
+    });
+  });
+
+  it("does not restart for plugin changes that were not saved as requested", async () => {
+    const state = fixture();
+    const next = {
+      ...(state.input.expectedConfig as object),
+      plugins: { entries: { "github-copilot": { enabled: true } } },
+    };
+    state.gateway.request.mockImplementation(async (method) => {
+      if (method === "config.apply")
+        return {
+          ok: true,
+          hash: "after",
+          sentinel: { payload: { stats: { requiresRestart: true } } },
+        };
+      return state.snapshot();
+    });
+    await expect(
+      applyGatewayConfiguration(state.deps, {
+        config: next,
+        expectedConfig: state.input.expectedConfig,
+        context: "[plugin-config]",
+        note: "Plugin settings",
+        label: "plugin",
+      }),
+    ).rejects.toMatchObject({
+      cause: { message: "The saved plugin settings do not match the requested settings" },
+    });
+  });
+
   it("applies the complete configuration with a revision guard and confirms runtime application", async () => {
     const state = fixture();
     await applyModelConfig(state.deps, state.input);

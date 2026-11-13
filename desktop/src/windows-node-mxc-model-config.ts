@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { removeGatewayAddedMigrationMarkers } from "./gateway-config-migrations";
 import { assertModelConfigUnchanged, ModelConfigRestartRequiredError } from "./model-setup";
 
 type JsonObject = Record<string, unknown>;
@@ -9,13 +10,14 @@ function object(value: unknown): JsonObject {
   return value as JsonObject;
 }
 
-function nonModelConfiguration(value: unknown): JsonObject {
+function nonModelOrPluginConfiguration(value: unknown, expectedMeta: JsonObject): JsonObject {
   const config = structuredClone(object(value));
   if (config.models !== undefined) {
     const models = object(config.models);
     if (models.providers !== undefined) object(models.providers);
   }
   delete config.models;
+  delete config.plugins;
   if (config.agents !== undefined) {
     const agents = object(config.agents);
     if (agents.defaults !== undefined) {
@@ -28,29 +30,47 @@ function nonModelConfiguration(value: unknown): JsonObject {
   }
   if (config.meta !== undefined) {
     const meta = object(config.meta);
-    // The Gateway stamps these fields when committing an otherwise model-only update.
+    // The Gateway stamps these fields when committing a configuration update.
     delete meta.lastTouchedAt;
     delete meta.lastTouchedVersion;
+    removeGatewayAddedMigrationMarkers(meta, expectedMeta);
     if (Object.keys(meta).length === 0) delete config.meta;
   }
   return config;
 }
 
-export function assertWindowsNodeMxcModelOnlyChange(before: unknown, after: unknown): void {
-  if (!isDeepStrictEqual(nonModelConfiguration(before), nonModelConfiguration(after)))
+export function assertWindowsNodeMxcModelOrPluginChange(before: unknown, after: unknown): void {
+  const config = object(before);
+  const expectedMeta = config.meta === undefined ? {} : object(config.meta);
+  if (
+    !isDeepStrictEqual(
+      nonModelOrPluginConfiguration(before, expectedMeta),
+      nonModelOrPluginConfiguration(after, expectedMeta),
+    )
+  )
     throw new Error(
-      "MXC model setup may change only model providers, the default model and per-model settings. Other Gateway configuration remains locked.",
+      "MXC configuration update may change only model or plugin settings. Other Gateway configuration remains locked.",
     );
 }
 
-export function assertWindowsNodeMxcModelSettingsUnchanged(before: unknown, after: unknown): void {
+export function assertWindowsNodeMxcModelAndPluginSettingsUnchanged(
+  before: unknown,
+  after: unknown,
+): void {
   const project = (value: unknown) => {
     const config = object(value);
     const defaults = object(object(config.agents ?? {}).defaults ?? {});
-    return { models: config.models, model: defaults.model, defaultsModels: defaults.models };
+    return {
+      models: config.models,
+      model: defaults.model,
+      defaultsModels: defaults.models,
+      plugins: config.plugins,
+    };
   };
   if (!isDeepStrictEqual(project(before), project(after)))
-    throw new Error("The saved model settings changed during the required Gateway restart");
+    throw new Error(
+      "The saved model or plugin settings changed during the required Gateway restart",
+    );
 }
 
 function restartHash(error: unknown): string | null {
@@ -64,6 +84,7 @@ function restartHash(error: unknown): string | null {
 }
 
 export interface WindowsNodeMxcModelUpdateHooks<T> {
+  label?: "Model" | "Plugin";
   readConfig(): unknown;
   pause(): Promise<void>;
   apply(): Promise<T>;
@@ -76,6 +97,7 @@ export interface WindowsNodeMxcModelUpdateHooks<T> {
 export async function runWindowsNodeMxcModelUpdate<T>(
   hooks: WindowsNodeMxcModelUpdateHooks<T>,
 ): Promise<T> {
+  const label = hooks.label ?? "Model";
   const before = structuredClone(hooks.readConfig());
   try {
     await hooks.pause();
@@ -85,11 +107,11 @@ export async function runWindowsNodeMxcModelUpdate<T>(
     } catch (error) {
       const hash = restartHash(error);
       if (!hash) throw error;
-      assertWindowsNodeMxcModelOnlyChange(before, hooks.readConfig());
+      assertWindowsNodeMxcModelOrPluginChange(before, hooks.readConfig());
       result = await hooks.restartSavedConfig(hash);
     }
     const applied = structuredClone(hooks.readConfig());
-    assertWindowsNodeMxcModelOnlyChange(before, applied);
+    assertWindowsNodeMxcModelOrPluginChange(before, applied);
     await hooks.verify();
     assertModelConfigUnchanged(applied, hooks.readConfig());
     hooks.resume();
@@ -100,12 +122,12 @@ export async function runWindowsNodeMxcModelUpdate<T>(
     } catch (lockingError) {
       throw new AggregateError(
         [error, lockingError],
-        "Model update could not be confirmed and MXC recovery failed. Execution remains locked.",
+        `${label} update could not be confirmed and MXC recovery failed. Execution remains locked.`,
         { cause: lockingError },
       );
     }
     throw new Error(
-      "Model update could not be confirmed. It may have been saved; execution remains locked. Reload settings and retry MXC readiness before continuing.",
+      `${label} update could not be confirmed. It may have been saved; execution remains locked. Reload settings and retry MXC readiness before continuing.`,
       { cause: error },
     );
   }

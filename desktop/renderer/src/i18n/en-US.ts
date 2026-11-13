@@ -1125,8 +1125,7 @@ export default {
   "perm.phoneSending": "Sending this approval to WeChat; the original timeout still applies.",
   "perm.phoneSent":
     "WeChat notified: reply 1 to allow once or 3 to deny. 2 is available only if the phone prompt offers it. Replies affect the current delivered prompt; a delayed reply can affect a newer prompt.",
-  "plugins.weixinMutationLocked":
-    "Changing the WeChat channel requires MXC to be off. Account changes require active containment.",
+  "plugins.weixinMutationLocked": "Wait for the current security settings change to finish.",
   "plugins.weixinLoginLocked":
     "Wait for containment or the current WeChat account change to finish.",
   "plugins.weixinMutationUnknown":

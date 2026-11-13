@@ -63,14 +63,35 @@ export function parseModelConfigUpdate(input: unknown): ModelConfigUpdate {
 
 export async function applyModelConfig(deps: Dependencies, input: unknown): Promise<void> {
   const params = parseModelConfigUpdate(input);
+  return applyGatewayConfiguration(deps, {
+    config: params.config,
+    expectedConfig: params.expectedConfig,
+    context: `[model-config] action=${params.action} provider=${params.providerKey}`,
+    note: `${params.action}: ${params.providerKey}`,
+    label: "model",
+  });
+}
+
+export async function applyGatewayConfiguration(
+  deps: Dependencies,
+  params: {
+    config: unknown;
+    expectedConfig: unknown;
+    context: string;
+    note: string;
+    label: "model" | "plugin";
+  },
+): Promise<void> {
   deps.assertMutable();
   assertConfigWriteAllowed(params.config, params.expectedConfig);
   assertModelConfigUnchanged(params.expectedConfig, deps.readConfig());
   const gateway = deps.gateway();
   if (!gateway?.connected || !supportsLocalModelGatewayVersion(gateway.serverVersion))
-    throw new Error("Applying model settings requires a connected, supported OpenClaw Gateway");
+    throw new Error(
+      `Applying ${params.label} settings requires a connected, supported OpenClaw Gateway`,
+    );
   if (!["config.get", "config.apply"].every((method) => gateway.methods.includes(method)))
-    throw new Error("Gateway cannot hot-apply model settings");
+    throw new Error(`Gateway cannot hot-apply ${params.label} settings`);
   const generation = gateway.connectionGeneration;
   const assertCurrent = () => {
     deps.assertMutable();
@@ -79,15 +100,24 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
       !gateway.connected ||
       gateway.connectionGeneration !== generation
     )
-      throw new Error("Gateway connection changed; reload model settings before retrying");
+      throw new Error(
+        `Gateway connection changed; reload ${params.label} settings before retrying`,
+      );
   };
-  const context = `[model-config] action=${params.action} provider=${params.providerKey}`;
+  const context = params.context;
   const snapshot = object(await gateway.request("config.get", {}));
   assertCurrent();
   assertModelConfigUnchanged(params.expectedConfig, deps.readConfig());
   if (snapshot.valid !== true || typeof snapshot.hash !== "string" || !snapshot.hash)
     throw new Error("The Gateway configuration is unavailable or invalid");
   let targetHash = snapshot.hash;
+  const assertRequestedPluginsSaved = () => {
+    if (
+      !isDeepStrictEqual(object(params.config).plugins, object(params.expectedConfig).plugins) &&
+      !isDeepStrictEqual(object(deps.readConfig()).plugins, object(params.config).plugins)
+    )
+      throw new Error("The saved plugin settings do not match the requested settings");
+  };
   deps.log(`${context} status=applying`);
   try {
     if (!isDeepStrictEqual(params.config, params.expectedConfig)) {
@@ -97,16 +127,18 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
           {
             baseHash: snapshot.hash,
             raw: JSON.stringify(params.config),
-            note: `${params.action}: ${params.providerKey}`,
+            note: params.note,
           },
           MODEL_APPLY_SETTLE_TIMEOUT_MS,
         ),
       );
       assertCurrent();
       if (result.ok !== true || typeof result.hash !== "string" || !result.hash)
-        throw new Error("The saved model configuration could not be confirmed");
-      if (object(object(object(result.sentinel).payload).stats).requiresRestart === true)
+        throw new Error(`The saved ${params.label} configuration could not be confirmed`);
+      if (object(object(object(result.sentinel).payload).stats).requiresRestart === true) {
+        assertRequestedPluginsSaved();
         throw new ModelConfigRestartRequiredError(result.hash);
+      }
       targetHash = result.hash;
     }
     const deadline = Date.now() + MODEL_APPLY_SETTLE_TIMEOUT_MS;
@@ -116,16 +148,20 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
       );
       assertCurrent();
       if (applied.valid !== true || applied.hash !== targetHash)
-        throw new Error("The model configuration changed while applying; reload settings");
+        throw new Error(
+          `The ${params.label} configuration changed while applying; reload settings`,
+        );
       if (
         typeof applied.configRevisionHash === "string" &&
         applied.configRevisionHash &&
         applied.appliedConfigHash === applied.configRevisionHash
       ) {
+        assertRequestedPluginsSaved();
         deps.log(`${context} status=hot-applied`);
         return;
       }
-      if (Date.now() >= deadline) throw new Error("The model configuration is still being applied");
+      if (Date.now() >= deadline)
+        throw new Error(`The ${params.label} configuration is still being applied`);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   } catch (cause) {
@@ -136,7 +172,7 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
     )
       throw cause;
     throw new Error(
-      "Model configuration application could not be confirmed. It may have been saved; reload settings before retrying. No restart or retry was attempted by MicroClaw.",
+      `${params.label === "model" ? "Model" : "Plugin"} configuration application could not be confirmed. It may have been saved; reload settings before retrying. No restart or retry was attempted by MicroClaw.`,
       { cause },
     );
   }

@@ -1049,7 +1049,7 @@ export default {
   "perm.phoneSending": "正在向微信发送此审批；原超时期限仍然生效。",
   "perm.phoneSent":
     "已通知微信：回复 1 仅允许一次，3 拒绝；仅当手机提示提供 2 时才可使用。回复作用于当前已发送的审批，延迟回复可能影响更新的审批。",
-  "plugins.weixinMutationLocked": "更改微信频道需要关闭 MXC。账户操作需要隔离已就绪。",
+  "plugins.weixinMutationLocked": "请等待当前安全设置变更完成。",
   "plugins.weixinLoginLocked": "请等待隔离验证或当前微信账户操作完成。",
   "plugins.weixinMutationUnknown": "在确认主进程的 MXC 状态之前，微信配置保持锁定。",
   "perm.phoneCodeRequired":

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { hasConfiguredModel } from "./model-setup";
-import { assertWindowsNodeMxcModelOnlyChange } from "./windows-node-mxc-model-config";
+import { assertWindowsNodeMxcModelOrPluginChange } from "./windows-node-mxc-model-config";
 
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "$schema",
@@ -80,6 +80,15 @@ export function assertWindowsNodeMxcSearchOnlyChange(before: unknown, after: unk
   }
 }
 
+export function isPluginOnlyChange(before: unknown, after: unknown): boolean {
+  const original = structuredClone(object(before, "Original Gateway configuration"));
+  const next = structuredClone(object(after, "Gateway configuration"));
+  const pluginsChanged = !isDeepStrictEqual(original.plugins, next.plugins);
+  delete original.plugins;
+  delete next.plugins;
+  return pluginsChanged && isDeepStrictEqual(original, next);
+}
+
 export function assertInitialModelSetupChange(
   before: unknown,
   after: unknown,
@@ -123,5 +132,5 @@ export function assertInitialModelSetupChange(
     }
     comparison.gateway = gateway;
   }
-  assertWindowsNodeMxcModelOnlyChange(comparison, next);
+  assertWindowsNodeMxcModelOrPluginChange(comparison, next);
 }

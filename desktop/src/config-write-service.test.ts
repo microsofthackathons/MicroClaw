@@ -51,6 +51,9 @@ function fixture(
       exists = true;
     }),
     applyModel: vi.fn().mockResolvedValue(undefined),
+    applyPlugins: vi.fn(async (next: unknown) => {
+      current = structuredClone(next as Record<string, unknown>);
+    }),
     applySearch: vi.fn(async (next: unknown) => {
       current = structuredClone(next as Record<string, unknown>);
     }),
@@ -99,6 +102,45 @@ function searchChange(before: Record<string, unknown>) {
 }
 
 describe("guarded configuration writes", () => {
+  it.each([
+    { entries: { "github-copilot": { enabled: true, config: { option: "value" } } } },
+    { allow: ["other"], deny: ["github-copilot"], entries: { other: { enabled: false } } },
+    undefined,
+  ])("applies plugin settings with MXC on: %j", async (plugins) => {
+    const before = { ...routedConfig(), plugins: { entries: { old: { enabled: true } } } };
+    const next: Record<string, unknown> = structuredClone(before);
+    if (plugins === undefined) delete next.plugins;
+    else next.plugins = plugins;
+    const state = fixture({ current: before });
+    await writeGuardedConfig(state.deps, next, before);
+    expect(state.deps.requireActiveContainment).toHaveBeenCalledOnce();
+    expect(state.deps.applyPlugins).toHaveBeenCalledExactlyOnceWith(next, before);
+    expect(state.saved()).toEqual(next);
+    expect(state.deps.persist).not.toHaveBeenCalled();
+  });
+
+  it("does not allow a plugin write to alter command routing or use a stale snapshot", async () => {
+    const before = routedConfig();
+    const next = { ...before, plugins: { entries: { example: { enabled: true } } } };
+    const state = fixture({ current: before });
+    const unsafe = { ...next, tools: { exec: { host: "gateway" } } };
+    await expect(writeGuardedConfig(state.deps, unsafe, before)).rejects.toThrow("Search settings");
+    state.setCurrent({ ...before, hooks: { enabled: false } });
+    await expect(writeGuardedConfig(state.deps, next, before)).rejects.toThrow("changed");
+    expect(state.deps.applyPlugins).not.toHaveBeenCalled();
+  });
+
+  it("does not apply plugin changes if configuration changes while checking MXC readiness", async () => {
+    const before = routedConfig();
+    const next = { ...before, plugins: { entries: { example: { enabled: true } } } };
+    const state = fixture({ current: before });
+    state.deps.requireActiveContainment.mockImplementation(async () => {
+      state.setCurrent({ ...before, hooks: { enabled: false } });
+    });
+    await expect(writeGuardedConfig(state.deps, next, before)).rejects.toThrow("changed");
+    expect(state.deps.applyPlugins).not.toHaveBeenCalled();
+  });
+
   it("saves only search settings under attested MXC without changing routing", async () => {
     const before = routedConfig();
     const state = fixture({ current: before });
