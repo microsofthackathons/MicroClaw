@@ -1,0 +1,17 @@
+{
+  "valid": [
+    [" HTTPS://Registry.Example/ ", "https://registry.example"],
+    ["https://registry.example/Team/Feed/npm/", "https://registry.example/Team/Feed/npm"],
+    ["http://127.0.0.1:19876/npm/", "http://127.0.0.1:19876/npm"],
+    ["https://registry.example:443/npm/", "https://registry.example/npm"]
+  ],
+  "invalid": [
+    "https:registry.example/npm",
+    "https://user:private-password@registry.example/npm/",
+    "https://registry.example/npm/?token=private-token",
+    "https://registry.example/npm/#fragment",
+    "https://registry.example/private path/",
+    "file:///private/registry",
+    "invalid-registry private-secret"
+  ]
+}

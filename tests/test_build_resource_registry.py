@@ -61,7 +61,10 @@ class BuildResourceRegistryTests(unittest.TestCase):
                 "}\n"
                 f"$nativeCache = [pscustomobject]@{{ hit=${str(cache_hit).lower()} }}\n"
                 f"$before = {snapshot}\n"
-                "try {\n" + dependencies + resources + "} finally {\n"
+                f". '{(ROOT / 'scripts/windows/npm-registry.ps1').as_posix()}'\n"
+                "try {\n"
+                f"Invoke-WithMicroClawNpmRegistry -DefaultConfigPath '{(ROOT / 'deployer/assets/npm-registry.json').as_posix()}' -Operation {{\n"
+                "param([string]$buildRegistry)\n" + dependencies + resources + "}\n} finally {\n"
                 f"    $after = {snapshot}\n"
                 "    'ENV_JSON:' + (ConvertTo-Json -Compress @{ before=$before; after=$after })\n"
                 "}\n",
@@ -101,17 +104,16 @@ class BuildResourceRegistryTests(unittest.TestCase):
             calls = [
                 json.loads(line)
                 for line in (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()
-            ]
+            ] if (root / "calls.jsonl").exists() else []
         state = json.loads(result.stdout.split("ENV_JSON:", 1)[1].splitlines()[0])
         self.assertEqual(state["before"], state["after"], result.stdout + result.stderr)
-        self.assertEqual(calls[0]["args"], ["install"])
-        self.assertEqual(
-            calls[0]["env"],
-            dict(zip(REGISTRY_KEYS, (microclaw, msix, GENERAL_REGISTRY), strict=True)),
-        )
+        if calls:
+            self.assertEqual(calls[0]["args"], ["install"])
+            chosen = (microclaw or msix or DEFAULT_REGISTRY).rstrip("/")
+            self.assertEqual(calls[0]["env"], dict(zip(REGISTRY_KEYS, (chosen, msix, chosen), strict=True)))
         return result, calls
 
-    def test_resource_registry_precedence_without_changing_dependency_registry(self):
+    def test_build_uses_one_selected_registry_for_dependencies_and_resources(self):
         for microclaw, msix, expected in (
             (None, None, DEFAULT_REGISTRY),
             ("https://custom.example/npm/", None, "https://custom.example/npm/"),
@@ -126,9 +128,9 @@ class BuildResourceRegistryTests(unittest.TestCase):
                 result, calls = self.run_stage(microclaw=microclaw, msix=msix)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(calls[1]["args"], ["run", "prepare-packaged-resources"])
-                self.assertEqual(calls[1]["env"]["MICROCLAW_NPM_REGISTRY"], expected)
+                self.assertEqual(calls[1]["env"]["MICROCLAW_NPM_REGISTRY"], expected.rstrip("/"))
                 self.assertEqual(calls[1]["env"]["MSIX_NPM_REGISTRY"], msix)
-                self.assertEqual(calls[1]["env"]["NPM_CONFIG_REGISTRY"], GENERAL_REGISTRY)
+                self.assertEqual(calls[1]["env"]["NPM_CONFIG_REGISTRY"], expected.rstrip("/"))
                 self.assertIn(expected.split("://")[1].split("/")[0], result.stdout)
 
     def test_preparation_failures_restore_environment_and_remain_failures(self):
@@ -141,22 +143,21 @@ class BuildResourceRegistryTests(unittest.TestCase):
                 result, calls = self.run_stage(microclaw=microclaw, failure=failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(
-                    calls[1]["env"]["MICROCLAW_NPM_REGISTRY"], microclaw or DEFAULT_REGISTRY
+                    calls[1]["env"]["MICROCLAW_NPM_REGISTRY"], (microclaw or DEFAULT_REGISTRY).rstrip("/")
                 )
                 self.assertIn(
                     "resource launch failure" if failure == "throw" else "preparation failed",
                     result.stdout + result.stderr,
                 )
 
-    def test_diagnostic_logs_only_registry_origin_not_credentials_path_or_query(self):
+    def test_rejects_embedded_credentials_without_exposing_them(self):
         registry = (
             "https://builder:private-password@registry.example/private-path/?token=private-token"
         )
         result, calls = self.run_stage(microclaw=registry)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls[1]["env"]["MICROCLAW_NPM_REGISTRY"], registry)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
         diagnostics = result.stdout.split("ENV_JSON:", 1)[0] + result.stderr
-        self.assertIn("https://registry.example", diagnostics)
         for secret in ("builder", "private-password", "private-path", "private-token"):
             self.assertNotIn(secret, diagnostics)
 
@@ -169,7 +170,7 @@ class BuildResourceRegistryTests(unittest.TestCase):
         registry = "invalid-registry private-secret"
         result, calls = self.run_stage(microclaw=registry)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 0)
         diagnostics = result.stdout.split("ENV_JSON:", 1)[0] + result.stderr
         self.assertIn("must be an absolute HTTP(S) URL", diagnostics)
         self.assertNotIn(registry, diagnostics)

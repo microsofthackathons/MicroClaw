@@ -18,22 +18,21 @@ import {
   verifyNodeVersion,
 } from "./openclaw-resource.mjs";
 import { validatePinnedOpenClawApprovalPackage } from "../src/openclaw-approval-replay-compat.mjs";
+import { npmRegistryEnvironment, resolveBuildNpmRegistry, writeBundledNpmRegistry } from "./npm-registry.mjs";
 
 const desktopDir = path.resolve(import.meta.dirname, "..");
 const repositoryDir = path.resolve(desktopDir, "..");
 const resourcesDir = path.join(desktopDir, "resources");
 const openClawArchive = path.join(resourcesDir, "openclaw.asar");
-const registry =
-  process.env.MICROCLAW_NPM_REGISTRY ||
-  process.env.MSIX_NPM_REGISTRY ||
-  process.env.npm_config_registry ||
-  "https://registry.npmjs.org";
+const registry = resolveBuildNpmRegistry();
+const registryEnv = npmRegistryEnvironment(process.env, registry);
 const version = readOpenClawTarget(repositoryDir);
 if (process.platform !== "win32" || path.basename(process.execPath).toLowerCase() !== "node.exe") {
   throw new Error("Packaged resources must be prepared on Windows with node.exe");
 }
 verifyNodeVersion(process.version);
 mkdirSync(resourcesDir, { recursive: true });
+writeBundledNpmRegistry(resourcesDir, registry);
 
 let coreReady = false;
 try {
@@ -80,13 +79,13 @@ if (!coreReady) {
         "--no-save",
         "--registry",
         registry,
-        "--replace-registry-host=always",
+        "--replace-registry-host=npmjs",
         `openclaw@${version}`,
       ],
       {
         stdio: "inherit",
         windowsHide: true,
-        env: { ...process.env, NODE_LLAMA_CPP_SKIP_DOWNLOAD: "true" },
+        env: { ...registryEnv, NODE_LLAMA_CPP_SKIP_DOWNLOAD: "true" },
       },
     );
     if (result.error) throw result.error;
@@ -133,7 +132,7 @@ if (!coreReady) {
 const windowsNodeResult = spawnSync(
   process.execPath,
   [path.join(desktopDir, "scripts", "prepare-windows-node-resources.mjs"), "--arch=x64"],
-  { stdio: "inherit" },
+  { stdio: "inherit", env: registryEnv },
 );
 if (windowsNodeResult.error) throw windowsNodeResult.error;
 if (windowsNodeResult.status !== 0) process.exit(windowsNodeResult.status ?? 1);
@@ -141,7 +140,7 @@ if (windowsNodeResult.status !== 0) process.exit(windowsNodeResult.status ?? 1);
 const weixinPluginResult = spawnSync(
   process.execPath,
   [path.join(desktopDir, "scripts", "prepare-weixin-plugin-resource.mjs")],
-  { stdio: "inherit" },
+  { stdio: "inherit", env: registryEnv },
 );
 if (weixinPluginResult.error) throw weixinPluginResult.error;
 if (weixinPluginResult.status !== 0) process.exit(weixinPluginResult.status ?? 1);
