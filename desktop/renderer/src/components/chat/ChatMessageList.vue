@@ -345,7 +345,16 @@
               streamHasPlan,
           }"
         >
-          <img :src="currentWaitingGif" :key="waitingGifIndex" alt="" />
+          <img
+            v-for="(gif, index) in waitingGifs"
+            v-show="index === waitingGifIndex"
+            :key="gif"
+            ref="waitingGifImages"
+            :src="gif"
+            width="160"
+            height="160"
+            alt=""
+          />
         </div>
 
         <!-- Plan progress panel (streaming) -->
@@ -534,7 +543,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, inject } from "vue";
+import { ref, computed, nextTick, watch, inject, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { useChatStore, type ChatMessage } from "@/stores/chat";
 import {
@@ -656,24 +665,47 @@ const displayStreamText = computed(() => {
 // ── Rotating waiting GIFs ──
 const waitingGifs = [searchGif, bookGif, binocularsGif, mapGif];
 const waitingGifIndex = ref(0);
+const waitingGifImages = ref<HTMLImageElement[]>([]);
 let waitingGifTimer: ReturnType<typeof setInterval> | null = null;
 
-const currentWaitingGif = computed(() => waitingGifs[waitingGifIndex.value]);
+function stopWaitingGifRotation() {
+  if (waitingGifTimer !== null) clearInterval(waitingGifTimer);
+  waitingGifTimer = null;
+}
 
 watch(
-  () => chatStore.streaming && !displayStreamText.value && chatStore.streamToolCalls.length === 0,
+  () =>
+    chatStore.streaming &&
+    !displayStreamText.value &&
+    chatStore.streamToolCalls.length === 0 &&
+    !hasPartialPlanBlock.value &&
+    !streamHasPlan.value,
   (show) => {
-    if (show) {
-      waitingGifIndex.value = 0;
-      waitingGifTimer = setInterval(() => {
-        waitingGifIndex.value = (waitingGifIndex.value + 1) % waitingGifs.length;
-      }, 2000);
-    } else if (waitingGifTimer) {
-      clearInterval(waitingGifTimer);
-      waitingGifTimer = null;
-    }
+    stopWaitingGifRotation();
+    if (!show) return;
+    waitingGifIndex.value = 0;
+    waitingGifTimer = setInterval(() => {
+      // Keep the displayed image while the others load. Reuse loaded nodes so
+      // rotating a GIF cannot collapse its space or briefly show an empty image.
+      for (let offset = 1; offset < waitingGifs.length; offset++) {
+        const index = (waitingGifIndex.value + offset) % waitingGifs.length;
+        const ready = waitingGifImages.value.some(
+          (image) =>
+            image.getAttribute("src") === waitingGifs[index] &&
+            image.complete &&
+            image.naturalWidth > 0,
+        );
+        if (ready) {
+          waitingGifIndex.value = index;
+          break;
+        }
+      }
+    }, 2000);
   },
+  { immediate: true },
 );
+
+onUnmounted(stopWaitingGifRotation);
 
 const hasRunningTools = computed(() => chatStore.streamToolCalls.some((t) => !t.done));
 const activityLabel = computed(() =>
@@ -1626,7 +1658,8 @@ function handleEditKeydown(e: KeyboardEvent) {
 
 .chat-waiting-gif img {
   width: 160px;
-  height: auto;
+  height: 160px;
+  object-fit: contain;
   border-radius: 12px;
 }
 
