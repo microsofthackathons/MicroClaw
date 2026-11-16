@@ -138,6 +138,8 @@ To upgrade an existing installation, rerun the MicroClaw installer. It stops the
 
 Desktop updates extract the archive into a staging directory and replace bundled directories as complete trees, rather than overlaying files. This removes obsolete native runtime files that would otherwise fail integrity checks, while preserving the installer's upgrade records, backups, and install state. Extraction or publication failures leave or restore the previous desktop payload; recovery files are retained if restoration fails.
 
+Package sources are managed per application. The installer does not overwrite the user's global npm registry or prefix. Set `MICROCLAW_NPM_REGISTRY` for the process or configure `install-state/npm-registry.json` under the installation directory; build and Gateway npm children use the selected source. Existing npm authentication, proxy and certificate settings are preserved. See [MicroClaw npm sources](docs/reference/microclaw-npm-registry.md).
+
 ### 2. Add your model credentials
 
 On first launch, the desktop app opens a SetupWizard only when model configuration is missing. The required user input is your model connection:
@@ -379,11 +381,11 @@ Full build pipeline (PowerShell):
 .\build.ps1
 ```
 
-For packaged OpenClaw resource acquisition, `build.ps1` defaults to the Huawei npm
+For npm dependencies and packaged OpenClaw resources, `build.ps1` defaults to the Huawei npm
 registry (`https://repo.huaweicloud.com/repository/npm/`), independently of the
 machine's ordinary npm registry. Explicit `MICROCLAW_NPM_REGISTRY` overrides take
-precedence, followed by `MSIX_NPM_REGISTRY`. This setting is scoped to resource
-preparation and restored on success or failure; ordinary dependency installs and
+precedence, followed by `MSIX_NPM_REGISTRY`. This setting is scoped to the complete
+build and restored on success or failure; npm commands run separately and
 user npm configuration are unchanged. The build logs only the registry origin,
 without credentials, paths, or query parameters. Pinned version, engine, and resource
 validation remain required.

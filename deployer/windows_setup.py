@@ -1,7 +1,7 @@
 """Windows-native Node.js + OpenClaw installation.
 
-Downloads Node.js from npmmirror (Chinese mirror), installs it,
-configures npm to use the taobao registry, and installs openclaw.
+Downloads Node.js from a selected binary mirror and installs OpenClaw
+using MicroClaw's application-specific npm source configuration.
 """
 
 import hashlib
@@ -18,6 +18,7 @@ import tempfile
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Callable
@@ -30,13 +31,19 @@ from deployer.install_manifest import (
     build_identity_matches,
     committed_install_manifest,
     load_install_manifest,
-    normalize_registry,
     resolve_bundled_install_manifest,
     write_install_manifest,
 )
 from deployer.install_timing import RuntimePreparationTiming, run_timed_process
 from deployer.lightweight_backup import BACKUP_SCOPE, create_lightweight_archive
 from deployer.logger import DeployerLogger
+from deployer.npm_registry import (
+    REGISTRY_CONFIG_NAME,
+    load_registry_config,
+    normalize_npm_registry,
+    registry_environment,
+    resolve_npm_registry,
+)
 from deployer.openclaw_package_upgrade import PackageManagerUpgrade, package_upgrade_lock
 from deployer.openclaw_upgrade import (
     RECOVERABLE_PHASES,
@@ -472,26 +479,21 @@ class WindowsSetup:
         # restore file operations can report progress instead of looking frozen.
         self.progress_callback: Callable[[str], None] | None = None
 
-        # Respect an explicit registry immediately. Otherwise start with the
-        # fallback and defer network probing until a download is required.
-        registry = config.get("npm.registry", "")
-        if registry:
-            mirror_name = self._match_mirror_by_registry(registry)
-        else:
-            mirror_name = MIRROR_FALLBACK
+        # npm source selection is independent of Node/Git binary mirror probing.
+        registry = self._desired_npm_registry()
+        self._resolved_npm_registry = registry
+        mirror_name = self._match_mirror_by_registry(registry)
         mirror = MIRRORS[mirror_name]
         self._node_download_base = mirror["node_download_base"]
         self._git_mirror_base = mirror["git_mirror_base"]
         self._mirror_name = mirror_name
-        self._mirror_probe_pending = not registry
-        # Persist the resolved registry on the config object so setup_npm_mirror
-        # picks it up without needing to re-probe.
-        if not registry:
-            try:
-                config.set("npm.registry", mirror["npm_registry"])
-            except Exception:
-                # Config may not support .set(); fall back to an internal value.
-                self._resolved_npm_registry = mirror["npm_registry"]
+        self._mirror_probe_pending = not (
+            os.environ.get("MICROCLAW_NPM_REGISTRY")
+            or config.get("npm.registry", "")
+            or (DEFAULT_DESKTOP_DIR / "install-state" / REGISTRY_CONFIG_NAME).is_file()
+            or (self._persisted_install_manifest or {}).get("npmRegistry")
+            or (self._bundled_install_manifest or {}).get("npmRegistry")
+        )
 
     # ────────────────────── Subprocess helper ──────────────────────
 
@@ -518,6 +520,8 @@ class WindowsSetup:
             return MIRROR_OFFICIAL
         if "tencent" in url:
             return MIRROR_TENCENT
+        if "huaweicloud.com" in url:
+            return MIRROR_HUAWEI
         if "npmmirror" in url or "taobao" in url:
             return MIRROR_NPMMIRROR
         return MIRROR_FALLBACK
@@ -609,29 +613,19 @@ class WindowsSetup:
             path.unlink(missing_ok=True)
 
     def _desired_npm_registry(self) -> str:
-        mirror_name = getattr(self, "_mirror_name", MIRROR_FALLBACK)
-        default_registry = getattr(
-            self,
-            "_resolved_npm_registry",
-            MIRRORS.get(mirror_name, MIRRORS[MIRROR_FALLBACK])["npm_registry"],
+        configured = self.cfg.get("npm.registry", "") or getattr(self, "_resolved_npm_registry", "")
+        if os.environ.get("MICROCLAW_NPM_REGISTRY") or configured:
+            return resolve_npm_registry(configured=configured)
+        source_file = DEFAULT_DESKTOP_DIR / "install-state" / REGISTRY_CONFIG_NAME
+        return resolve_npm_registry(
+            dedicated=load_registry_config(source_file),
+            installed=getattr(self, "_persisted_install_manifest", None),
+            bundled=getattr(self, "_bundled_install_manifest", None),
         )
-        return self.cfg.get("npm.registry", default_registry) or default_registry
 
     def _npm_registry_env(self, registry: str, env: dict[str, str] | None = None) -> dict[str, str]:
         base_env = self._get_env() if env is None else env
-        settings = {
-            "npm_config_registry": registry,
-            "npm_config_replace_registry_host": "always",
-            "npm_config_fetch_retries": "1",
-            "npm_config_fetch_retry_mintimeout": "1000",
-            "npm_config_fetch_retry_maxtimeout": "3000",
-            "npm_config_fetch_timeout": "60000",
-        }
-        registry_env = {
-            key: value for key, value in base_env.items() if key.lower() not in settings
-        }
-        registry_env.update(settings)
-        return registry_env
+        return registry_environment(base_env, registry)
 
     def _desktop_install_is_current(self) -> bool:
         return self._build_install_identity_matches() and all(
@@ -1582,92 +1576,19 @@ class WindowsSetup:
 
     # ────────────────────── npm config ──────────────────────
 
+    def _save_npm_registry_config(self, registry: str) -> None:
+        target = DEFAULT_DESKTOP_DIR / "install-state" / REGISTRY_CONFIG_NAME
+        write_install_manifest(target, {"schema": 1, "registry": normalize_npm_registry(registry)})
+
     def setup_npm_mirror(self) -> bool:
-        """Set npm registry and global prefix.
-
-        Redirects npm's global config path via npm_config_globalconfig env var
-        so that npm never touches the system npmrc (which may be under
-        C:\\Program Files and need admin privileges).
-        """
-        registry = self._desired_npm_registry()
-        persisted = getattr(self, "_persisted_install_manifest", None) or {}
-        if self._build_install_identity_matches() and normalize_registry(registry) == persisted.get(
-            "npmRegistry"
-        ):
-            self.log.info("npm registry configuration is current; skipping")
-            return True
-        self.log.step(f"Configuring npm registry ({registry})…")
-        npm = self._get_npm_path()
-        if not npm:
-            self.log.error("npm not found")
-            return False
+        """Persist only MicroClaw's source; child env overrides ambient npm registry."""
         try:
-            env = self._npm_registry_env(registry)
-
-            # Set prefix so `npm install -g` puts openclaw.cmd in our dir
-            try:
-                self._run(
-                    [npm, "config", "set", "prefix", str(self.node_dir)],
-                    capture_output=True,
-                    timeout=30,
-                    env=env,
-                )
-            except Exception:
-                pass
-
-            r = self._run(
-                [npm, "config", "set", "registry", registry],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                env=env,
-            )
-            if r.returncode != 0:
-                self.log.error(f"npm config set failed: {r.stderr.strip()}")
-                return False
-
-            # Verify
-            r2 = self._run(
-                [npm, "config", "get", "registry"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                env=env,
-            )
-            actual = r2.stdout.strip().rstrip("/")
-            expected = registry.rstrip("/")
-            if actual == expected:
-                self.log.success(f"npm registry → {actual}  ✓")
-            else:
-                self.log.warn(f"npm registry set to {actual} (expected {expected})")
-
-            # Register rollback. The default-arg pattern is intentional: it captures
-            # `npm` and `env` by value at definition time so the closure isn't affected
-            # by later mutations of the enclosing scope.
-            def _rollback_npm_mirror(npm_path=npm, env_copy=env.copy()):  # noqa: B008
-                try:
-                    WindowsSetup._run(
-                        [npm_path, "config", "set", "registry", "https://registry.npmjs.org/"],
-                        capture_output=True,
-                        timeout=30,
-                        env=env_copy,
-                    )
-                except Exception:
-                    pass
-
-            self._register_rollback("重置 npm 镜像源", _rollback_npm_mirror)
+            registry = self._desired_npm_registry()
+            self._save_npm_registry_config(registry)
+            self.log.success(f"MicroClaw npm source → {urllib.parse.urlsplit(registry).netloc}")
             return True
-        except Exception as e:
-            self.log.error(f"npm config failed: {e}")
-            self.log.info(f"  node_dir: {self.node_dir}")
-            self.log.info(f"  node_dir exists: {self.node_dir.exists()}")
-            self.log.info(
-                f"  npm_config_globalconfig: {env.get('npm_config_globalconfig', 'NOT SET')}"
-            )
+        except (OSError, ValueError):
+            self.log.error("MicroClaw npm source could not be configured")
             return False
 
     # ────────────────────── OpenClaw ──────────────────────
@@ -2943,7 +2864,7 @@ class WindowsSetup:
                             "--registry",
                             registry,
                             "--replace-registry-host",
-                            "always",
+                            "npmjs",
                             "--loglevel",
                             "info",
                             "--no-progress",
@@ -3089,31 +3010,22 @@ class WindowsSetup:
             return False
 
     def _npm_registry_candidates(self) -> list[str]:
-        configured = self.cfg.get("npm.registry", "") or getattr(self, "_resolved_npm_registry", "")
-        candidates = [
-            configured,
-            MIRRORS[MIRROR_OFFICIAL]["npm_registry"],
-            MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
-            NPM_REGISTRY_HUAWEI,
-            NPM_REGISTRY_HUAWEI_MIRRORS,
-        ]
+        fallback = self.cfg.get("npm.fallback_registries", [])
+        if not isinstance(fallback, list):
+            raise ValueError("npm.fallback_registries must be a list of explicitly allowed sources")
+        candidates = [self._desired_npm_registry(), *fallback]
         registries: list[str] = []
         for registry in candidates:
-            if registry and registry.rstrip("/") not in {
+            registry = normalize_npm_registry(registry)
+            if registry.rstrip("/") not in {
                 existing.rstrip("/") for existing in registries
             }:
                 registries.append(registry)
         return registries
 
     def _npm_registry_attempts(self) -> list[str]:
-        candidates = self._npm_registry_candidates()
-        reachable = self._reachable_npm_registries(candidates)
-        if not reachable:
-            self.log.warn(
-                "Quick npm registry checks were inconclusive; trying the configured "
-                "registries with npm's own proxy/certificate settings and bounded retries."
-            )
-        return reachable + [registry for registry in candidates if registry not in reachable]
+        # Preserve deployment priority; do not probe or silently add public sources.
+        return self._npm_registry_candidates()
 
     def _reachable_npm_registries(self, candidates: list[str], timeout: float = 5.0) -> list[str]:
         """Return registries that answer a quick ping, ordered fastest-first.
@@ -3184,7 +3096,7 @@ class WindowsSetup:
                 "--registry",
                 registry,
                 "--replace-registry-host",
-                "always",
+                "npmjs",
                 "--loglevel",
                 "info",
                 "--no-progress",
@@ -3636,8 +3548,9 @@ class WindowsSetup:
                 try:
                     write_install_manifest(
                         self._install_manifest_path,
-                        committed_install_manifest(bundled, self._desired_npm_registry()),
+                        committed_install_manifest(bundled, getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry()),
                     )
+                    self._save_npm_registry_config(getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry())
                 except OSError as error:
                     self.log.warn(
                         f"Bundled upgrade committed but its cache marker could not be saved: {error}"
@@ -3649,9 +3562,11 @@ class WindowsSetup:
         transaction.commit()
         bundled = getattr(self, "_bundled_install_manifest", None)
         if bundled is not None:
-            committed = committed_install_manifest(bundled, self._desired_npm_registry())
+            selected_registry = getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry()
+            committed = committed_install_manifest(bundled, selected_registry)
             try:
                 write_install_manifest(self._install_manifest_path, committed)
+                self._save_npm_registry_config(selected_registry)
                 self._persisted_install_manifest = committed
             except OSError as error:
                 self.log.warn(f"Could not save committed install manifest: {error}")
@@ -5282,6 +5197,8 @@ class WindowsSetup:
         self.log.step("Installing Parallel web search plugin…")
         registries = self._npm_registry_attempts()
         successful_registry = getattr(self, "_successful_npm_registry", None)
+        if successful_registry:
+            successful_registry = normalize_npm_registry(successful_registry)
         registries.sort(key=lambda registry: registry != successful_registry)
         for registry in registries:
             self.log.info(f"  Parallel npm registry attempt: {registry}")
@@ -5309,6 +5226,7 @@ class WindowsSetup:
                     self.log.error("Parallel plugin is not linked to the desktop OpenClaw runtime")
                     return False
                 self.log.success("Parallel-free web search is ready")
+                self._successful_npm_registry = registry
                 return True
             detail = result.stderr.strip() or result.stdout.strip()
             if not _RETRYABLE_NPM_REGISTRY_ERROR.search(detail):

@@ -45,6 +45,22 @@ class _Log:
 
 
 class WindowsSetupMirrorSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.desktop_patch = unittest.mock.patch(
+            "deployer.windows_setup.DEFAULT_DESKTOP_DIR", Path(self.temp.name) / "desktop"
+        )
+        self.manifest_patch = unittest.mock.patch(
+            "deployer.windows_setup.resolve_bundled_install_manifest", return_value=None
+        )
+        self.desktop_patch.start()
+        self.manifest_patch.start()
+
+    def tearDown(self):
+        self.manifest_patch.stop()
+        self.desktop_patch.stop()
+        self.temp.cleanup()
+
     def test_constructor_does_not_probe_without_registry_override(self):
         with unittest.mock.patch.object(
             WindowsSetup,
@@ -54,7 +70,7 @@ class WindowsSetupMirrorSelectionTests(unittest.TestCase):
 
         probe.assert_not_called()
         self.assertTrue(setup._mirror_probe_pending)
-        self.assertEqual(setup._mirror_name, MIRROR_NPMMIRROR)
+        self.assertEqual(setup._mirror_name, MIRROR_HUAWEI)
 
     def test_explicit_registry_selects_mirror_without_probe(self):
         with unittest.mock.patch.object(
@@ -867,7 +883,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertIsNone(self.ws._openclaw_transaction)
 
     def test_registry_tls_failure_retries_next_registry(self):
-        self.ws.cfg = _Config({"npm.registry": "https://registry.npmmirror.com"})
+        self.ws.cfg = _Config({"npm.registry": "https://registry.npmmirror.com",
+                               "npm.fallback_registries": ["https://approved-backup.invalid/npm"]})
         self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
         self.ws._install_openclaw_from_registry = unittest.mock.Mock(
             side_effect=[
@@ -892,7 +909,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
 
     def test_registry_policy_or_missing_package_retries_next_registry(self):
-        self.ws.cfg = _Config({"npm.registry": "https://packagefeedproxy.microsoft.io/npm/"})
+        self.ws.cfg = _Config({"npm.registry": "https://packagefeedproxy.microsoft.io/npm/",
+                               "npm.fallback_registries": ["https://approved-backup.invalid/npm"]})
         self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
 
         for output in (
@@ -961,6 +979,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_unconfirmed_registry_remains_available_after_reachable_mirror_fails(self):
         registry = MIRRORS[MIRROR_HUAWEI]["npm_registry"]
+        self.ws.cfg = _Config({"npm.registry": registry,
+                               "npm.fallback_registries": ["https://approved-backup.invalid/npm"]})
         self.ws._reachable_npm_registries = lambda candidates, **_kw: [registry]
         self.ws._install_openclaw_from_registry = unittest.mock.Mock(
             side_effect=[
@@ -973,8 +993,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
         self.assertTrue(self.ws._install_openclaw_with_registry_fallback(self.appdata / "npm"))
         attempts = self.ws._install_openclaw_from_registry.call_args_list
-        self.assertEqual(attempts[0].args[1], registry)
-        self.assertEqual(attempts[1].args[1], self.ws._npm_registry_candidates()[0])
+        self.assertEqual(attempts[0].args[1], registry.rstrip("/"))
+        self.assertEqual(attempts[1].args[1], "https://approved-backup.invalid/npm")
 
     def test_git_download_bases_start_with_selected_and_are_deduped(self):
         self.ws._mirror_name = MIRROR_NPMMIRROR
@@ -2488,7 +2508,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
         self.assertEqual(
             self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
-            MIRRORS[MIRROR_HUAWEI]["npm_registry"],
+            MIRRORS[MIRROR_HUAWEI]["npm_registry"].rstrip("/"),
         )
 
     def test_registry_env_overrides_case_variants_without_changing_parent_or_tls_settings(self):
@@ -2509,8 +2529,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         env = self.ws._npm_registry_env(registry, original)
 
         self.assertEqual(original, before)
-        self.assertEqual(env["npm_config_registry"], registry)
-        self.assertEqual(env["npm_config_replace_registry_host"], "always")
+        self.assertEqual(env["npm_config_registry"], registry.rstrip("/"))
+        self.assertEqual(env["npm_config_replace_registry_host"], "npmjs")
         self.assertNotIn("NPM_CONFIG_REGISTRY", env)
         self.assertNotIn("Npm_Config_Replace_Registry_Host", env)
         self.assertNotIn("NPM_CONFIG_FETCH_RETRIES", env)
@@ -2549,6 +2569,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(inherited, {"NPM_CONFIG_REGISTRY": "https://proxy.invalid/npm/"})
 
     def _prepare_parallel_registry_test(self, results):
+        self.ws.cfg.values.update({
+            "npm.registry": MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+            "npm.fallback_registries": [MIRRORS[MIRROR_HUAWEI]["npm_registry"]],
+        })
         state = self.home / ".openclaw"
         state.mkdir()
         (state / "openclaw.json").write_text(
@@ -2585,7 +2609,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             self.ws._run.call_args_list, (MIRROR_NPMMIRROR, MIRROR_HUAWEI), strict=True
         ):
             self.assertEqual(
-                call.kwargs["env"]["npm_config_registry"], MIRRORS[mirror]["npm_registry"]
+                call.kwargs["env"]["npm_config_registry"], MIRRORS[mirror]["npm_registry"].rstrip("/")
             )
             self.assertNotIn("NPM_CONFIG_REGISTRY", call.kwargs["env"])
             self.assertEqual(
@@ -2604,7 +2628,7 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._run.assert_called_once()
         self.assertEqual(
             self.ws._run.call_args.kwargs["env"]["npm_config_registry"],
-            self.ws._successful_npm_registry,
+            self.ws._successful_npm_registry.rstrip("/"),
         )
 
     def test_parallel_api_incompatibility_does_not_retry_another_registry(self):

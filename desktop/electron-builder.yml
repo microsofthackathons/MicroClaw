@@ -54,6 +54,10 @@ nsis:
   shortcutName: OpenClaw
 
 extraResources:
+  - from: ../scripts/windows/npm-registry.ps1
+    to: npm-registry.ps1
+  - from: resources/npm-registry.json
+    to: npm-registry.json
   - from: src/openclaw-archive-loader.mjs
     to: openclaw-archive-loader.mjs
   - from: dist/github-copilot-auth-worker.js

@@ -8,7 +8,7 @@ from contextlib import closing
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from deployer.windows_setup import NPM_REGISTRY_HUAWEI_MIRRORS, WindowsSetup
+from deployer.windows_setup import NPM_REGISTRY_HUAWEI, NPM_REGISTRY_HUAWEI_MIRRORS, WindowsSetup
 
 
 class NpmRegistryProbeTests(unittest.TestCase):
@@ -33,16 +33,13 @@ class NpmRegistryProbeTests(unittest.TestCase):
         with patch("deployer.windows_setup.urllib.request.urlopen", side_effect=error):
             self.assertEqual(self.setup._reachable_npm_registries([registry]), [registry])
 
-    def test_failed_tls_probe_does_not_prevent_npm_attempt(self):
+    def test_npm_attempts_do_not_depend_on_unauthenticated_python_probes(self):
         registry = "https://registry.example"
         self.setup._npm_registry_candidates = Mock(return_value=[registry])
         error = urllib.error.URLError(ssl.SSLError("certificate verify failed"))
         with patch("deployer.windows_setup.urllib.request.urlopen", side_effect=error):
             self.assertEqual(self.setup._npm_registry_attempts(), [registry])
-        self.setup.log.warn.assert_called_once()
-        self.assertTrue(
-            any("URLError/SSLError" in call.args[0] for call in self.setup.log.debug.call_args_list)
-        )
+        self.setup.log.warn.assert_not_called()
 
     def test_slow_probe_does_not_discard_completed_results_or_block_until_shutdown(self):
         fast = "https://fast.example"
@@ -65,21 +62,23 @@ class NpmRegistryProbeTests(unittest.TestCase):
         finally:
             release.set()
 
-    def test_successful_probes_prioritize_but_never_remove_candidates(self):
+    def test_candidate_order_preserves_deployment_priority(self):
         candidates = ["https://configured.example", "https://fast.example", "https://slow.example"]
         self.setup._npm_registry_candidates = Mock(return_value=candidates)
         self.setup._reachable_npm_registries = Mock(return_value=[candidates[1]])
         self.assertEqual(
             self.setup._npm_registry_attempts(),
-            [candidates[1], candidates[0], candidates[2]],
+            candidates,
         )
 
     def test_candidates_include_both_huawei_https_endpoints_without_duplicates(self):
         def configured_registry(key, default=None):
-            return NPM_REGISTRY_HUAWEI_MIRRORS if key == "npm.registry" else default
+            return {"npm.registry": NPM_REGISTRY_HUAWEI_MIRRORS,
+                    "npm.fallback_registries": [NPM_REGISTRY_HUAWEI]}.get(key, default)
 
         self.setup.cfg = SimpleNamespace(get=configured_registry)
         candidates = self.setup._npm_registry_candidates()
-        self.assertEqual(candidates[0], NPM_REGISTRY_HUAWEI_MIRRORS)
+        self.assertEqual(candidates[0], NPM_REGISTRY_HUAWEI_MIRRORS.rstrip("/"))
+        self.assertEqual(candidates[1], NPM_REGISTRY_HUAWEI.rstrip("/"))
         self.assertEqual(len(candidates), len(set(registry.rstrip("/") for registry in candidates)))
         self.assertTrue(all(registry.startswith("https://") for registry in candidates))
