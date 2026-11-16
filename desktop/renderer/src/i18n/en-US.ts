@@ -697,7 +697,10 @@ export default {
   "fixedLocal.confirmationExpired":
     "This download confirmation is no longer active. Refresh the setup status before retrying.",
   "fixedLocal.preparing": "Preparing the selected model...",
-  "fixedLocal.preparingHint": "Checking runtime components and download space. Please wait.",
+  "fixedLocal.preparingHint": "Checking download requirements and available space. Please wait.",
+  "fixedLocal.installingRuntime": "Installing and loading runtime components...",
+  "fixedLocal.installingRuntimeHint":
+    "First use requires local runtime components. The model download will follow.",
   "fixedLocal.downloadStage.chat": "Downloading chat model...",
   "fixedLocal.downloadStage.embedding": "Downloading companion embedding model...",
   "fixedLocal.downloadStage.runtime": "Downloading runtime components...",

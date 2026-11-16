@@ -105,6 +105,50 @@ async function open(sessionKey: string | null = "agent:main:one", selectedModelR
   return wrapper;
 }
 describe("fixed local model first-use dialog", () => {
+  it("shows download preparation before slow metadata completes", async () => {
+    const capabilities = await window.openclaw.model.local.getCapabilities();
+    const metadata = deferred<typeof capabilities>();
+    vi.mocked(window.openclaw.model.local.getCapabilities).mockReturnValue(metadata.promise);
+    const wrapper = await open();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("Checking download requirements");
+    expect(window.openclaw.model.local.prepare).not.toHaveBeenCalled();
+    metadata.resolve(capabilities);
+    await flushPromises();
+    expect(window.openclaw.model.local.prepare).toHaveBeenCalledOnce();
+  });
+
+  it("waits for runtime installation before reading capabilities or starting a download", async () => {
+    const wrapper = mount(LocalModelDownloadDialog, {
+      props: { modelRef, downloadRequested: true, providerPending: true },
+      global: { stubs: { teleport: true } },
+    });
+    wrappers.push(wrapper);
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("Installing and loading runtime components");
+    expect(wrapper.get(".close-button").attributes("disabled")).toBeDefined();
+    expect(window.openclaw.model.local.getCapabilities).not.toHaveBeenCalled();
+    expect(window.openclaw.model.local.prepare).not.toHaveBeenCalled();
+    await wrapper.setProps({ providerPending: false });
+    await flushPromises();
+    expect(window.openclaw.model.local.prepare).toHaveBeenCalledOnce();
+    expect(wrapper.text()).not.toContain("Installing and loading runtime components");
+  });
+
+  it("does not start a download after closing the initial metadata check", async () => {
+    const capabilities = await window.openclaw.model.local.getCapabilities();
+    const metadata = deferred<typeof capabilities>();
+    vi.mocked(window.openclaw.model.local.getCapabilities).mockReturnValue(metadata.promise);
+    const wrapper = await open();
+    await wrapper.get(".close-button").trigger("click");
+    expect(wrapper.emitted("close")).toHaveLength(1);
+    metadata.resolve(capabilities);
+    await flushPromises();
+    expect(window.openclaw.model.local.prepare).not.toHaveBeenCalled();
+    expect(window.openclaw.model.local.activate).not.toHaveBeenCalled();
+  });
+
   it.each(LOCAL_MODEL_PRESETS)(
     "requests the exact $name download with the original click, without another confirmation",
     async (model) => {

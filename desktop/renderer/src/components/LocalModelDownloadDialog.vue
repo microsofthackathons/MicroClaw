@@ -16,7 +16,7 @@
           <button
             class="close-button"
             :aria-label="t('common.close')"
-            :disabled="closing || selecting || pending || loading"
+            :disabled="providerPending || closing || selecting || pending || loading"
             @click="close"
           >
             &times;
@@ -82,6 +82,9 @@
               {{ progressMessage }}
             </p>
             <p v-else-if="selecting" class="hint">{{ t("fixedLocal.filesReady") }}</p>
+            <p v-else-if="providerPending" class="hint">
+              {{ t("fixedLocal.installingRuntimeHint") }}
+            </p>
             <p v-else-if="!selecting && !confirming" class="hint">
               {{ t("fixedLocal.preparingHint") }}
             </p>
@@ -116,7 +119,10 @@
           >
             {{ t("localModel.resume") }}
           </button>
-          <button :disabled="closing || selecting || pending || loading" @click="close">
+          <button
+            :disabled="providerPending || closing || selecting || pending || loading"
+            @click="close"
+          >
             {{ t(operation?.busy ? "localModel.cancelSetup" : "common.close") }}
           </button>
         </div>
@@ -137,6 +143,7 @@ const props = defineProps<{
   sessionKey?: string;
   streaming?: boolean;
   downloadRequested?: boolean;
+  providerPending?: boolean;
 }>();
 const emit = defineEmits<{
   close: [];
@@ -163,6 +170,8 @@ const terminalError = computed(
 );
 const showDialog = computed(
   () =>
+    (props.downloadRequested && checking.value) ||
+    props.providerPending ||
     needsPreparation.value ||
     Boolean(error.value || failure.value) ||
     terminalError.value ||
@@ -215,24 +224,28 @@ watch(downloadProgress, (progress) => {
 });
 const progressLabel = computed(() =>
   t(
-    selecting.value
-      ? "fixedLocal.selecting"
-      : confirming.value
-        ? "fixedLocal.confirming"
-        : downloadProgress.value
-          ? `fixedLocal.downloadStage.${downloadProgress.value.stage}`
-          : "fixedLocal.preparing",
+    props.providerPending
+      ? "fixedLocal.installingRuntime"
+      : selecting.value
+        ? "fixedLocal.selecting"
+        : confirming.value
+          ? "fixedLocal.confirming"
+          : downloadProgress.value
+            ? `fixedLocal.downloadStage.${downloadProgress.value.stage}`
+            : "fixedLocal.preparing",
   ),
 );
 let disposed = false;
+let dismissed = false;
 let selectionStarted = false;
+let preparationStarted = false;
 
 function formatBytes(bytes: number) {
   return bytes === 0 ? t("fixedLocal.cached") : `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
 async function selectPrepared() {
-  if (disposed || props.streaming || selectionStarted || closing.value) return;
+  if (disposed || dismissed || props.streaming || selectionStarted || closing.value) return;
   selectionStarted = true;
   selecting.value = true;
   try {
@@ -264,6 +277,8 @@ async function selectPrepared() {
 }
 
 async function start() {
+  if (preparationStarted || disposed || dismissed || props.providerPending) return;
+  preparationStarted = true;
   try {
     if (!preset.value) throw new Error(t("fixedLocal.unsupportedModel"));
     const [capabilities, snapshot, current] = await Promise.all([
@@ -271,7 +286,7 @@ async function start() {
       api.getSnapshot(),
       api.getOperation(),
     ]);
-    if (disposed) return;
+    if (disposed || dismissed) return;
     if (!capabilities.ok) throw new Error(capabilities.error);
     if (!snapshot.ok) throw new Error(snapshot.error);
     if (!current.ok) throw new Error(current.error);
@@ -341,13 +356,15 @@ async function confirmDownload() {
 }
 
 async function close() {
-  if (closing.value || selecting.value || pending.value || loading.value) return;
+  if (props.providerPending || closing.value || selecting.value || pending.value || loading.value)
+    return;
   closing.value = true;
   try {
     if (operation.value?.id === ownedId.value && operation.value.busy) {
       await run(() => api.cancel(ownedId.value));
       if (operation.value?.busy || error.value) return;
     }
+    dismissed = true;
     emit("close");
   } finally {
     closing.value = false;
@@ -358,7 +375,7 @@ watch(
   () => [operation.value?.id, operation.value?.phase, props.streaming, ownedId.value],
   () => {
     const active = operation.value;
-    if (disposed || active?.id !== ownedId.value) return;
+    if (disposed || dismissed || active?.id !== ownedId.value) return;
     if (active.phase === "prepared" && active.preparedModelRef === props.modelRef)
       void selectPrepared();
     if (active.phase === "ready" && active.modelRef === props.modelRef && selectionStarted) {
@@ -381,6 +398,12 @@ watch(
   { immediate: true, flush: "sync" },
 );
 watch(showDialog, (visible) => emit("visible", visible), { immediate: true, flush: "sync" });
+watch(
+  () => props.providerPending,
+  (pending) => {
+    if (!pending) void start();
+  },
+);
 onMounted(() => void start());
 onUnmounted(() => {
   disposed = true;

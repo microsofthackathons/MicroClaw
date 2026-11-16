@@ -873,7 +873,7 @@ describe("LocalModelSetupDialog", () => {
       const wrapper = await open();
       await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
-      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true, modelRef });
       expect(api.inspectProvider).not.toHaveBeenCalled();
       expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
         authChoice: "llama-cpp",
@@ -899,7 +899,7 @@ describe("LocalModelSetupDialog", () => {
       expect(wrapper.find('[data-testid="provider-install"]').exists()).toBe(false);
       await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
-      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true, modelRef });
       expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
         authChoice: "llama-cpp",
         modelRef,
@@ -951,7 +951,13 @@ describe("LocalModelSetupDialog", () => {
       const wrapper = await open();
       const button = wrapper.get(modelSelector);
       await button.trigger("click");
-      expect(wrapper.text()).toContain("Preparing the selected model");
+      expect(document.querySelector(".download-panel")?.textContent).toContain(
+        "Installing and loading runtime components",
+      );
+      expect(
+        document.querySelector(".download-panel .close-button")?.hasAttribute("disabled"),
+      ).toBe(true);
+      expect(button.text()).not.toContain("Switching");
       expect(button.attributes("aria-busy")).toBe("true");
       expect(button.attributes("disabled")).toBeDefined();
       expect(wrapper.get('[data-testid="local-close"]').attributes("disabled")).toBeDefined();
@@ -1036,7 +1042,7 @@ describe("LocalModelSetupDialog", () => {
       expect(wrapper.get(modelSelector).attributes("disabled")).toBeUndefined();
       await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
-      expect(api.installProvider).toHaveBeenNthCalledWith(2, { confirmed: true });
+      expect(api.installProvider).toHaveBeenNthCalledWith(2, { confirmed: true, modelRef });
       expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
         authChoice: "llama-cpp",
         modelRef,
@@ -1064,7 +1070,7 @@ describe("LocalModelSetupDialog", () => {
       const wrapper = await open();
       await wrapper.get(modelSelector).trigger("click");
       await flushPromises();
-      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+      expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true, modelRef });
       expect(api.inspectProvider).toHaveBeenCalledOnce();
       expect(wrapper.get('[data-testid="provider-permissions"]').text()).toContain(
         "Start local runtime",
@@ -1081,6 +1087,7 @@ describe("LocalModelSetupDialog", () => {
       expect(api.installProvider).toHaveBeenNthCalledWith(2, {
         confirmed: true,
         reviewToken: "staged-manifest-review",
+        modelRef,
       });
       expect(api.prepare).toHaveBeenCalledExactlyOnceWith({
         authChoice: "llama-cpp",
@@ -1108,7 +1115,7 @@ describe("LocalModelSetupDialog", () => {
         const wrapper = await open();
         await wrapper.get(modelSelector).trigger("click");
         await flushPromises();
-        expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true });
+        expect(api.installProvider).toHaveBeenCalledExactlyOnceWith({ confirmed: true, modelRef });
         expect(api.prepare).not.toHaveBeenCalled();
         expect(wrapper.find('[data-testid="provider-permissions"]').exists()).toBe(false);
         expect(wrapper.find('[role="alert"]').exists()).toBe(true);
