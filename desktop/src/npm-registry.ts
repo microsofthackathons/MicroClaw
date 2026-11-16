@@ -11,16 +11,27 @@ export interface NpmRegistryPaths {
 export function normalizeNpmRegistry(value: unknown): string {
   const message =
     "MicroClaw npm registry must be an absolute HTTP(S) URL without credentials or query.";
-  if (typeof value !== "string" || !/^https?:\/\//i.test(value.trim()) ||
-      /[\s\\]/.test(value.trim())) throw new Error(message);
+  if (
+    typeof value !== "string" ||
+    !/^https?:\/\//i.test(value.trim()) ||
+    /[\s\\]/.test(value.trim())
+  )
+    throw new Error(message);
   let url: URL;
   try {
     url = new URL(value.trim());
   } catch {
     throw new Error(message);
   }
-  if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username ||
-      url.password || url.search || url.hash) throw new Error(message);
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new Error(message);
   return url.href.replace(/\/+$/, "");
 }
 
@@ -57,11 +68,14 @@ export function resolveMicroClawNpmRegistry(
     if (saved.schema !== 1) throw new Error("Unsupported MicroClaw npm source configuration.");
     return normalizeNpmRegistry(saved.registry);
   }
-  const manifest = readOptionalJson(path.join(locations.installDir, "install-state", "install-manifest.json"));
+  const manifest = readOptionalJson(
+    path.join(locations.installDir, "install-state", "install-manifest.json"),
+  );
   if (manifest?.npmRegistry !== undefined) return normalizeNpmRegistry(manifest.npmRegistry);
   for (const filename of [
     ...(locations.resourcesDir ? [path.join(locations.resourcesDir, "npm-registry.json")] : []),
-    locations.defaultConfigPath ?? path.resolve(__dirname, "../../deployer/assets/npm-registry.json"),
+    locations.defaultConfigPath ??
+      path.resolve(__dirname, "../../deployer/assets/npm-registry.json"),
   ]) {
     const config = readOptionalJson(filename);
     if (!config) continue;

@@ -18,7 +18,11 @@ import {
   verifyNodeVersion,
 } from "./openclaw-resource.mjs";
 import { validatePinnedOpenClawApprovalPackage } from "../src/openclaw-approval-replay-compat.mjs";
-import { npmRegistryEnvironment, resolveBuildNpmRegistry, writeBundledNpmRegistry } from "./npm-registry.mjs";
+import {
+  npmRegistryEnvironment,
+  resolveBuildNpmRegistry,
+  writeBundledNpmRegistry,
+} from "./npm-registry.mjs";
 
 const desktopDir = path.resolve(import.meta.dirname, "..");
 const repositoryDir = path.resolve(desktopDir, "..");
