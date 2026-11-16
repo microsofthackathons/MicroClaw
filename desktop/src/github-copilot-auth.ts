@@ -2,8 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { CREATE_NO_WINDOW } from "./constants";
-import { resolveGitHubCopilotConfigRuntimePath } from "./github-copilot-auth-worker";
+import {
+  resolveGitHubCopilotConfigRuntimePath,
+  parseGitHubCopilotWorkerTiming,
+  type GitHubCopilotWorkerTiming,
+} from "./github-copilot-auth-worker";
 
 const MESSAGE_PREFIX = "MICROCLAW_COPILOT_AUTH:";
 const GITHUB_DEVICE_URL = "https://github.com/login/device";
@@ -55,6 +60,7 @@ export type GitHubCopilotAuthEvent =
   | { sessionId: string; status: "error"; message: string };
 
 type WorkerMessage =
+  | GitHubCopilotWorkerTiming
   | {
       type: "device-code";
       verificationUrl: string;
@@ -69,6 +75,8 @@ type WorkerMessage =
 
 interface ActiveLogin {
   sessionId: string;
+  startedAt: number;
+  workerReady: boolean;
   child: ChildProcess;
   timeout: ReturnType<typeof setTimeout>;
   terminal: boolean;
@@ -125,6 +133,7 @@ export function parseGitHubCopilotWorkerLine(line: string): WorkerMessage | unde
   }
 
   const value = payload as Record<string, unknown>;
+  if (value.type === "timing") return parseGitHubCopilotWorkerTiming(value);
   if (value.type === "device-code") {
     if (value.verificationUrl !== GITHUB_DEVICE_URL) {
       throw new Error("GitHub Copilot returned an unexpected verification URL");
@@ -506,7 +515,42 @@ export class GitHubCopilotAuthManager {
   constructor(
     private readonly emit: (event: GitHubCopilotAuthEvent) => void,
     private readonly openExternal: (url: string) => Promise<void>,
+    private readonly logTiming: (record: Record<string, string | number>) => void = () => {},
   ) {}
+
+  private recordTiming(
+    active: ActiveLogin,
+    timing: {
+      phase: string;
+      status: string;
+      elapsedMs?: number;
+      durationMs?: number;
+      attempt?: number;
+      httpStatus?: number;
+    },
+    source: "main" | "worker" = "main",
+  ): void {
+    const totalElapsedMs = Math.max(0, Math.round(performance.now() - active.startedAt));
+    const record: Record<string, string | number> = {
+      sessionId: active.sessionId,
+      source,
+      phase: timing.phase,
+      status: timing.status,
+      elapsedMs: timing.elapsedMs ?? totalElapsedMs,
+      totalElapsedMs,
+    };
+    if (active.child.pid !== undefined) record.workerPid = active.child.pid;
+    for (const key of ["durationMs", "attempt", "httpStatus"] as const) {
+      if (timing[key] !== undefined) record[key] = timing[key];
+    }
+    if (timing.phase === "login-total" && timing.status !== "started")
+      record.durationMs = totalElapsedMs;
+    try {
+      this.logTiming(record);
+    } catch {
+      /* Logging must not interrupt login. */
+    }
+  }
 
   getLoginSession(): {
     sessionId: string;
@@ -533,6 +577,7 @@ export class GitHubCopilotAuthManager {
         throw new Error("GitHub Copilot sign-in is still finishing cancellation");
       return this.active.sessionId;
     }
+    const startedAt = performance.now();
     const authRuntimePath = path.join(
       runtime.openClawPackageDir,
       "dist",
@@ -568,6 +613,8 @@ export class GitHubCopilotAuthManager {
     });
     const active: ActiveLogin = {
       sessionId,
+      startedAt,
+      workerReady: false,
       child,
       terminal: false,
       stdoutBuffer: "",
@@ -576,11 +623,14 @@ export class GitHubCopilotAuthManager {
       cancellationRequested: false,
       closed,
       timeout: setTimeout(() => {
+        this.recordTiming(active, { phase: "login-timeout", status: "error" });
         this.fail(active, "GitHub Copilot sign-in timed out");
       }, AUTH_TIMEOUT_MS),
     };
     active.timeout.unref?.();
     this.active = active;
+    this.recordTiming(active, { phase: "login-total", status: "started" });
+    this.recordTiming(active, { phase: "worker-startup", status: "started" });
 
     child.stdout?.on("data", (chunk: Buffer) => this.handleOutput(active, chunk));
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -597,6 +647,7 @@ export class GitHubCopilotAuthManager {
           false,
         );
       }
+      this.recordTiming(active, { phase: "worker-exit", status: active.outcome ?? "error" });
       resolveClosed();
     });
     return sessionId;
@@ -619,6 +670,7 @@ export class GitHubCopilotAuthManager {
   private requestCancellation(active: ActiveLogin): void {
     if (active.cancellationRequested) return;
     active.cancellationRequested = true;
+    this.recordTiming(active, { phase: "cancellation-requested", status: "started" });
     clearTimeout(active.timeout);
     // Let the SDK unwind credential persistence and release its locks. Hiding a
     // renderer panel never calls this; explicit cancellation does not kill it.
@@ -654,6 +706,18 @@ export class GitHubCopilotAuthManager {
 
   private handleMessage(active: ActiveLogin, message: WorkerMessage): void {
     if (this.active !== active || active.terminal) return;
+    if (message.type === "timing") {
+      if (message.phase === "worker-ready" && !active.workerReady) {
+        active.workerReady = true;
+        this.recordTiming(active, {
+          phase: "worker-startup",
+          status: "success",
+          durationMs: Math.max(0, Math.round(performance.now() - active.startedAt)),
+        });
+      }
+      this.recordTiming(active, message, "worker");
+      return;
+    }
     if (message.type === "device-code") {
       active.codeExpiresAt = Date.now() + message.expiresInMs;
       active.code = {
@@ -664,6 +728,7 @@ export class GitHubCopilotAuthManager {
         expiresInMs: message.expiresInMs,
       };
       this.emit(active.code);
+      this.recordTiming(active, { phase: "device-code-delivered", status: "success" });
       return;
     }
     if (message.type === "open-url") {
@@ -684,6 +749,7 @@ export class GitHubCopilotAuthManager {
       }
       active.terminal = true;
       active.outcome = "cancelled";
+      this.recordTiming(active, { phase: "login-total", status: "cancelled" });
       clearTimeout(active.timeout);
       this.active = null;
       invalidateGitHubCopilotAuthStatusCache();
@@ -697,6 +763,7 @@ export class GitHubCopilotAuthManager {
 
     active.terminal = true;
     active.outcome = "success";
+    this.recordTiming(active, { phase: "login-total", status: "success" });
     clearTimeout(active.timeout);
     this.active = null;
     invalidateGitHubCopilotAuthStatusCache();
@@ -716,6 +783,7 @@ export class GitHubCopilotAuthManager {
     }
     active.terminal = true;
     active.outcome = "error";
+    this.recordTiming(active, { phase: "login-total", status: "error" });
     active.failureMessage = message;
     clearTimeout(active.timeout);
     this.active = null;

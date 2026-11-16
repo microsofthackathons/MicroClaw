@@ -1647,6 +1647,8 @@ const githubCopilotAuthManager = new GitHubCopilotAuthManager(
     if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
   },
   (url) => shell.openExternal(url),
+  (timing) =>
+    electronLifecycleDiagnostics.log("github-copilot-login-timing", timing, { durable: false }),
 );
 
 // ---------------------------------------------------------------------------
