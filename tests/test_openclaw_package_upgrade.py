@@ -361,15 +361,17 @@ class PackageManagerUpgradeTests(unittest.TestCase):
                 self.assertIn("backup", self.ws._run_official_update.call_args.args[0])
                 self.assertEqual(self.ws._detect_openclaw_installation().version, "2026.10.3")
 
-    def test_reachable_registry_is_used_for_the_entire_upgrade(self):
+    def test_configured_registry_is_used_for_the_entire_upgrade_without_probing(self):
         registry = "https://mirrors.huaweicloud.com/repository/npm/"
-        self.ws._reachable_npm_registries.return_value = [registry]
+        self.ws._desired_npm_registry.return_value = registry
+        expected_registry = registry.rstrip("/")
         self.assertTrue(self.ws.install_openclaw_windows())
+        self.ws._reachable_npm_registries.assert_not_called()
         for call in self.ws._run_official_update.call_args_list:
-            self.assertEqual(call.kwargs["env"]["npm_config_registry"], registry)
+            self.assertEqual(call.kwargs["env"]["npm_config_registry"], expected_registry)
             self.assertEqual(call.kwargs["env"]["npm_config_prefix"], str(self.prefix))
         command = self.ws._run_official_update.call_args_list[1].args[0]
-        self.assertEqual(command[command.index("--registry") + 1], registry)
+        self.assertEqual(command[command.index("--registry") + 1], expected_registry)
 
     def test_inconclusive_registry_probe_does_not_launch_the_old_updater(self):
         self.ws._reachable_npm_registries.return_value = []
