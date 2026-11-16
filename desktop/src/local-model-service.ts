@@ -566,6 +566,7 @@ export class LocalModelService {
     gateway: LocalModelGateway,
     generation: number | undefined,
     result: JsonObject,
+    selectedModel?: string,
   ): Promise<LocalModelCapabilities | undefined> {
     this.assertProviderGateway(gateway, generation);
     if (!providerRuntimeApplied(result)) return;
@@ -581,6 +582,10 @@ export class LocalModelService {
         capabilities.plugin.loaded !== false
       ) {
         if (capabilities.plugin.loaded === true) return capabilities;
+        // A registered on-demand provider is loaded and checked by prepare.start.
+        // For an exact managed model, scanning every provider here duplicates that work.
+        // Keep loaded unknown until setup actually runs; do not claim a successful load.
+        if (selectedModel) return capabilities;
         const detection = await this.detect({ refresh: true });
         this.assertProviderGateway(gateway, generation);
         if (detection.choices.some((option) => option.id === PROVIDER))
@@ -597,6 +602,7 @@ export class LocalModelService {
   private async reloadProvider(
     gateway: LocalModelGateway,
     acknowledgeCapabilities: JsonObject = {},
+    selectedModel?: string,
   ): Promise<LocalModelCapabilities> {
     const generation = gateway.connectionGeneration;
     this.assertProviderGateway(gateway, generation);
@@ -614,7 +620,12 @@ export class LocalModelService {
           300_000,
         ),
       );
-      const capabilities = await this.confirmProviderRuntime(gateway, generation, result);
+      const capabilities = await this.confirmProviderRuntime(
+        gateway,
+        generation,
+        result,
+        selectedModel,
+      );
       if (!capabilities)
         throw new Error(
           "The local model provider could not be hot-loaded. Downloaded files are retained; retry loading. Gateway was not restarted.",
@@ -770,6 +781,9 @@ export class LocalModelService {
 
   async installProvider(input: unknown): Promise<LocalModelCapabilities> {
     const params = record(input);
+    const selectedModel = params.modelRef === undefined ? undefined : text(params.modelRef);
+    if (selectedModel && !isManagedLocalModel(selectedModel))
+      throw new Error("Only models in the managed ModelScope catalog can be prepared");
     if (params.confirmed !== true)
       throw new Error("Explicit plugin installation consent is required");
     if (params.reviewToken !== undefined && params.reviewToken !== this.reviewedToken) {
@@ -832,11 +846,12 @@ export class LocalModelService {
         if (result) {
           if (result.ok !== true)
             throw new Error("The official plugin could not be installed or enabled");
-          applied = await this.confirmProviderRuntime(gateway, generation, result);
+          applied = await this.confirmProviderRuntime(gateway, generation, result, selectedModel);
         }
       }
       this.assertProviderGateway(gateway, generation);
-      const loaded = applied ?? (await this.reloadProvider(gateway, acknowledgeCapabilities));
+      const loaded =
+        applied ?? (await this.reloadProvider(gateway, acknowledgeCapabilities, selectedModel));
       this.reviewedToken = undefined;
       this.pendingReview = undefined;
       return loaded;

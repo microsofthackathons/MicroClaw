@@ -883,8 +883,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertIsNone(self.ws._openclaw_transaction)
 
     def test_registry_tls_failure_retries_next_registry(self):
-        self.ws.cfg = _Config({"npm.registry": "https://registry.npmmirror.com",
-                               "npm.fallback_registries": ["https://approved-backup.invalid/npm"]})
+        self.ws.cfg = _Config(
+            {
+                "npm.registry": "https://registry.npmmirror.com",
+                "npm.fallback_registries": ["https://approved-backup.invalid/npm"],
+            }
+        )
         self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
         self.ws._install_openclaw_from_registry = unittest.mock.Mock(
             side_effect=[
@@ -909,8 +913,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         )
 
     def test_registry_policy_or_missing_package_retries_next_registry(self):
-        self.ws.cfg = _Config({"npm.registry": "https://packagefeedproxy.microsoft.io/npm/",
-                               "npm.fallback_registries": ["https://approved-backup.invalid/npm"]})
+        self.ws.cfg = _Config(
+            {
+                "npm.registry": "https://packagefeedproxy.microsoft.io/npm/",
+                "npm.fallback_registries": ["https://approved-backup.invalid/npm"],
+            }
+        )
         self.ws._reachable_npm_registries = lambda candidates, **_kw: list(candidates)
 
         for output in (
@@ -979,8 +987,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
 
     def test_unconfirmed_registry_remains_available_after_reachable_mirror_fails(self):
         registry = MIRRORS[MIRROR_HUAWEI]["npm_registry"]
-        self.ws.cfg = _Config({"npm.registry": registry,
-                               "npm.fallback_registries": ["https://approved-backup.invalid/npm"]})
+        self.ws.cfg = _Config(
+            {
+                "npm.registry": registry,
+                "npm.fallback_registries": ["https://approved-backup.invalid/npm"],
+            }
+        )
         self.ws._reachable_npm_registries = lambda candidates, **_kw: [registry]
         self.ws._install_openclaw_from_registry = unittest.mock.Mock(
             side_effect=[
@@ -2569,10 +2581,12 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.assertEqual(inherited, {"NPM_CONFIG_REGISTRY": "https://proxy.invalid/npm/"})
 
     def _prepare_parallel_registry_test(self, results):
-        self.ws.cfg.values.update({
-            "npm.registry": MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
-            "npm.fallback_registries": [MIRRORS[MIRROR_HUAWEI]["npm_registry"]],
-        })
+        self.ws.cfg.values.update(
+            {
+                "npm.registry": MIRRORS[MIRROR_NPMMIRROR]["npm_registry"],
+                "npm.fallback_registries": [MIRRORS[MIRROR_HUAWEI]["npm_registry"]],
+            }
+        )
         state = self.home / ".openclaw"
         state.mkdir()
         (state / "openclaw.json").write_text(
@@ -2609,7 +2623,8 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
             self.ws._run.call_args_list, (MIRROR_NPMMIRROR, MIRROR_HUAWEI), strict=True
         ):
             self.assertEqual(
-                call.kwargs["env"]["npm_config_registry"], MIRRORS[mirror]["npm_registry"].rstrip("/")
+                call.kwargs["env"]["npm_config_registry"],
+                MIRRORS[mirror]["npm_registry"].rstrip("/"),
             )
             self.assertNotIn("NPM_CONFIG_REGISTRY", call.kwargs["env"])
             self.assertEqual(

@@ -101,16 +101,22 @@ class BuildResourceRegistryTests(unittest.TestCase):
                 encoding="utf-8",
                 timeout=30,
             )
-            calls = [
-                json.loads(line)
-                for line in (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()
-            ] if (root / "calls.jsonl").exists() else []
+            calls = (
+                [
+                    json.loads(line)
+                    for line in (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()
+                ]
+                if (root / "calls.jsonl").exists()
+                else []
+            )
         state = json.loads(result.stdout.split("ENV_JSON:", 1)[1].splitlines()[0])
         self.assertEqual(state["before"], state["after"], result.stdout + result.stderr)
         if calls:
             self.assertEqual(calls[0]["args"], ["install"])
             chosen = (microclaw or msix or DEFAULT_REGISTRY).rstrip("/")
-            self.assertEqual(calls[0]["env"], dict(zip(REGISTRY_KEYS, (chosen, msix, chosen), strict=True)))
+            self.assertEqual(
+                calls[0]["env"], dict(zip(REGISTRY_KEYS, (chosen, msix, chosen), strict=True))
+            )
         return result, calls
 
     def test_build_uses_one_selected_registry_for_dependencies_and_resources(self):
@@ -143,7 +149,8 @@ class BuildResourceRegistryTests(unittest.TestCase):
                 result, calls = self.run_stage(microclaw=microclaw, failure=failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(
-                    calls[1]["env"]["MICROCLAW_NPM_REGISTRY"], (microclaw or DEFAULT_REGISTRY).rstrip("/")
+                    calls[1]["env"]["MICROCLAW_NPM_REGISTRY"],
+                    (microclaw or DEFAULT_REGISTRY).rstrip("/"),
                 )
                 self.assertIn(
                     "resource launch failure" if failure == "throw" else "preparation failed",

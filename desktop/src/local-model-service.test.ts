@@ -733,6 +733,61 @@ describe("local model protocol guards", () => {
 });
 
 describe("local model provider hot loading", () => {
+  it.each(["plugins.install", "plugins.reload"])(
+    "starts exact model preparation after %s without scanning unrelated providers",
+    async (method) => {
+      const context = fixture();
+      context.plugin({ installed: method !== "plugins.install", runtime: { state: "unloaded" } });
+      const original = context.request.getMockImplementation()!;
+      context.request.mockImplementation(async (name, params, timeout) => {
+        if (name === "openclaw.setup.detect") throw new Error("Unrelated discovery must not run");
+        const result = await original(name, params, timeout);
+        if (name === method) context.plugin({ runtime: { state: "unloaded" } });
+        return result;
+      });
+      const installed = await context.service.installProvider({
+        confirmed: true,
+        modelRef: PRESET,
+      });
+      expect(installed.plugin.installed).toBe(true);
+      expect(installed.plugin.loaded).toBeUndefined();
+      await context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
+      await waitPhase(context, "step");
+      expect(context.request.mock.calls.filter(([name]) => name === method)).toHaveLength(1);
+      expect(context.request.mock.calls.some(([name]) => name === "openclaw.setup.detect")).toBe(
+        false,
+      );
+      expect(context.receipt()?.exactModelSelected).toBe(true);
+      expect(context.service.getOperation()?.step?.type).toBe("confirm");
+    },
+  );
+
+  it("reports targeted setup failures without treating registration as a loaded model", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, runtime: { state: "unloaded" } });
+    const before = structuredClone(context.readConfig());
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (name, params, timeout) => {
+      if (name === "openclaw.setup.prepare.start") throw new Error("Provider setup is unavailable");
+      const result = await original(name, params, timeout);
+      if (name === "plugins.install") context.plugin({ runtime: { state: "unloaded" } });
+      return result;
+    });
+    await context.service.installProvider({ confirmed: true, modelRef: PRESET });
+    await context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
+    await waitPhase(context, "error");
+    expect(context.service.getOperation()?.error).toContain("Provider setup is unavailable");
+    expect(context.readConfig()).toEqual(before);
+  });
+
+  it("rejects an unknown exact model before installing its runtime", async () => {
+    const context = fixture();
+    await expect(
+      context.service.installProvider({ confirmed: true, modelRef: "llama-cpp/unknown" }),
+    ).rejects.toThrow("managed ModelScope catalog");
+    expect(context.request).not.toHaveBeenCalled();
+  });
+
   it.each(["prepare", "activate"])(
     "refuses %s before configuration changes if hot reload is disabled",
     async (operation) => {

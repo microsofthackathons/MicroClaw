@@ -73,8 +73,10 @@ class NpmRegistryProbeTests(unittest.TestCase):
 
     def test_candidates_include_both_huawei_https_endpoints_without_duplicates(self):
         def configured_registry(key, default=None):
-            return {"npm.registry": NPM_REGISTRY_HUAWEI_MIRRORS,
-                    "npm.fallback_registries": [NPM_REGISTRY_HUAWEI]}.get(key, default)
+            return {
+                "npm.registry": NPM_REGISTRY_HUAWEI_MIRRORS,
+                "npm.fallback_registries": [NPM_REGISTRY_HUAWEI],
+            }.get(key, default)
 
         self.setup.cfg = SimpleNamespace(get=configured_registry)
         candidates = self.setup._npm_registry_candidates()

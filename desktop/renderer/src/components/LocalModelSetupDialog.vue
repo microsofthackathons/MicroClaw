@@ -297,7 +297,8 @@
       v-if="fixedSelection"
       :key="fixedSelection"
       :model-ref="fixedSelection"
-      :download-requested="true"
+      :download-requested="fixedDownloadRequested"
+      :provider-pending="fixedProviderPending"
       :streaming="streaming"
       @busy="fixedSelecting = $event"
       @visible="fixedDialogVisible = $event"
@@ -363,6 +364,8 @@ const review = ref<LocalModelInstallReview | null>(null);
 const selectedCandidate = ref("");
 const providerSelection = ref("");
 const fixedSelection = ref("");
+const fixedProviderPending = ref(false);
+const fixedDownloadRequested = ref(false);
 const fixedSelecting = ref(false);
 const fixedDialogVisible = ref(false);
 const blocked = computed(() => operationBlocked.value || fixedSelecting.value);
@@ -558,9 +561,14 @@ async function installProvider() {
   if (metadataPending.value || !canInstall.value || blocked.value || props.streaming) return;
   const reviewToken = review.value?.reviewToken;
   review.value = null;
+  if (providerSelection.value) {
+    fixedProviderPending.value = true;
+    fixedSelection.value = providerSelection.value;
+  }
   await metadata(async () => {
     const result = await api.installProvider({
       confirmed: true,
+      ...(providerSelection.value ? { modelRef: providerSelection.value } : {}),
       ...(reviewToken ? { reviewToken } : {}),
     });
     if (disposed) return;
@@ -577,7 +585,8 @@ async function installProvider() {
       throw new Error(result.error);
     }
     capabilities.value = result.value;
-    await Promise.all([loadSnapshot(), loadCapabilities()]);
+    // The download dialog reads current model state before preparing the selected model.
+    if (!providerSelection.value) await Promise.all([loadSnapshot(), loadCapabilities()]);
   });
   if (
     disposed ||
@@ -585,18 +594,30 @@ async function installProvider() {
     review.value ||
     !providerReady.value ||
     !providerSelection.value
-  )
+  ) {
+    fixedSelection.value = "";
+    fixedProviderPending.value = false;
     return;
+  }
   if (props.streaming) {
     metadataError.value = t("localModel.streaming");
+    fixedSelection.value = "";
+    fixedProviderPending.value = false;
     return;
   }
   fixedSelection.value = providerSelection.value;
   providerSelection.value = "";
+  fixedProviderPending.value = false;
 }
 async function selectFixedModel(modelRef: string) {
   if (catalogBlocked.value) return;
   metadataError.value = "";
+  const saved = snapshot.value?.models.find((model) => model.modelRef === modelRef);
+  const catalogEntry = snapshot.value?.catalog?.find((model) => model.modelRef === modelRef);
+  fixedDownloadRequested.value =
+    saved?.fileStatus !== "present" &&
+    saved?.fileStatus !== "external" &&
+    catalogEntry?.fileStatus !== "present";
   if (providerReady.value) {
     providerSelection.value = "";
     fixedSelection.value = modelRef;

@@ -97,7 +97,12 @@ def fingerprint(root, paths, excludes=()):
 
 
 def stage_paths(root, stage):
-    common = ["build.ps1", "scripts/build_cache.py", "deployer/assets/npm-registry.json", "scripts/windows/npm-registry.ps1"]
+    common = [
+        "build.ps1",
+        "scripts/build_cache.py",
+        "deployer/assets/npm-registry.json",
+        "scripts/windows/npm-registry.ps1",
+    ]
     if stage == "native":
         sources = [
             "windows-node-host",

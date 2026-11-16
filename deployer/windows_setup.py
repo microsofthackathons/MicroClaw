@@ -3017,9 +3017,7 @@ class WindowsSetup:
         registries: list[str] = []
         for registry in candidates:
             registry = normalize_npm_registry(registry)
-            if registry.rstrip("/") not in {
-                existing.rstrip("/") for existing in registries
-            }:
+            if registry.rstrip("/") not in {existing.rstrip("/") for existing in registries}:
                 registries.append(registry)
         return registries
 
@@ -3548,9 +3546,16 @@ class WindowsSetup:
                 try:
                     write_install_manifest(
                         self._install_manifest_path,
-                        committed_install_manifest(bundled, getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry()),
+                        committed_install_manifest(
+                            bundled,
+                            getattr(self, "_successful_npm_registry", None)
+                            or self._desired_npm_registry(),
+                        ),
                     )
-                    self._save_npm_registry_config(getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry())
+                    self._save_npm_registry_config(
+                        getattr(self, "_successful_npm_registry", None)
+                        or self._desired_npm_registry()
+                    )
                 except OSError as error:
                     self.log.warn(
                         f"Bundled upgrade committed but its cache marker could not be saved: {error}"
@@ -3562,7 +3567,9 @@ class WindowsSetup:
         transaction.commit()
         bundled = getattr(self, "_bundled_install_manifest", None)
         if bundled is not None:
-            selected_registry = getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry()
+            selected_registry = (
+                getattr(self, "_successful_npm_registry", None) or self._desired_npm_registry()
+            )
             committed = committed_install_manifest(bundled, selected_registry)
             try:
                 write_install_manifest(self._install_manifest_path, committed)
