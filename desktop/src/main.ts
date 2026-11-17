@@ -7645,12 +7645,16 @@ function registerIpcHandlers(): void {
                 () => undefined,
                 "plugin",
               ),
-            applySearch: (next, expected, assertCurrent) =>
+            applySearch: (next, expected, assertCurrent, requestId) =>
               applySearchConfig(
                 {
                   gateway: () => gwClient,
                   readConfig,
                   assertCurrent,
+                  onProgress: (stage) => {
+                    if (requestId && !_event.sender.isDestroyed())
+                      _event.sender.send("config:search-progress", { requestId, stage });
+                  },
                   assertMxcReady: async () => {
                     if (!isWindowsNodeMxcDesired()) return;
                     const status = await getWindowsNodeMxcStatus();

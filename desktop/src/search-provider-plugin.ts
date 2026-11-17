@@ -1,3 +1,5 @@
+import { searchInstallStage, type SearchSetupStage } from "./search-setup-progress";
+
 type JsonObject = Record<string, unknown>;
 
 export interface SearchProviderGateway {
@@ -5,7 +7,12 @@ export interface SearchProviderGateway {
   serverVersion: string | null;
   connectionGeneration: number;
   methods: readonly string[];
-  request(method: string, params: JsonObject, timeoutMs?: number): Promise<unknown>;
+  request(
+    method: string,
+    params: JsonObject,
+    timeoutMs?: number,
+    onProgress?: (payload: unknown) => void,
+  ): Promise<unknown>;
 }
 
 const providers = {
@@ -96,6 +103,7 @@ export async function ensureSearchProviderPlugin(
   provider: unknown,
   assertCurrent: () => void,
   onInstall?: () => void,
+  onProgress?: (stage: SearchSetupStage) => void,
 ): Promise<string> {
   const plugin = searchProviderPlugin(provider);
   if (
@@ -117,14 +125,24 @@ export async function ensureSearchProviderPlugin(
   let application: JsonObject | undefined;
   if (current.installed !== true || current.version !== version || current.state === "error") {
     onInstall?.();
+    const observers: [(payload: unknown) => void] | [] = onProgress
+      ? [
+          (payload) => {
+            const stage = searchInstallStage(payload);
+            if (stage) onProgress(stage);
+          },
+        ]
+      : [];
     application = object(
       await gateway.request(
         "plugins.install",
         { source: "npm", spec: `${plugin.package}@${version}`, expectedPluginId: plugin.id },
         300_000,
+        ...observers,
       ),
     );
   } else if (current.enabled !== true) {
+    onProgress?.("activating");
     application = object(
       await gateway.request("plugins.setEnabled", { pluginId: plugin.id, enabled: true }, 300_000),
     );
@@ -132,6 +150,7 @@ export async function ensureSearchProviderPlugin(
     !["active", "unloaded"].includes(String(object(current.runtime).state)) ||
     object(current.runtime).error
   ) {
+    onProgress?.("activating");
     application = object(
       await gateway.request(
         "plugins.reload",
@@ -142,6 +161,7 @@ export async function ensureSearchProviderPlugin(
   }
   assertCurrent();
   if (application) assertLifecycleApplication(application, plugin.id);
+  onProgress?.("verifying");
   await verifiedRuntimeState(gateway, plugin.id, version, assertCurrent);
   return plugin.id;
 }

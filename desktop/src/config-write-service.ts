@@ -11,6 +11,7 @@ import {
   validateWindowsNodeMxcGatewayPolicy,
 } from "./windows-node-mxc";
 import { assertWindowsNodeMxcModelOrPluginChange } from "./windows-node-mxc-model-config";
+import type { SearchSettingsWriteIntent } from "./search-setup-progress";
 
 interface ConfigWriteDependencies {
   readConfig(): unknown;
@@ -26,7 +27,12 @@ interface ConfigWriteDependencies {
   persist(config: Record<string, unknown>): void;
   applyModel(params: ModelConfigUpdate): Promise<void>;
   applyPlugins(config: unknown, expectedConfig: unknown): Promise<void>;
-  applySearch(config: unknown, expectedConfig: unknown, assertCurrent: () => void): Promise<void>;
+  applySearch(
+    config: unknown,
+    expectedConfig: unknown,
+    assertCurrent: () => void,
+    requestId?: string,
+  ): Promise<void>;
   startServices(): Promise<void>;
 }
 
@@ -40,17 +46,22 @@ function readCurrent(deps: ConfigWriteDependencies): unknown {
 
 function writeIntent(
   value: unknown,
-): { kind: "initial-setup"; providerKey: string } | { kind: "search-settings" } | null {
+): { kind: "initial-setup"; providerKey: string } | SearchSettingsWriteIntent | null {
   if (value === undefined) return null;
   if (
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value).length === 1 &&
+    Object.keys(value).every((key) => key === "kind" || key === "requestId") &&
     "kind" in value &&
-    value.kind === "search-settings"
+    value.kind === "search-settings" &&
+    (!("requestId" in value) ||
+      (typeof value.requestId === "string" && /^[\w-]{1,128}$/.test(value.requestId)))
   )
-    return { kind: "search-settings" };
+    return {
+      kind: "search-settings",
+      ...("requestId" in value ? { requestId: value.requestId as string } : {}),
+    };
   if (
     !value ||
     typeof value !== "object" ||
@@ -159,7 +170,12 @@ export async function writeGuardedConfig(
     if (!policy.ready) {
       throw new Error(`Gateway command routing is not ready: ${policy.blockers.join("; ")}`);
     }
-    await deps.applySearch(config, expectedConfig, assertLifecycle);
+    await deps.applySearch(
+      config,
+      expectedConfig,
+      assertLifecycle,
+      parsedIntent?.kind === "search-settings" ? parsedIntent.requestId : undefined,
+    );
     return;
   }
 
