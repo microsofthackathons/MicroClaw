@@ -260,6 +260,8 @@ describe("ModelSetupDialog", () => {
     discoverModels.mockResolvedValue({
       ok: true,
       models: [
+        "qwen3.9-plus",
+        "qwen3.10-plus",
         "qwen3.8-plus",
         "qwen3.8-max",
         "kimi/kimi-k3.1-pro",
@@ -285,10 +287,11 @@ describe("ModelSetupDialog", () => {
     await vi.advanceTimersByTimeAsync(600);
     await flushPromises();
     expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.10-plus",
+      "qwen3.9-plus",
+      "qwen3.8-plus",
       "qwen3.8-max",
       "cmaas-qwen3.8-flash",
-      "qwen3.7-plus",
-      "qwen3.5-plus",
     ]);
     expect(wrapper.find(`option[value="${realtime}"]`).exists()).toBe(false);
     expect(wrapper.get(".primary-action").attributes("disabled")).toBeDefined();
@@ -300,11 +303,13 @@ describe("ModelSetupDialog", () => {
     await more.trigger("click");
     expect(more.attributes("aria-expanded")).toBe("true");
     expect(wrapper.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "qwen3.10-plus",
+      "qwen3.9-plus",
+      "qwen3.8-plus",
       "qwen3.8-max",
       "cmaas-qwen3.8-flash",
       "qwen3.7-plus",
       "qwen3.5-plus",
-      "qwen3.8-plus",
     ]);
     const select = wrapper.findComponent(SelectStub);
     select.props("filterMethod")?.("qwen3.8-plus");
@@ -318,6 +323,7 @@ describe("ModelSetupDialog", () => {
     expect(wrapper.get('[data-testid="more-provider-models"]').attributes("aria-expanded")).toBe(
       "false",
     );
+    await wrapper.get('[data-testid="more-provider-models"]').trigger("click");
     await wrapper.get("select").setValue("qwen3.7-plus");
     expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
     wrapper.unmount();

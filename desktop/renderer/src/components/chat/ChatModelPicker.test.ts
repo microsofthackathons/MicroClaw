@@ -199,7 +199,8 @@ describe("ChatModelPicker", () => {
       models: ["qwen-saved", "qwen-live-one", "qwen-live-two"],
     });
     const wrapper = await open();
-    await wrapper.get('[data-more-models="qwen"]').trigger("click");
+    await wrapper.get('[data-provider-group="qwen"]').trigger("click");
+    expect(wrapper.find('[data-more-models="qwen"]').exists()).toBe(false);
     expect(
       wrapper
         .findAll('[data-model-ref^="qwen/"]')

@@ -121,9 +121,56 @@ describe("DefaultModelPicker", () => {
     expect(more.attributes("aria-expanded")).toBe("false");
   });
 
-  it("preserves Qwen visibility, featured models, recommendation badges and selected aliases", async () => {
+  it("puts newer MiniMax versions before overflow even when an older model is selected", async () => {
     const wrapper = await open();
     const ids = [
+      "MiniMax-M2",
+      "MiniMax-M2.1",
+      "MiniMax-M2.1-highspeed",
+      "MiniMax-M2.5",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.7",
+      "MiniMax-M2.7-highspeed",
+      "MiniMax-M3",
+      "MiniMax-M3.1-Flash",
+    ];
+    await wrapper.setProps({
+      modelValue: "minimax/MiniMax-M2.1",
+      models: ids.map((id) => ({ providerKey: "minimax", id, name: id, source: "managed" })),
+    });
+    await wrapper.get('[data-provider-group="minimax"]').trigger("click");
+    const visible = wrapper.findAll("[data-model-ref]").filter((model) => model.isVisible());
+    expect(visible.map((model) => model.attributes("data-model-ref"))).toEqual([
+      "minimax/MiniMax-M3.1-Flash",
+      "minimax/MiniMax-M3",
+      "minimax/MiniMax-M2.7-highspeed",
+      "minimax/MiniMax-M2.7",
+      "minimax/MiniMax-M2.5-highspeed",
+    ]);
+    await wrapper.get('[data-more-models="minimax"]').trigger("click");
+    const remaining = wrapper.get('[role="menu"][aria-label="MiniMax · More models"]');
+    expect(
+      remaining.findAll("[data-model-ref]").map((model) => model.attributes("data-model-ref")),
+    ).toEqual([
+      "minimax/MiniMax-M2.5",
+      "minimax/MiniMax-M2.1-highspeed",
+      "minimax/MiniMax-M2.1",
+      "minimax/MiniMax-M2",
+    ]);
+    expect(
+      remaining.get('[data-model-ref="minimax/MiniMax-M2.1"]').attributes("aria-checked"),
+    ).toBe("true");
+    expect(wrapper.emitted("change")).toBeUndefined();
+    await wrapper.get('[data-model-ref="minimax/MiniMax-M3.1-Flash"]').trigger("click");
+    expect(wrapper.emitted("change")).toEqual([["minimax/MiniMax-M3.1-Flash"]]);
+  });
+
+  it("shows newer Qwen versions first and preserves selected aliases in overflow", async () => {
+    const wrapper = await open();
+    const ids = [
+      "qwen3.9-plus",
+      "qwen3.10-plus",
+      "qwen3.8-plus",
       "qwen3.8-max",
       "qwen3.8-flash",
       "cmaas-qwen3.8-flash",
@@ -145,10 +192,10 @@ describe("DefaultModelPicker", () => {
     await wrapper.get('[data-provider-group="qwen"]').trigger("click");
     const visible = wrapper.findAll("[data-model-ref]").filter((model) => model.isVisible());
     expect(visible.map((model) => model.attributes("data-model-ref"))).toEqual([
+      "qwen/qwen3.10-plus",
+      "qwen/qwen3.9-plus",
+      "qwen/qwen3.8-plus",
       "qwen/qwen3.8-max",
-      "qwen/cmaas-qwen3.8-flash",
-      "qwen/qwen3.7-plus",
-      "qwen/qwen3.5-plus",
       "qwen/qwen3.8-flash",
     ]);
     expect(
@@ -161,6 +208,7 @@ describe("DefaultModelPicker", () => {
       expect(wrapper.find(`[data-model-ref="qwen/${id}"]`).exists()).toBe(false);
     }
     await wrapper.get('[data-more-models="qwen"]').trigger("click");
+    expect(wrapper.get('[data-model-ref="qwen/cmaas-qwen3.8-flash"]').isVisible()).toBe(true);
     expect(wrapper.get('[data-model-ref="qwen/qwen3.6-plus"]').isVisible()).toBe(true);
     expect(wrapper.emitted("change")).toBeUndefined();
   });

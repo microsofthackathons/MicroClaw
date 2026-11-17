@@ -6,7 +6,7 @@ import {
   isRecommendedProviderModel,
 } from "./provider-model-options";
 
-describe("Qwen model options", () => {
+describe("Provider model options", () => {
   it("only offers Qwen chat models, including namespaced and serving-prefixed aliases", () => {
     const models = [
       "MiniMax/MiniMax-M3.1-Flash",
@@ -64,16 +64,34 @@ describe("Qwen model options", () => {
     expect(getProviderCatalogOptions("qwen", [])).toEqual([]);
   });
 
-  it("does not filter other providers or rewrite their catalog order", () => {
-    const models = ["MiniMax-M3", "image-01", "qwen-image-2.1-pro", "private-model"];
+  it("does not filter MiniMax models or rewrite custom provider catalog order", () => {
+    const models = [
+      "MiniMax-M2.1",
+      "MiniMax-M3",
+      "MiniMax-M3.9",
+      "MiniMax-M3.10",
+      "MiniMax-M3.1-Flash",
+      "image-01",
+      "qwen-image-2.1-pro",
+      "private-model",
+    ];
 
-    expect(getProviderCatalogOptions("minimax", models)).toEqual(models);
+    expect(getProviderCatalogOptions("minimax", models)).toEqual([
+      "image-01",
+      "MiniMax-M3.10",
+      "MiniMax-M3.9",
+      "MiniMax-M3.1-Flash",
+      "MiniMax-M3",
+      "MiniMax-M2.1",
+      "private-model",
+      "qwen-image-2.1-pro",
+    ]);
     expect(getProviderCatalogOptions("custom", models)).toEqual(models);
     expect(isProviderModelVisible("llama-cpp", "local-model")).toBe(true);
     expect(isProviderModelVisible("github-copilot", "gpt-5.5")).toBe(true);
   });
 
-  it("features four available models, preferring canonical IDs over equivalent aliases", () => {
+  it("shows the five newest Qwen versions before overflow, including new catalog entries", () => {
     const models = Object.freeze(
       [
         "qwen3.8-max-2026-10-01",
@@ -83,46 +101,47 @@ describe("Qwen model options", () => {
         "qwen3.8-max",
         "qwen3.8-flash",
         "qwen3.6-plus",
+        "qwen3.9-plus",
+        "qwen3.10-plus",
       ].map((id) => ({ id, name: `Alias for ${id}` })),
     );
     const original = [...models];
     const sections = getProviderModelSections("qwen", models);
 
     expect(sections.primary.map((model) => model.id)).toEqual([
+      "qwen3.10-plus",
+      "qwen3.9-plus",
+      "qwen3.8-max-2026-10-01",
       "qwen3.8-max",
       "qwen3.8-flash",
-      "qwen3.7-plus",
-      "qwen3.5-plus",
     ]);
     expect(sections.more.map((model) => model.id)).toEqual([
-      "qwen3.8-max-2026-10-01",
       "cmaas-qwen3.8-flash",
+      "qwen3.7-plus",
       "qwen3.6-plus",
+      "qwen3.5-plus",
     ]);
     expect(models).toEqual(original);
     expect(new Set([...sections.primary, ...sections.more])).toEqual(new Set(models));
-    const selectedAlias = getProviderModelSections("qwen", models, "cmaas-qwen3.8-flash");
-    expect(selectedAlias.primary).toHaveLength(4);
-    expect(selectedAlias.primary[1].id).toBe("cmaas-qwen3.8-flash");
-    expect(selectedAlias.more.some((model) => model.id === "qwen3.8-flash")).toBe(true);
   });
 
-  it("keeps the selected model visible and never invents missing featured models", () => {
+  it("shows a short Qwen catalog in version order without inventing models", () => {
     const models = [
       { id: "cmaas-qwen3.8-flash" },
       { id: "Qwen/Qwen3.5-plus" },
       { id: "qwen3.6-plus" },
       { id: "qwen3.7-plus-2026-10-01" },
     ];
-    const sections = getProviderModelSections("qwen", models, "qwen3.6-plus");
+    const sections = getProviderModelSections("qwen", models);
 
     expect(sections.primary.map((model) => model.id)).toEqual([
-      "qwen3.6-plus",
       "cmaas-qwen3.8-flash",
+      "qwen3.7-plus-2026-10-01",
+      "qwen3.6-plus",
       "Qwen/Qwen3.5-plus",
     ]);
-    expect(sections.more).toEqual([models[3]]);
-    expect(getProviderModelSections("qwen", [], "missing")).toEqual({ primary: [], more: [] });
+    expect(sections.more).toEqual([]);
+    expect(getProviderModelSections("qwen", [])).toEqual({ primary: [], more: [] });
     expect(getProviderModelSections("minimax", models)).toEqual({ primary: models, more: [] });
     expect(isRecommendedProviderModel("qwen", "cmaas-qwen3.7-plus")).toBe(true);
     expect(isRecommendedProviderModel("qwen", models[3].id)).toBe(false);
