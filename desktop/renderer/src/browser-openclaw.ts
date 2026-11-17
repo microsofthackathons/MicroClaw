@@ -42,6 +42,7 @@ export function createBrowserOpenClawMock(): OpenClawAPI {
       read: async () => ({}),
       readEnv: async () => ({}),
       write: noopAsync,
+      onSearchProgress: noopSub,
       isConfigured: async () => true,
       initialSetupRequired: async () => false,
       needsSetup: async () => false,

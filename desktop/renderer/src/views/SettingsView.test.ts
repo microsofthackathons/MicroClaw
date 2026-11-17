@@ -2524,6 +2524,9 @@ describe("SettingsView", () => {
 });
 
 describe("SettingsView search autosave events", () => {
+  type ProgressListener = Parameters<OpenClawAPI["config"]["onSearchProgress"]>[0];
+  let emitSearchProgress: ProgressListener;
+  let unsubscribeProgress: ReturnType<typeof vi.fn>;
   function control(tag: "select" | "option" | "input") {
     return defineComponent({
       name: `Search${tag}Control`,
@@ -2615,8 +2618,16 @@ describe("SettingsView search autosave events", () => {
     });
     toast = vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: vi.fn() }));
     unsubscribeDisplay = vi.fn();
+    unsubscribeProgress = vi.fn();
     window.openclaw = {
-      config: { read, write },
+      config: {
+        read,
+        write,
+        onSearchProgress: vi.fn((listener: ProgressListener) => {
+          emitSearchProgress = listener;
+          return unsubscribeProgress;
+        }),
+      },
       model: {
         ...createBrowserOpenClawMock().model,
         listGitHubCopilotModels: vi.fn().mockResolvedValue([]),
@@ -2636,6 +2647,67 @@ describe("SettingsView search autosave events", () => {
   afterEach(() => {
     wrappers.forEach((wrapper) => wrapper.unmount());
     toast.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("shows real stages with elapsed time and stops observing on completion", async () => {
+    const wrapper = await mountSearch();
+    vi.useFakeTimers();
+    const pending = deferred<void>();
+    write.mockImplementationOnce(() => pending.promise);
+    await key(wrapper).trigger("blur");
+    await flushPromises();
+    const { requestId } = write.mock.calls[0][2];
+    expect(status(wrapper).text()).toBe("Preparing · 0s");
+    await vi.advanceTimersByTimeAsync(22_000);
+    expect(status(wrapper).text()).toBe("Preparing · 22s");
+    emitSearchProgress({ requestId: "unrelated", stage: "fetching" });
+    await flushPromises();
+    expect(status(wrapper).text()).toBe("Preparing · 22s");
+    emitSearchProgress({ requestId, stage: "installing" });
+    await flushPromises();
+    expect(status(wrapper).text()).toBe("Installing component · 22s");
+    pending.resolve();
+    await flushPromises();
+    expect(status(wrapper).text()).toBe("Saved");
+    expect(unsubscribeProgress).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    emitSearchProgress({ requestId, stage: "verifying" });
+    await flushPromises();
+    expect(status(wrapper).text()).toBe("Saved");
+  });
+
+  it("ignores progress for an edited form and cleans up when leaving during a write", async () => {
+    const wrapper = await mountSearch();
+    vi.useFakeTimers();
+    const pending = deferred<void>();
+    write.mockImplementationOnce(() => pending.promise);
+    await key(wrapper).trigger("blur");
+    await flushPromises();
+    const { requestId } = write.mock.calls[0][2];
+    await provider(wrapper).setValue("tavily");
+    const invalid = status(wrapper).text();
+    emitSearchProgress({ requestId, stage: "installing" });
+    await flushPromises();
+    expect(status(wrapper).text()).toBe(invalid);
+    expect(vi.getTimerCount()).toBe(0);
+    wrapper.unmount();
+    wrappers = [];
+    expect(unsubscribeProgress).toHaveBeenCalledOnce();
+    pending.resolve();
+    await flushPromises();
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it("stops the elapsed timer and subscription on failure", async () => {
+    const wrapper = await mountSearch();
+    vi.useFakeTimers();
+    write.mockRejectedValueOnce(new Error("installation failed"));
+    await key(wrapper).trigger("blur");
+    await flushPromises();
+    expect(status(wrapper).text()).toBe("Failed to save");
+    expect(unsubscribeProgress).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("loads the selected provider key from the Gateway plugin configuration", async () => {
@@ -2661,7 +2733,10 @@ describe("SettingsView search autosave events", () => {
     pending.resolve(structuredClone(config));
     await flushPromises();
     expect(write).toHaveBeenCalledOnce();
-    expect(write).toHaveBeenCalledWith(expect.anything(), original, { kind: "search-settings" });
+    expect(write).toHaveBeenCalledWith(expect.anything(), original, {
+      kind: "search-settings",
+      requestId: expect.any(String),
+    });
     expect(config).toMatchObject({
       unrelated: { keep: true },
       tools: {

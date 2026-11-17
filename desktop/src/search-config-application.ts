@@ -9,6 +9,7 @@ import {
   type SearchProviderGateway,
 } from "./search-provider-plugin";
 import { validateWindowsNodeMxcGatewayPolicy } from "./windows-node-mxc";
+import type { SearchSetupStage } from "./search-setup-progress";
 
 type JsonObject = Record<string, unknown>;
 
@@ -19,6 +20,7 @@ interface Dependencies {
   assertMxcReady(): Promise<void>;
   nodeId(): string;
   wait?(milliseconds: number): Promise<void>;
+  onProgress?(stage: SearchSetupStage): void;
 }
 
 function object(value: unknown): JsonObject {
@@ -132,6 +134,7 @@ export async function applySearchConfig(
   };
 
   assertCurrent();
+  deps.onProgress?.("preparing");
   assertModelConfigUnchanged(expected, deps.readConfig());
   const before = await snapshot();
   assertModelConfigUnchanged(expected, deps.readConfig());
@@ -139,7 +142,13 @@ export async function applySearchConfig(
   if (reload === "off" || reload === "restart")
     throw new Error("Web search settings require configuration hot reload; no restart attempted");
 
-  await ensureSearchProviderPlugin(gateway, search.provider, assertCurrent);
+  await ensureSearchProviderPlugin(
+    gateway,
+    search.provider,
+    assertCurrent,
+    undefined,
+    deps.onProgress,
+  );
   const current = object(deps.readConfig());
   if (
     !isDeepStrictEqual(
@@ -182,6 +191,7 @@ export async function applySearchConfig(
   }
   let result: JsonObject;
   try {
+    deps.onProgress?.("activating");
     result = object(
       await gateway.request(
         "config.apply",
@@ -217,6 +227,7 @@ export async function applySearchConfig(
       await (deps.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(500);
       assertCurrent();
     }
+    deps.onProgress?.("verifying");
     if (search.enabled !== false)
       await assertSearchProviderPluginActive(gateway, search.provider, assertCurrent);
     await deps.assertMxcReady();

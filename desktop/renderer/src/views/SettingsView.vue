@@ -450,7 +450,10 @@
         <div class="sub-label-row">
           <h3 class="sub-label">{{ t("settings.webSearch") }}</h3>
           <div class="sub-label-actions">
-            <span v-if="!searchConfigured" class="search-configuration-state">
+            <span
+              v-if="!searchConfigured && searchSaveStatus !== 'saving'"
+              class="search-configuration-state"
+            >
               {{ t("settings.searchNotConfigured") }}
             </span>
             <span
@@ -1023,6 +1026,7 @@ import {
   type ConfiguredModel,
 } from "@/utils/configured-models";
 import type { LocalModelFileStatus } from "../../../src/local-model-types";
+import type { SearchSetupStage } from "../../../src/search-setup-progress";
 import {
   createSearchAutosave,
   patchSearchConfig,
@@ -1811,13 +1815,44 @@ const searchConfigured = ref(false);
 type SearchSaveStatus = "idle" | "saving" | "saved" | "error" | "invalid";
 const searchSaveStatus = ref<SearchSaveStatus>("idle");
 const searchSaveError = ref("");
+const searchStage = ref<SearchSetupStage>("preparing");
+const searchElapsedSeconds = ref(0);
+const searchStageLabels: Record<SearchSetupStage, string> = {
+  preparing: "settings.searchPreparing",
+  fetching: "settings.searchFetching",
+  installing: "settings.searchInstalling",
+  activating: "settings.searchActivating",
+  verifying: "settings.searchVerifying",
+};
+let searchFormGeneration = 0;
+let searchProgressTimer: ReturnType<typeof setInterval> | undefined;
+let unsubscribeSearchProgress: (() => void) | undefined;
+watch(
+  searchSaveStatus,
+  (status) => {
+    clearInterval(searchProgressTimer);
+    searchProgressTimer = undefined;
+    if (status !== "saving") return;
+    searchStage.value = "preparing";
+    searchElapsedSeconds.value = 0;
+    const started = performance.now();
+    searchProgressTimer = setInterval(() => {
+      searchElapsedSeconds.value = Math.floor((performance.now() - started) / 1000);
+    }, 1000);
+  },
+  { flush: "sync" },
+);
 const searchSaveStatusClass = computed(() => {
   if (searchSaveStatus.value === "saved") return "status-indicator--ok";
   if (searchSaveStatus.value === "saving") return "status-indicator--muted";
   return "status-indicator--error";
 });
 const searchSaveStatusText = computed(() => {
-  if (searchSaveStatus.value === "saving") return t("settings.saving");
+  if (searchSaveStatus.value === "saving")
+    return t("settings.searchProgress", {
+      stage: t(searchStageLabels[searchStage.value]),
+      seconds: searchElapsedSeconds.value,
+    });
   if (searchSaveStatus.value === "saved") return t("settings.saved");
   if (searchSaveStatus.value === "invalid") return searchSaveError.value;
   if (searchSaveStatus.value === "error") return t("settings.searchSaveFailed");
@@ -1846,6 +1881,7 @@ const searchAutosave = createSearchAutosave({
 watch(
   [searchProvider, () => searchKeys[searchProvider.value]],
   () => {
+    searchFormGeneration += 1;
     searchAutosave.invalidate();
     searchSaveError.value = "";
     searchSaveStatus.value = "idle";
@@ -2166,6 +2202,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   searchAutosave.dispose();
+  clearInterval(searchProgressTimer);
+  unsubscribeSearchProgress?.();
   unsubscribeMxcDisplay?.();
   window.removeEventListener("focus", handleSettingsWindowFocus);
   copilotModelsGeneration += 1;
@@ -2432,12 +2470,31 @@ async function persistSearchConfig(
   request: SearchSaveRequest,
   canWrite: () => boolean,
 ): Promise<boolean> {
+  const generation = searchFormGeneration;
   const config = await window.openclaw.config.read();
   if (!canWrite()) return false;
-  await window.openclaw.config.write(patchSearchConfig(config, request), config, {
-    kind: "search-settings",
+  const requestId = crypto.randomUUID();
+  const unsubscribe = window.openclaw.config.onSearchProgress?.((progress) => {
+    if (
+      canWrite() &&
+      generation === searchFormGeneration &&
+      searchSaveStatus.value === "saving" &&
+      progress.requestId === requestId &&
+      Object.hasOwn(searchStageLabels, progress.stage)
+    )
+      searchStage.value = progress.stage;
   });
-  return true;
+  unsubscribeSearchProgress = unsubscribe;
+  try {
+    await window.openclaw.config.write(patchSearchConfig(config, request), config, {
+      kind: "search-settings",
+      requestId,
+    });
+    return true;
+  } finally {
+    unsubscribe?.();
+    if (unsubscribeSearchProgress === unsubscribe) unsubscribeSearchProgress = undefined;
+  }
 }
 
 // Capture and validate synchronously before any read, then serialize read/patch/write.

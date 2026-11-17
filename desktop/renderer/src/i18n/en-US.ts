@@ -595,6 +595,12 @@ export default {
   "settings.searchApiKeyRequired": "API key required",
   "settings.searchApiKeyFormatInvalid": "Check the key format",
   "settings.searchSaveFailed": "Failed to save",
+  "settings.searchProgress": "{stage} · {seconds}s",
+  "settings.searchPreparing": "Preparing",
+  "settings.searchFetching": "Fetching component",
+  "settings.searchInstalling": "Installing component",
+  "settings.searchActivating": "Enabling search",
+  "settings.searchVerifying": "Checking readiness",
   "settings.saveFailed": "Save failed: {error}",
   "settings.openLinkFailed": "Could not open the link: {error}",
   "settings.clearHistoryConfirm":
