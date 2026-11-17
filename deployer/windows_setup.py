@@ -4490,6 +4490,9 @@ class WindowsSetup:
                 with timing.phase("environment-preparation"):
                     environment = self._get_env()
                     environment.pop("ELECTRON_RUN_AS_NODE", None)
+                    # Match the extractor's eight file consumers before the helper
+                    # initializes libuv, while preserving an explicit user setting.
+                    environment.setdefault("UV_THREADPOOL_SIZE", "8")
                 with timing.phase("helper-process", summary=True):
                     try:
                         result = self._run(
