@@ -130,9 +130,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from "vue";
 import { t } from "@/i18n";
-import { getModelRef, providerName, type ConfiguredModel } from "@/utils/configured-models";
-import { sortModelsByFamily } from "@/utils/model-family-sort";
-import { getProviderModelSections, isProviderModelVisible } from "@/utils/provider-model-options";
+import { providerName, type ConfiguredModel } from "@/utils/configured-models";
+import {
+  getProviderModelSections,
+  isProviderModelVisible,
+  sortProviderModels,
+} from "@/utils/provider-model-options";
 import ModelMenuChoices from "./ModelMenuChoices.vue";
 import IconChevronDown from "./icons/IconChevronDown.vue";
 
@@ -161,9 +164,8 @@ const groups = computed(() => {
     grouped.set(model.providerKey, models);
   }
   return [...grouped].map(([key, models]) => {
-    const sorted = sortModelsByFamily(models, key === "qwen" ? "desc" : "asc");
-    const selected = sorted.find((model) => getModelRef(model) === props.selectedModel);
-    const sections = getProviderModelSections(key, sorted, selected?.id);
+    const sorted = sortProviderModels(key, models);
+    const sections = getProviderModelSections(key, sorted);
     const ranked = [...sections.primary, ...sections.more];
     return { key, frequent: ranked.slice(0, 5), remaining: ranked.slice(5) };
   });
