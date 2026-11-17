@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
-import { waitForDefaultModelApplied } from "./model-setup";
+import { assertModelConfigUnchanged, waitForDefaultModelApplied } from "./model-setup";
+import { prepareDefaultModelWrite } from "./default-model-write";
 import { isLoopbackAddress } from "./model-connection";
 import { inspectLocalModelFiles, inspectManagedLocalModelCache } from "./local-model-files";
 import {
@@ -942,12 +943,22 @@ export class LocalModelService {
       await this.requireReady();
       const context = this.detectionContext();
       const agentId = await this.defaultAgent(context.gateway);
+      const originalConfig = structuredClone(this.deps.readConfig());
       const snapshot = record(await context.gateway.request("config.get", {}));
       if (snapshot.valid !== true) throw new Error("The Gateway configuration is invalid");
       assertConfigHotReload(snapshot.config);
       const patch = buildLocalModelSelectionPatch(snapshot.config, modelRef);
       this.assertModelFilesPresent(snapshot.config, modelRef);
       const baseHash = text(snapshot.hash);
+      const write = prepareDefaultModelWrite({
+        gateway: context.gateway,
+        originalConfig,
+        modelRef,
+        baseHash,
+        patch,
+      });
+      if (write.method === "config.set")
+        assertModelConfigUnchanged(originalConfig, this.deps.readConfig());
       this.assertDetectionCurrent(context);
       this.deps.assertMutable();
       const receipt: LocalModelReceipt = {
@@ -974,23 +985,19 @@ export class LocalModelService {
       this.drive(async (gateway) => {
         this.deps.assertMutable();
         this.assertModelFilesPresent(this.deps.readConfig(), modelRef);
-        const result = record(
-          await gateway.request(
-            "config.patch",
-            {
-              raw: JSON.stringify(patch),
-              baseHash,
-            },
-            NEXT_TIMEOUT_MS,
-          ),
-        );
+        if (write.method === "config.set")
+          assertModelConfigUnchanged(originalConfig, this.deps.readConfig());
+        const result = record(await gateway.request(write.method, write.params, NEXT_TIMEOUT_MS));
         if (result.ok !== true) throw new Error("The model selection could not be saved");
         if (selectedDefault(result.config) !== modelRef) {
           throw new Error("The saved model does not match the selected model");
         }
         const stats = optionalRecord(optionalRecord(optionalRecord(result.sentinel).payload).stats);
         if (stats.requiresRestart === true) await this.reloadProvider(gateway);
-        await this.waitForSelectionApplied(modelRef);
+        await this.waitForSelectionApplied(
+          modelRef,
+          write.method === "config.set" ? text(result.hash) : undefined,
+        );
         this.finish({ phase: "ready", modelRef });
       });
       return this.getOperation()!;
@@ -1297,13 +1304,16 @@ export class LocalModelService {
     }
   }
 
-  private async waitForSelectionApplied(modelRef: string): Promise<void> {
+  private async waitForSelectionApplied(modelRef: string, writtenHash?: string): Promise<void> {
     this.publish({ phase: "applying", step: undefined, error: undefined });
-    const applied = await waitForDefaultModelApplied(modelRef, () => {
+    const applied = await waitForDefaultModelApplied(modelRef, async (timeoutMs) => {
       if (this.receipt?.gatewayIdentity !== this.deps.identity()) {
         throw new Error("The Gateway identity changed; reconnect to the original Gateway");
       }
-      return this.gateway().request("config.get", {});
+      const current = record(await this.gateway().request("config.get", {}, timeoutMs));
+      if (writtenHash && current.hash !== writtenHash)
+        throw new Error("The configuration changed while applying the local model");
+      return current;
     });
     if (!applied) {
       throw new ModelApplicationPendingError(

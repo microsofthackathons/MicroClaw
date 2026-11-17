@@ -53,7 +53,7 @@ export const MANAGED_MODEL_PROVIDERS: ManagedModelProvider[] = [
     ],
     defaultModel: "MiniMax-M3",
     apiKeyPlaceholder: "sk-...",
-    signupUrl: "https://platform.minimaxi.com/byok-trial?source=microclaw",
+    signupUrl: "https://platform.minimax.cn/console/plan",
   },
 ];
 

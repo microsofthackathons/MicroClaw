@@ -287,6 +287,79 @@ function fixture(initialReceipt?: LocalModelReceipt) {
   };
 }
 
+describe("lightweight local default selection", () => {
+  function fastFixture() {
+    const f = fixture();
+    f.gateway.serverVersion = "2026.10.10";
+    f.gateway.methods = [...f.gateway.methods, "config.set"];
+    f.plugin({ version: LOCAL_MODEL_PLUGIN_VERSION });
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params, timeout) => {
+      if (method === "config.set") {
+        const values = params as { baseHash: string; raw: string };
+        const before = (await original("config.get")) as { hash: string };
+        expect(values.baseHash).toBe(before.hash);
+        f.config(JSON.parse(values.raw));
+        const saved = (await original("config.get")) as { hash: string; config: unknown };
+        return { ok: true, hash: saved.hash, config: saved.config };
+      }
+      return original(method, params, timeout);
+    });
+    return f;
+  }
+
+  it("sets only the checked local selection on the current runtime", async () => {
+    const f = fastFixture();
+    const before = structuredClone(f.readConfig()) as Record<string, unknown>;
+    await f.service.activate({ kind: "existing-model", modelRef: MODEL });
+    await waitPhase(f, "ready");
+    expect(f.request.mock.calls.filter(([method]) => method === "config.set")).toHaveLength(1);
+    expect(f.request.mock.calls.some(([method]) => method === "config.patch")).toBe(false);
+    expect((f.readConfig() as Record<string, unknown>).models).toEqual(before.models);
+  });
+
+  it("retains file checks before the lightweight local write", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "microclaw-missing-fast-selection-"));
+    try {
+      const f = fastFixture();
+      f.config({
+        models: {
+          providers: {
+            "llama-cpp": {
+              baseUrl: "http://localhost:8080/v1",
+              localService: { command: "llama-server.exe" },
+              models: [
+                { id: "test-model", params: { modelPath: path.join(root, "missing.gguf") } },
+              ],
+            },
+          },
+        },
+      });
+      await expect(f.service.activate({ kind: "existing-model", modelRef: MODEL })).rejects.toThrow(
+        "files are missing",
+      );
+      expect(f.request.mock.calls.some(([method]) => method === "config.set")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a lost lightweight write reply without submitting another write", async () => {
+    const f = fastFixture();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      if (method === "config.set") throw new Error("disconnected after config commit");
+      return result;
+    });
+    await f.service.activate({ kind: "existing-model", modelRef: MODEL });
+    await waitPhase(f, "interrupted");
+    await f.service.resume();
+    await waitPhase(f, "ready");
+    expect(f.request.mock.calls.filter(([method]) => method === "config.set")).toHaveLength(1);
+  });
+});
+
 async function waitPhase(f: ReturnType<typeof fixture>, phase: LocalModelOperation["phase"]) {
   await vi.waitFor(() => expect(f.service.getOperation()?.phase).toBe(phase));
   await Promise.resolve();
