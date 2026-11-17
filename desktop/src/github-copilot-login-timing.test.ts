@@ -198,10 +198,17 @@ describe("Copilot login timing", () => {
         compileCacheDir: path.join(root, "cache"),
       });
       try {
-        await vi.waitFor(() => expect(events.some((event) => event.status === "code")).toBe(true));
+        // These assertions verify lifecycle outcomes, not cold process startup speed.
+        // Allow parallel Windows test workers enough time to start and exit.
+        const workerWait = { timeout: 10_000 };
+        await vi.waitFor(
+          () => expect(events.some((event) => event.status === "code")).toBe(true),
+          workerWait,
+        );
         if (outcome === "cancelled") await manager.cancel(sessionId);
-        await vi.waitFor(() =>
-          expect(records.some((record) => record.phase === "worker-exit")).toBe(true),
+        await vi.waitFor(
+          () => expect(records.some((record) => record.phase === "worker-exit")).toBe(true),
+          workerWait,
         );
         expect(events.at(-1)?.status).toBe(outcome === "failure" ? "error" : outcome);
         for (const phase of [
@@ -236,5 +243,6 @@ describe("Copilot login timing", () => {
         await manager.stop();
       }
     },
+    30_000,
   );
 });
