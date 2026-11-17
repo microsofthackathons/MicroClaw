@@ -40,6 +40,75 @@ function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 }
 
+/** Connection edits/removal leave all other providers, model references and plugins alone. */
+function isManagedProviderConnectionUpdate(params: ModelConfigUpdate): boolean {
+  if (
+    !["provider-save", "provider-remove"].includes(params.action) ||
+    !["qwen", "minimax"].includes(params.providerKey)
+  )
+    return false;
+  const providerMap = (config: unknown) => object(object(object(config).models).providers);
+  const previousProviders = providerMap(params.expectedConfig);
+  const nextProviders = providerMap(params.config);
+  if (params.action === "provider-remove") {
+    if (
+      !Object.hasOwn(previousProviders, params.providerKey) ||
+      Object.hasOwn(nextProviders, params.providerKey)
+    )
+      return false;
+    const agents = object(object(params.config).agents);
+    const scopes = [
+      agents.defaults,
+      ...Object.values(object(agents.entries)),
+      ...(Array.isArray(agents.list) ? agents.list : []),
+    ];
+    const refersToProvider = (value: unknown) =>
+      typeof value === "string" && value.startsWith(`${params.providerKey}/`);
+    if (
+      scopes.some((scope) => {
+        const current = object(scope);
+        const selector = object(current.model);
+        return (
+          refersToProvider(current.model) ||
+          refersToProvider(selector.primary) ||
+          (Array.isArray(selector.fallbacks) && selector.fallbacks.some(refersToProvider)) ||
+          Object.keys(object(current.models)).some(refersToProvider)
+        );
+      })
+    )
+      return false;
+  } else {
+    const next = object(nextProviders[params.providerKey]);
+    if (
+      typeof next.apiKey !== "string" ||
+      typeof next.baseUrl !== "string" ||
+      typeof next.api !== "string"
+    )
+      return false;
+    const withoutConnection = (value: unknown) => {
+      const result: JsonObject = { ...object(value), models: object(value).models ?? [] };
+      for (const field of ["apiKey", "baseUrl", "api"]) delete result[field];
+      return result;
+    };
+    if (
+      !isDeepStrictEqual(
+        withoutConnection(previousProviders[params.providerKey]),
+        withoutConnection(next),
+      )
+    )
+      return false;
+  }
+  const withoutProvider = (value: unknown) => {
+    const config = structuredClone(object(value));
+    const models = object(config.models);
+    const providers = object(models.providers);
+    delete providers[params.providerKey];
+    config.models = { ...models, mode: models.mode ?? "merge", providers };
+    return config;
+  };
+  return isDeepStrictEqual(withoutProvider(params.expectedConfig), withoutProvider(params.config));
+}
+
 export function parseModelConfigUpdate(input: unknown): ModelConfigUpdate {
   const params = object(input);
   if (
@@ -69,6 +138,7 @@ export async function applyModelConfig(deps: Dependencies, input: unknown): Prom
     context: `[model-config] action=${params.action} provider=${params.providerKey}`,
     note: `${params.action}: ${params.providerKey}`,
     label: "model",
+    connectionProvider: isManagedProviderConnectionUpdate(params) ? params.providerKey : undefined,
   });
 }
 
@@ -80,6 +150,7 @@ export async function applyGatewayConfiguration(
     context: string;
     note: string;
     label: "model" | "plugin";
+    connectionProvider?: string;
   },
 ): Promise<void> {
   deps.assertMutable();
@@ -110,6 +181,17 @@ export async function applyGatewayConfiguration(
   assertModelConfigUnchanged(params.expectedConfig, deps.readConfig());
   if (snapshot.valid !== true || typeof snapshot.hash !== "string" || !snapshot.hash)
     throw new Error("The Gateway configuration is unavailable or invalid");
+  const reloadMode = object(object(object(params.expectedConfig).gateway).reload).mode;
+  // Verified against the pinned 2026.10.10 handler. Older runtimes retain config.apply.
+  // config.set still validates and revision-guards the write; the loop below confirms
+  // the exact runtime revision before the surrounding MXC transaction can resume.
+  const useConnectionSet = Boolean(
+    params.connectionProvider &&
+    gateway.serverVersion?.split("+", 1)[0] === "2026.10.10" &&
+    gateway.methods.includes("config.set") &&
+    (reloadMode === undefined || reloadMode === "hot" || reloadMode === "hybrid"),
+  );
+  const writeMethod = useConnectionSet ? "config.set" : "config.apply";
   let targetHash = snapshot.hash;
   const assertRequestedPluginsSaved = () => {
     if (
@@ -118,16 +200,16 @@ export async function applyGatewayConfiguration(
     )
       throw new Error("The saved plugin settings do not match the requested settings");
   };
-  deps.log(`${context} status=applying`);
+  deps.log(`${context} status=applying method=${writeMethod}`);
   try {
     if (!isDeepStrictEqual(params.config, params.expectedConfig)) {
       const result = object(
         await gateway.request(
-          "config.apply",
+          writeMethod,
           {
             baseHash: snapshot.hash,
             raw: JSON.stringify(params.config),
-            note: params.note,
+            ...(useConnectionSet ? {} : { note: params.note }),
           },
           MODEL_APPLY_SETTLE_TIMEOUT_MS,
         ),
@@ -157,6 +239,22 @@ export async function applyGatewayConfiguration(
         applied.appliedConfigHash === applied.configRevisionHash
       ) {
         assertRequestedPluginsSaved();
+        if (useConnectionSet) {
+          const providers = (config: unknown) => object(object(object(config).models).providers);
+          const savedProviders = providers(deps.readConfig());
+          const expectedProviders = providers(params.config);
+          const providerKey = params.connectionProvider!;
+          const saved = object(savedProviders[providerKey]);
+          const expected = object(expectedProviders[providerKey]);
+          if (
+            Object.hasOwn(savedProviders, providerKey) !==
+              Object.hasOwn(expectedProviders, providerKey) ||
+            !["apiKey", "baseUrl", "api"].every((field) =>
+              isDeepStrictEqual(saved[field], expected[field]),
+            )
+          )
+            throw new Error("The saved provider connection does not match the requested settings");
+        }
         deps.log(`${context} status=hot-applied`);
         return;
       }

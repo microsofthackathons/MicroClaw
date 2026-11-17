@@ -7,9 +7,9 @@ describe("MANAGED_MODEL_PROVIDERS", () => {
     expect(provider?.signupUrl).toBe("https://click.qianwenai.com/m/20000000741/");
   });
 
-  it("keeps MiniMax campaign signup separate from its API endpoint", () => {
+  it("opens the MiniMax console plan page for API key signup", () => {
     const provider = MANAGED_MODEL_PROVIDERS.find((entry) => entry.id === "minimax");
-    expect(provider?.signupUrl).toBe("https://platform.minimaxi.com/byok-trial?source=microclaw");
+    expect(provider?.signupUrl).toBe("https://platform.minimax.cn/console/plan");
     expect(provider?.baseUrl).toBe("https://api.minimax.cn/v1");
   });
 

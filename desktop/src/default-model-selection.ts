@@ -1,4 +1,5 @@
 import { GatewayRequestError } from "./gateway-client";
+import { prepareDefaultModelWrite } from "./default-model-write";
 import { assertChatModelSupported } from "./provider-model-capabilities";
 import { prepareProviderCatalogModelPatch } from "./provider-model-registration";
 import type { ProviderCatalogInput, ProviderCatalogResult } from "./provider-model-catalog";
@@ -142,16 +143,18 @@ export async function selectDefaultModel(
       throw new Error("The selected model is not configured");
   }
   assertModelConfigUnchanged(expectedConfig, deps.readConfig());
+  let writtenHash: string | undefined;
   if (catalogPatch || getPrimaryModel(config) !== ref) {
+    const write = prepareDefaultModelWrite({
+      gateway,
+      originalConfig: expectedConfig,
+      modelRef: ref,
+      baseHash: snapshot.hash,
+      patch: { ...catalogPatch, agents: { defaults: { model: { primary: ref } } } },
+    });
     let result: Record<string, unknown>;
     try {
-      result = await request("config.patch", {
-        baseHash: snapshot.hash,
-        raw: JSON.stringify({
-          ...catalogPatch,
-          agents: { defaults: { model: { primary: ref } } },
-        }),
-      });
+      result = await request(write.method, write.params);
     } catch (cause) {
       if (
         cause instanceof GatewayRequestError &&
@@ -167,6 +170,11 @@ export async function selectDefaultModel(
       throw new Error(
         "The saved default model could not be confirmed; reload settings before retrying",
       );
+    if (write.method === "config.set") {
+      if (typeof result.hash !== "string" || !result.hash)
+        throw new Error("The saved default model revision could not be confirmed");
+      writtenHash = result.hash;
+    }
     if (catalogPatch) {
       const savedProvider = object(
         object(object(object(result.config).models).providers)[providerId],
@@ -182,9 +190,12 @@ export async function selectDefaultModel(
       throw new ModelConfigRestartRequiredError(typeof result.hash === "string" ? result.hash : "");
   }
   try {
-    const applied = await waitForDefaultModelApplied(ref, (timeoutMs) =>
-      request("config.get", {}, timeoutMs),
-    );
+    const applied = await waitForDefaultModelApplied(ref, async (timeoutMs) => {
+      const current = await request("config.get", {}, timeoutMs);
+      if (writtenHash && current.hash !== writtenHash)
+        throw new Error("The configuration changed while applying the default model");
+      return current;
+    });
     if (!applied) throw new Error("The Gateway is still applying the saved model settings");
   } catch (cause) {
     throw new Error(

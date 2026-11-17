@@ -81,6 +81,107 @@ function fixture(target = "cloud/b") {
 afterEach(() => vi.useRealTimers());
 
 describe("default model hot selection", () => {
+  function fastFixture(target = "cloud/b") {
+    const f = fixture(target);
+    f.gateway.serverVersion = "2026.10.10";
+    f.gateway.methods.push("config.set");
+    f.request.mockImplementation(async (method, params) => {
+      if (method === "config.set") {
+        expect(params?.baseHash).toBe("revision");
+        Object.assign(f.config, JSON.parse(String(params?.raw)));
+        return { ok: true, hash: "revision", config: structuredClone(f.config) };
+      }
+      return f.handle(method, params);
+    });
+    return f;
+  }
+
+  it("uses lightweight writes on the verified runtime without replacing fallbacks or agent selections", async () => {
+    const f = fastFixture();
+    await expect(f.select()).resolves.toEqual({ modelRef: "cloud/b" });
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "config.set",
+      "config.get",
+    ]);
+    expect(f.config.agents.defaults.model.fallbacks).toEqual(
+      f.before.agents.defaults.model.fallbacks,
+    );
+    expect(f.config.agents.entries).toEqual(f.before.agents.entries);
+    expect(f.config.models).toEqual(f.before.models);
+  });
+
+  it("uses the unredacted source while the Gateway returns masked credentials", async () => {
+    const f = fastFixture();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params) => {
+      const result = (await original(method, params)) as Record<string, unknown>;
+      if (method === "config.get") {
+        const view = result.config as typeof f.config;
+        view.models.providers.cloud.apiKey = "__OPENCLAW_REDACTED__";
+      }
+      return result;
+    });
+    await f.select();
+    expect(f.config.models.providers.cloud.apiKey).toBe("fixture-only");
+  });
+
+  it("retains Copilot authentication and prepared catalog checks before the lightweight write", async () => {
+    const f = fastFixture("github-copilot/gpt-6-sol");
+    await f.select();
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "models.authStatus",
+      "models.list",
+      "config.set",
+      "config.get",
+    ]);
+    expect(f.config.auth).toEqual(f.before.auth);
+  });
+
+  it("waits for the lightweight selection to be applied", async () => {
+    vi.useFakeTimers();
+    const f = fastFixture();
+    f.setApplied(false);
+    let done = false;
+    const pending = f.select().then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(done).toBe(false);
+    f.setApplied(true);
+    await vi.advanceTimersByTimeAsync(500);
+    await pending;
+    expect(done).toBe(true);
+  });
+
+  it("refuses an unexpected revision after the lightweight write", async () => {
+    const f = fastFixture();
+    const original = f.request.getMockImplementation()!;
+    let written = false;
+    f.request.mockImplementation(async (method, params) => {
+      const result = (await original(method, params)) as Record<string, unknown>;
+      if (method === "config.set") written = true;
+      else if (method === "config.get" && written) result.hash = "other-revision";
+      return result;
+    });
+    await expect(f.select()).rejects.toMatchObject({
+      cause: { message: "The configuration changed while applying the default model" },
+    });
+    expect(f.request.mock.calls.filter(([method]) => method === "config.set")).toHaveLength(1);
+  });
+
+  it("does not repeat a lightweight write after a lost reply", async () => {
+    const f = fastFixture();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params) => {
+      const result = await original(method, params);
+      if (method === "config.set") throw new Error("Lost reply");
+      return result;
+    });
+    await expect(f.select()).rejects.toThrow("No retry or rollback");
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(["config.get", "config.set"]);
+  });
   it("rejects realtime models before any default-model RPC", async () => {
     const f = fixture("qwen/qwen3.8-omni-flash-realtime");
     await expect(f.select()).rejects.toThrow("UNSUPPORTED_CHAT_MODEL");

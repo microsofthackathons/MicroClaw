@@ -70,6 +70,236 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("applyModelConfig", () => {
+  function connectionFixture(providerKey = "minimax") {
+    const state = fixture();
+    state.gateway.serverVersion = "2026.10.10";
+    state.gateway.methods.push("config.set");
+    const request = state.gateway.request.getMockImplementation()!;
+    state.gateway.request.mockImplementation((method, params) =>
+      request(method === "config.set" ? "config.apply" : method, params),
+    );
+    const config = structuredClone(state.input.expectedConfig) as {
+      models: { providers: Record<string, unknown> };
+    };
+    config.models.providers[providerKey] = {
+      apiKey: "new-fixture-key",
+      baseUrl: "https://provider.example/v1",
+      api: "openai-completions",
+      models: [],
+    };
+    state.input = { ...state.input, config, providerKey };
+    return state;
+  }
+
+  it("saves only a new provider connection through config.set and verifies its applied revision", async () => {
+    const state = connectionFixture();
+    await applyModelConfig(state.deps, state.input);
+    expect(state.gateway.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "config.set",
+      "config.get",
+    ]);
+    expect(state.gateway.request).toHaveBeenCalledWith(
+      "config.set",
+      {
+        baseHash: "before",
+        raw: JSON.stringify(state.input.config),
+      },
+      30_000,
+    );
+    expect(state.saved()).toEqual(state.input.config);
+    expect(JSON.stringify(state.deps.log.mock.calls)).not.toContain("new-fixture-key");
+  });
+
+  it("accepts the default merge mode added with a new connection", async () => {
+    const state = connectionFixture();
+    (state.input.config as { models: Record<string, unknown> }).models.mode = "merge";
+    await applyModelConfig(state.deps, state.input);
+    expect(state.gateway.request.mock.calls.some(([method]) => method === "config.set")).toBe(true);
+  });
+
+  it("updates a Qwen key while preserving its registered models and default", async () => {
+    const state = connectionFixture("qwen");
+    const before = state.input.expectedConfig as {
+      models: { providers: { qwen: { models: unknown[] } } };
+    };
+    const next = state.input.config as { models: { providers: { qwen: { models: unknown[] } } } };
+    next.models.providers.qwen.models = structuredClone(before.models.providers.qwen.models);
+    await applyModelConfig(state.deps, state.input);
+    expect(state.gateway.request.mock.calls.some(([method]) => method === "config.set")).toBe(true);
+    expect(state.saved()).toEqual(state.input.config);
+  });
+
+  it.each([
+    "old-runtime",
+    "missing-method",
+    "restart-mode",
+    "model-selection",
+    "catalog-change",
+    "plugin-change",
+    "other-provider",
+  ])("retains config.apply for %s", async (reason) => {
+    const state = connectionFixture(reason === "other-provider" ? "custom" : "minimax");
+    if (reason === "old-runtime") state.gateway.serverVersion = "2026.10.5";
+    if (reason === "missing-method") state.gateway.methods = ["config.get", "config.apply"];
+    if (reason === "restart-mode") {
+      for (const config of [state.input.expectedConfig, state.input.config, state.saved()])
+        (config as { gateway: Record<string, unknown> }).gateway.reload = { mode: "restart" };
+    }
+    if (reason === "model-selection")
+      (
+        state.input.config as { agents: { defaults: { model: { primary: string } } } }
+      ).agents.defaults.model.primary = "minimax/new";
+    if (reason === "catalog-change")
+      (
+        state.input.config as { models: { providers: { minimax: { models: unknown[] } } } }
+      ).models.providers.minimax.models = [{ id: "new" }];
+    if (reason === "plugin-change")
+      (state.input.config as Record<string, unknown>).plugins = {
+        entries: { minimax: { enabled: true } },
+      };
+    await applyModelConfig(state.deps, state.input);
+    expect(state.gateway.request.mock.calls.some(([method]) => method === "config.apply")).toBe(
+      true,
+    );
+    expect(state.gateway.request.mock.calls.some(([method]) => method === "config.set")).toBe(
+      false,
+    );
+  });
+
+  it("waits for config.set to become effective before reporting success", async () => {
+    vi.useFakeTimers();
+    const state = connectionFixture();
+    state.setApplied(false);
+    const pending = applyModelConfig(state.deps, state.input);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(state.deps.log).not.toHaveBeenCalledWith(expect.stringContaining("hot-applied"));
+    state.setApplied(true);
+    await vi.advanceTimersByTimeAsync(500);
+    await pending;
+    expect(state.deps.log).toHaveBeenLastCalledWith(expect.stringContaining("hot-applied"));
+  });
+
+  it("does not report success for a receipt that did not persist the requested connection", async () => {
+    const state = connectionFixture();
+    state.gateway.request.mockImplementation(async (method) =>
+      method === "config.set" ? { ok: true, hash: "before" } : state.snapshot(),
+    );
+    await expect(applyModelConfig(state.deps, state.input)).rejects.toMatchObject({
+      cause: { message: "The saved provider connection does not match the requested settings" },
+    });
+  });
+
+  it("never replays config.set after losing its response", async () => {
+    const state = connectionFixture();
+    state.gateway.request
+      .mockResolvedValueOnce(state.snapshot())
+      .mockRejectedValueOnce(new Error("Lost response"));
+    await expect(applyModelConfig(state.deps, state.input)).rejects.toThrow("No restart or retry");
+    expect(state.gateway.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "config.set",
+    ]);
+  });
+
+  async function removalFixture() {
+    const state = connectionFixture();
+    await applyModelConfig(state.deps, state.input);
+    state.gateway.request.mockClear();
+    state.deps.log.mockClear();
+    const expectedConfig = structuredClone(state.saved());
+    const config = structuredClone(expectedConfig) as {
+      models: { providers: Record<string, unknown> };
+    };
+    delete config.models.providers.minimax;
+    state.input = { config, expectedConfig, action: "provider-remove", providerKey: "minimax" };
+    return state;
+  }
+
+  it("removes an unused provider and its key through the verified lightweight write", async () => {
+    const state = await removalFixture();
+    await applyModelConfig(state.deps, state.input);
+    expect(state.gateway.request.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "config.set",
+      "config.get",
+    ]);
+    expect(state.saved()).toEqual(state.input.config);
+  });
+
+  it.each([
+    "default-change",
+    "agent-change",
+    "other-provider",
+    "plugin-change",
+    "retained-primary",
+    "retained-fallback",
+    "retained-catalog",
+  ])("retains the complete application path for removal with %s", async (reason) => {
+    const state = await removalFixture();
+    const next = state.input.config as {
+      models: { providers: Record<string, unknown> };
+      agents: {
+        defaults: { model: { primary: string } };
+        entries?: Record<string, unknown>;
+        list?: unknown[];
+      };
+      plugins?: unknown;
+    };
+    if (reason === "default-change") next.agents.defaults.model.primary = "qwen/replacement";
+    if (reason === "agent-change") next.agents.entries = { writer: { model: "qwen/old" } };
+    if (reason === "other-provider") delete next.models.providers.qwen;
+    if (reason === "plugin-change") next.plugins = { entries: { minimax: { enabled: false } } };
+    if (reason.startsWith("retained-")) {
+      for (const config of [state.input.expectedConfig, state.input.config, state.saved()] as Array<
+        typeof next
+      >) {
+        if (reason === "retained-primary") config.agents.defaults.model.primary = "minimax/one";
+        if (reason === "retained-fallback")
+          config.agents.entries = { writer: { model: { fallbacks: ["minimax/one"] } } };
+        if (reason === "retained-catalog")
+          config.agents.list = [{ id: "writer", models: { "minimax/one": {} } }];
+      }
+    }
+    await applyModelConfig(state.deps, state.input);
+    expect(state.gateway.request.mock.calls.some(([method]) => method === "config.apply")).toBe(
+      true,
+    );
+    expect(state.gateway.request.mock.calls.some(([method]) => method === "config.set")).toBe(
+      false,
+    );
+  });
+
+  it("does not claim removal when a provider remains present even without connection fields", async () => {
+    const state = await removalFixture();
+    const request = state.gateway.request.getMockImplementation()!;
+    state.gateway.request.mockImplementation(async (method, params) => {
+      if (method === "config.set") {
+        const config = JSON.parse(String(params?.raw));
+        config.models.providers.minimax = {};
+        return request(method, { ...params, raw: JSON.stringify(config) });
+      }
+      return request(method, params);
+    });
+    await expect(applyModelConfig(state.deps, state.input)).rejects.toMatchObject({
+      cause: { message: "The saved provider connection does not match the requested settings" },
+    });
+    expect(state.deps.log).not.toHaveBeenCalledWith(expect.stringContaining("hot-applied"));
+  });
+
+  it("does not report removal before the runtime revision settles", async () => {
+    vi.useFakeTimers();
+    const state = await removalFixture();
+    state.setApplied(false);
+    const pending = applyModelConfig(state.deps, state.input);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(state.deps.log).not.toHaveBeenCalledWith(expect.stringContaining("hot-applied"));
+    state.setApplied(true);
+    await vi.advanceTimersByTimeAsync(500);
+    await pending;
+    expect(state.saved()).toEqual(state.input.config);
+  });
+
   it("applies Copilot activation through the MXC model transaction", async () => {
     const state = fixture();
     const next = structuredClone(state.input.expectedConfig) as Record<string, unknown>;
