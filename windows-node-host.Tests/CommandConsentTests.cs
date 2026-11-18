@@ -24,6 +24,19 @@ public sealed class CommandConsentTests : IDisposable
         CommandConsent.Request(argv, _root, 10_000, "main", "agent:main:test");
 
     [Fact]
+    public void ConsentRequestOmitsTimeoutForUpstreamValidationButPreservesFiniteTimeout()
+    {
+        var command = new[] { Path.Combine(Environment.SystemDirectory, "hostname.exe") };
+        var noTimeout = CommandConsent.Request(command, _root, null, "main", "agent:main:test");
+        var finiteTimeout = CommandConsent.Request(command, _root, 10_000, "main", "agent:main:test");
+
+        Assert.False(noTimeout.Args.TryGetProperty("timeoutMs", out _));
+        Assert.True(ExecApprovalV2InputValidator.Validate(noTimeout).IsValid);
+        Assert.Equal(10_000, finiteTimeout.Args.GetProperty("timeoutMs").GetInt32());
+        Assert.True(ExecApprovalV2InputValidator.Validate(finiteTimeout).IsValid);
+    }
+
+    [Fact]
     public async Task PreparationDoesNotRememberAndPolicyCannotApproveAMiss()
     {
         await _consent.SetModeAsync(CommandConsent.AskWhenNeeded);

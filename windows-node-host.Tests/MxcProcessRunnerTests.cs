@@ -1,11 +1,21 @@
 using System.Diagnostics;
 using Microsoft.Mxc.Sdk.V1;
 using MicroClaw.WindowsNodeHost;
+using OpenClaw.Shared;
 
 namespace MicroClaw.WindowsNodeHost.Tests;
 
 public sealed class MxcProcessRunnerTests
 {
+    [Fact]
+    public void MxcNoTimeoutWorkloadDisablesTheExecutorDeadline()
+    {
+        var workload = new MxcNoTimeoutRunner.UnboundedCommand(new CommandRequest());
+
+        Assert.Equal(0, workload.TimeoutMs);
+        Assert.Equal(Timeout.Infinite, workload.ExecutionTimeout(600_000));
+    }
+
     [Fact]
     public async Task TrackerRequiresACompletedWaitAndDisposal()
     {

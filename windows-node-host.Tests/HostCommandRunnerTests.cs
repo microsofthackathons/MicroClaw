@@ -79,11 +79,23 @@ public sealed class HostCommandRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task CanonicalCmdDoesNotApplyADeadlineWhenTimeoutIsZero()
+    {
+        var result = await HostCommandRunner.RunAsync(
+            Cmd("ping -n 3 127.0.0.1 >nul & echo completed", timeoutMs: 0),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.TimedOut);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("completed", result.Stdout);
+    }
+
+    [Fact]
     public async Task CancellationStopsCanonicalCmd()
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            HostCommandRunner.RunAsync(Cmd("ping -n 30 127.0.0.1 >nul"), cancellation.Token));
+            HostCommandRunner.RunAsync(Cmd("ping -n 30 127.0.0.1 >nul", timeoutMs: 0), cancellation.Token));
     }
 
     [Fact]
