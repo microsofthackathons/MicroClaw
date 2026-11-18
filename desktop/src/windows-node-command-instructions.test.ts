@@ -4,6 +4,8 @@ import {
   WINDOWS_NODE_ACCESS_INSTRUCTIONS,
   WINDOWS_NODE_GIT_INSTRUCTIONS,
   WINDOWS_NODE_MEMORY_INSTRUCTIONS,
+  WINDOWS_NODE_MXC_FILESYSTEM_INSTRUCTIONS,
+  WINDOWS_NODE_MXC_POWERSHELL_OPERATIONS_INSTRUCTIONS,
   WINDOWS_NODE_PERMISSION_DENIED_INSTRUCTIONS,
   WINDOWS_NODE_POWERSHELL_QUOTING_INSTRUCTIONS,
   WINDOWS_NODE_POWERSHELL_SCRATCH_INSTRUCTIONS,
@@ -27,17 +29,66 @@ Windows Node decides whether a command can be remembered. CMD built-ins and
 inline PowerShell generally require one-use approval; do not rewrite commands
 to bypass this. MXC folder grants remain independent of command consent.
 `;
+  const previousMxcTransport = `## Windows Node command transport
 
-  it("replaces a recognized generated section without changing surrounding content", () => {
-    const source = `# Personality\n\nKeep my voice.\n\n${legacy}\n## Custom guidance\n\nKeep this too.\n`;
-    const updated = updateWindowsNodeInstructions(source, legacy);
+The exec tool uses OpenClaw's Windows Node transport: cmd.exe /d /s /c.
+Use CMD syntax, not bare PowerShell cmdlets. For example, use \`dir\`, \`type\`,
+or \`git status\`. Invoke powershell.exe explicitly when PowerShell is necessary.
+Command consent applies to exec in both regular and MXC modes. Gateway-native
+file tools remain available in both modes, but run outside MXC and bypass exec
+consent and MXC folder grants. Use an appropriate native file tool when its
+boundary is acceptable; use contained exec when the user requests containment.
+Route by the tools available now, not by a previous mode or the last successful
+action. Do not retry a denied or failed native operation through exec unless the
+user authorizes that fallback.
+Windows Node decides whether a command can be remembered. CMD built-ins and
+quoted or dynamic PowerShell may require one-use approval. Never change an
+approved command to bypass consent. MXC folder grants remain independent.
+`;
+  const previousGeneratedAccess = `## Pre-declaring File System Access
 
-    expect(updated).toContain("# Personality\n\nKeep my voice.");
-    expect(updated).toContain("## Custom guidance\n\nKeep this too.");
-    expect(updated).not.toContain("Get-ChildItem");
-    expect(updated).toContain(WINDOWS_NODE_ACCESS_INSTRUCTIONS.trim());
-    expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
-  });
+For exec commands that access files outside the workspace in MXC mode, put
+a declaration on the first line and the actual CMD command on the next line.
+The host removes the declaration before execution. Use literal absolute Windows
+directory paths, with ro for reading or rw for creating, changing, or deleting.
+Do not use variables in declarations or submit a declaration without a command.
+
+MXC can switch live. In Off mode, do not add declarations or request MXC
+folder grants; host execution remains subject to command-consent settings.
+
+\`\`\`
+REM [declare-access]ro:C:\\Users\\alice\\Desktop[/declare-access]
+dir "C:\\Users\\alice\\Desktop"
+\`\`\`
+
+\`\`\`
+REM [declare-access]rw:C:\\Users\\alice\\Desktop;rw:C:\\Users\\alice\\Documents[/declare-access]
+move "C:\\Users\\alice\\Desktop\\report.xlsx" "C:\\Users\\alice\\Documents\\"
+\`\`\`
+
+Declare only the directories actually needed, never a drive root or all users.
+A declaration requests access; it does not grant it. Missing MXC folder grants
+and command approval are presented together in one prompt.
+`;
+
+  it.each(["\n", "\r\n"])(
+    "replaces a recognized generated section without changing surrounding content",
+    (lineEnding) => {
+      const source =
+        `# Personality\n\nKeep my voice.\n\n${legacy}\n## Custom guidance\n\nKeep this too.\n`.replace(
+          /\n/g,
+          lineEnding,
+        );
+      const updated = updateWindowsNodeInstructions(source, legacy);
+      const normalized = updated.replace(/\r\n/g, "\n");
+
+      expect(normalized).toContain("# Personality\n\nKeep my voice.");
+      expect(normalized).toContain("## Custom guidance\n\nKeep this too.");
+      expect(updated).not.toContain("Get-ChildItem");
+      expect(normalized).toContain(WINDOWS_NODE_ACCESS_INSTRUCTIONS.trim());
+      expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
+    },
+  );
 
   it("preserves a customized access section and adds the transport instructions once", () => {
     const source = "## Pre-declaring File System Access\n\nMy custom rules.\n";
@@ -56,12 +107,77 @@ to bypass this. MXC folder grants remain independent of command consent.
     expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
   });
 
+  it("adds only mode-independent instructions when MXC is off", () => {
+    const updated = updateWindowsNodeInstructions("# My agent\n", legacy, false);
+
+    expect(updated).toContain("## Memory recall before filesystem tools");
+    expect(updated).toContain("## Windows Node command transport");
+    expect(updated).toContain("## PowerShell command quoting");
+    expect(updated).not.toMatch(/\bMXC\b|\[declare-access\]/);
+    expect(updateWindowsNodeInstructions(updated, legacy, false)).toBe(updated);
+  });
+
+  it.each(["\n", "\r\n"])(
+    "removes generated MXC guidance when disabled and restores it when enabled",
+    (lineEnding) => {
+      const source =
+        `# My agent\n\n${previousGeneratedAccess}\n${previousMxcTransport}\n## Notes\nKeep these.\n`.replace(
+          /\n/g,
+          lineEnding,
+        );
+      const off = updateWindowsNodeInstructions(source, legacy, false);
+      expect(off).toContain(`## Notes${lineEnding}Keep these.`);
+      expect(off).not.toMatch(/\bMXC\b|\[declare-access\]/);
+      if (lineEnding === "\r\n") expect(off.replace(/\r\n/g, "")).not.toContain("\n");
+      expect(updateWindowsNodeInstructions(off, legacy, false)).toBe(off);
+
+      const on = updateWindowsNodeInstructions(off, legacy, true);
+      expect(on).toContain("## MXC filesystem and executable recovery");
+      expect(on).toContain("## PowerShell filesystem operations in MXC");
+      expect(on).toContain(`## Notes${lineEnding}Keep these.`);
+      expect(on.match(/## Windows Node command transport/g)).toHaveLength(1);
+      if (lineEnding === "\r\n") expect(on.replace(/\r\n/g, "")).not.toContain("\n");
+      expect(updateWindowsNodeInstructions(on, legacy, true)).toBe(on);
+
+      const offAgain = updateWindowsNodeInstructions(on, legacy, false);
+      expect(offAgain).not.toMatch(/\bMXC\b|\[declare-access\]/);
+      expect(offAgain).toContain(`## Notes${lineEnding}Keep these.`);
+      expect(updateWindowsNodeInstructions(offAgain, legacy, false)).toBe(offAgain);
+    },
+  );
+
+  it("preserves user-modified guidance when MXC is disabled", () => {
+    const edited = WINDOWS_NODE_MXC_FILESYSTEM_INSTRUCTIONS.replace(
+      "When MXC is On",
+      "My custom rule: when MXC is On",
+    );
+    const appended = `${WINDOWS_NODE_POWERSHELL_SCRATCH_INSTRUCTIONS.trim()}\n\nMy own note.\n`;
+    const source = `# My agent\n\n${edited}\n${appended}\n## Notes\nKeep these.\n`;
+    const updated = updateWindowsNodeInstructions(source, legacy, false);
+
+    expect(updated).toContain(edited.trim());
+    expect(updated).toContain(appended.trim());
+    expect(updated).toContain("## Notes\nKeep these.");
+    expect(updateWindowsNodeInstructions(updated, legacy, false)).toBe(updated);
+  });
+
+  it("removes the original generated access section when starting in Off mode", () => {
+    const updated = updateWindowsNodeInstructions(
+      `# My agent\n\n${legacy}\n## Notes\nKeep these.\n`,
+      legacy,
+      false,
+    );
+    expect(updated).not.toContain("Legacy PowerShell examples.");
+    expect(updated).not.toMatch(/\bMXC\b|\[declare-access\]/);
+    expect(updated).toContain("## Notes\nKeep these.");
+  });
+
   it("upgrades generated access guidance to distinguish Off mode without changing user notes", () => {
     const previous = WINDOWS_NODE_ACCESS_INSTRUCTIONS.replace(
       "MXC can switch live. In Off mode, do not add declarations or request MXC\n" +
         "folder grants; host execution remains subject to command-consent settings.\n\n",
       "",
-    );
+    ).replace('type "C:\\Users\\alice\\Desktop\\notes.txt"', 'dir "C:\\Users\\alice\\Desktop"');
     const updated = updateWindowsNodeInstructions(
       `# Agent\n\n${previous}\n## Notes\nKeep these.\n`,
       legacy,
@@ -70,6 +186,103 @@ to bypass this. MXC folder grants remain independent of command consent.
     expect(updated).toContain("host execution remains subject to command-consent settings");
     expect(updated).toContain("## Notes\nKeep these.");
     expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
+  });
+
+  it.each([
+    { hasOffGuidance: true, lineEnding: "\n" },
+    { hasOffGuidance: false, lineEnding: "\n" },
+    { hasOffGuidance: true, lineEnding: "\r\n" },
+    { hasOffGuidance: false, lineEnding: "\r\n" },
+  ])(
+    "upgrades the previously generated instructions without changing user notes (%o)",
+    ({ hasOffGuidance, lineEnding }) => {
+      const access = hasOffGuidance
+        ? previousGeneratedAccess
+        : previousGeneratedAccess.replace(
+            "MXC can switch live. In Off mode, do not add declarations or request MXC\n" +
+              "folder grants; host execution remains subject to command-consent settings.\n\n",
+            "",
+          );
+      const original =
+        `# My agent\n\n${access}\n${previousMxcTransport}\n## Notes\nKeep these.\n`.replace(
+          /\n/g,
+          lineEnding,
+        );
+      const updated = updateWindowsNodeInstructions(original, legacy);
+
+      expect(updated).toContain(`## Notes${lineEnding}Keep these.`);
+      expect(updated).toContain('type "C:\\Users\\alice\\Desktop\\notes.txt"');
+      expect(updated).not.toContain('dir "C:\\Users\\alice\\Desktop"');
+      expect(updated).not.toContain("For example, use `dir`, `type`");
+      const normalized = updated.replace(/\r\n/g, "\n");
+      expect(normalized).toContain(WINDOWS_NODE_MXC_FILESYSTEM_INSTRUCTIONS.trim());
+      expect(normalized).toContain(WINDOWS_NODE_MXC_POWERSHELL_OPERATIONS_INSTRUCTIONS.trim());
+      expect(updated.match(/## Windows Node command transport/g)).toHaveLength(1);
+      expect(updated.match(/## MXC filesystem and executable recovery/g)).toHaveLength(1);
+      expect(updated.match(/## PowerShell filesystem operations in MXC/g)).toHaveLength(1);
+      expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
+    },
+  );
+
+  it("adds recovery guidance without replacing customized access and transport sections", () => {
+    const customizedAccess = previousGeneratedAccess.replace(
+      "Declare only the directories actually needed",
+      "My custom rule: declare only the directories actually needed",
+    );
+    const customizedTransport = previousMxcTransport.replace(
+      "Use CMD syntax",
+      "My custom rule: use CMD syntax",
+    );
+    const source = `${customizedAccess}\n${customizedTransport}\n## Notes\nKeep these.\n`;
+    const updated = updateWindowsNodeInstructions(source, legacy);
+
+    expect(updated).toContain(customizedAccess.trim());
+    expect(updated).toContain(customizedTransport.trim());
+    expect(updated).toContain("## Notes\nKeep these.");
+    expect(updated).toContain(WINDOWS_NODE_MXC_FILESYSTEM_INSTRUCTIONS.trim());
+    expect(updated).toContain(WINDOWS_NODE_MXC_POWERSHELL_OPERATIONS_INSTRUCTIONS.trim());
+    expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
+  });
+
+  it("guides Gateway tool routing, scoped executable discovery, and existing declarations", () => {
+    const guidance = updateWindowsNodeInstructions("# My agent\n", legacy);
+
+    expect(guidance).toMatch(/Gateway-native file tools: use `ls`.*`read`/);
+    expect(guidance).toContain("run outside MXC");
+    expect(guidance).toContain("bypass a denied operation or a user's requirement for containment");
+    expect(guidance).toMatch(/set `workdir` to an existing approved directory/);
+    expect(guidance).toContain("does not fix every metadata failure");
+    expect(guidance).toContain("a contained `where` can miss a program");
+    expect(guidance).toContain("C:\\Program Files");
+    expect(guidance).toContain("C:\\Program Files (x86)");
+    expect(guidance).toContain("Inspect the candidate folder to confirm the");
+    expect(guidance).toContain("follow listing pagination");
+    expect(guidance).toContain("smallest existing, permitted installation");
+    expect(guidance).toContain("Discovery is not authorization");
+    expect(guidance).toContain("must be an existing local directory");
+    expect(guidance).toContain("declare the smallest appropriate existing parent as rw");
+    expect(guidance).toContain("Never declare a drive root or protected folder");
+    expect(guidance).toMatch(/check the declared directories as well as\s+`workdir`/);
+  });
+
+  it("guides safe PowerShell splitting and same-invocation initialization", () => {
+    const guidance = updateWindowsNodeInstructions("# My agent\n", legacy);
+
+    for (const command of ["Remove-Item", "Move-Item", "Rename-Item"]) {
+      expect(guidance).toContain(`\`${command}\``);
+    }
+    expect(guidance).toContain("prefer one operation");
+    expect(guidance).toContain("when splitting preserves the requested behavior");
+    expect(guidance).toContain("literal absolute paths and `-LiteralPath`");
+    expect(guidance).toMatch(
+      /rw entries covering the source and destination even if\s+their existing directories are already approved or in the workspace/,
+    );
+    expect(guidance).toContain("initializer matches each target against these declarations");
+    expect(guidance).toContain("not all command forms qualify");
+    expect(guidance).toContain("Do not split a complex script");
+    expect(guidance).toContain("initialization and the operation in the same correctly quoted");
+    expect(guidance).toContain("Initialization in a separate exec does not");
+    expect(guidance).toContain("fresh approval");
   });
 
   it("upgrades the prior generated transport guidance without changing user notes", () => {
@@ -111,29 +324,38 @@ to bypass this. MXC folder grants remain independent of command consent.
     );
   });
 
-  it("removes the previous generated deletion workaround while preserving adjacent user notes", () => {
-    const previous =
-      "## PowerShell deletion in MXC\n\n" +
-      "When using Remove-Item in MXC mode, include a scoped filesystem-drive setup in\n" +
-      "your own PowerShell script before the deletion. This avoids a PowerShell provider\n" +
-      "initialization failure without changing the OpenClaw command transport. For a\n" +
-      "literal file, for example:\n\n" +
-      "```\nREM [declare-access]rw:C:\\work[/declare-access]\n" +
-      "powershell.exe -NoProfile -Command \"New-PSDrive -Name MicroClawCwd -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) -Scope Script -ErrorAction Stop | Out-Null; Set-Location -LiteralPath 'MicroClawCwd:\\' -ErrorAction Stop; Remove-Item -LiteralPath 'C:\\work\\notes.txt' -Force -ErrorAction Stop\"\n" +
-      "```\n\n" +
-      "Declare only the folder needed for the requested operation. Do not broaden\n" +
-      "folder grants or add recursive deletion unless the user requested it. Keep the\n" +
-      "script quotes and escape values correctly for CMD and PowerShell. This compound\n" +
-      "command may require one-use approval; do not alter it to bypass consent.\n";
-    const updated = updateWindowsNodeInstructions(
-      `# My agent\n\n${previous}\n## My notes\nKeep these.\n`,
-      legacy,
-    );
-    expect(updated).toContain("## My notes\nKeep these.");
-    expect(updated).not.toContain("## PowerShell deletion in MXC");
-    expect(updated).toContain(WINDOWS_NODE_POWERSHELL_SCRATCH_INSTRUCTIONS.trim());
-    expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
-  });
+  it.each(["\n", "\r\n"])(
+    "removes the previous generated deletion workaround while preserving adjacent user notes",
+    (lineEnding) => {
+      const previous =
+        "## PowerShell deletion in MXC\n\n" +
+        "When using Remove-Item in MXC mode, include a scoped filesystem-drive setup in\n" +
+        "your own PowerShell script before the deletion. This avoids a PowerShell provider\n" +
+        "initialization failure without changing the OpenClaw command transport. For a\n" +
+        "literal file, for example:\n\n" +
+        "```\nREM [declare-access]rw:C:\\work[/declare-access]\n" +
+        "powershell.exe -NoProfile -Command \"New-PSDrive -Name MicroClawCwd -PSProvider FileSystem -Root ([Environment]::CurrentDirectory) -Scope Script -ErrorAction Stop | Out-Null; Set-Location -LiteralPath 'MicroClawCwd:\\' -ErrorAction Stop; Remove-Item -LiteralPath 'C:\\work\\notes.txt' -Force -ErrorAction Stop\"\n" +
+        "```\n\n" +
+        "Declare only the folder needed for the requested operation. Do not broaden\n" +
+        "folder grants or add recursive deletion unless the user requested it. Keep the\n" +
+        "script quotes and escape values correctly for CMD and PowerShell. This compound\n" +
+        "command may require one-use approval; do not alter it to bypass consent.\n";
+      const source = `# My agent\n\n${previous}\n## My notes\nKeep these.\n`.replace(
+        /\n/g,
+        lineEnding,
+      );
+      const updated = updateWindowsNodeInstructions(source, legacy);
+      expect(updated).toContain(`## My notes${lineEnding}Keep these.`);
+      expect(updated).not.toContain("## PowerShell deletion in MXC");
+      expect(updated.replace(/\r\n/g, "\n")).toContain(
+        WINDOWS_NODE_POWERSHELL_SCRATCH_INSTRUCTIONS.trim(),
+      );
+      expect(updateWindowsNodeInstructions(updated, legacy)).toBe(updated);
+      const off = updateWindowsNodeInstructions(source, legacy, false);
+      expect(off).toContain(`## My notes${lineEnding}Keep these.`);
+      expect(off).not.toMatch(/\bMXC\b|\[declare-access\]/);
+    },
+  );
 
   it("preserves customized deletion guidance and does not add a duplicate", () => {
     const source = "## PowerShell deletion in MXC\n\nMy custom deletion instructions.\n";
