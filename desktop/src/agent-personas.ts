@@ -1133,6 +1133,7 @@ export function seedAgentPersonaWorkspaces(
   homeDir = os.homedir(),
   cwd = process.cwd(),
   legacySoulAppendix = "",
+  mxcEnabled = true,
 ): string[] {
   const updatedFiles: string[] = [];
   const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
@@ -1149,6 +1150,7 @@ export function seedAgentPersonaWorkspaces(
         homeDir,
         cwd,
         legacySoulAppendix,
+        mxcEnabled,
       ),
     );
   }
@@ -1165,10 +1167,14 @@ export function seedAgentPersonaWorkspace(
   homeDir = os.homedir(),
   cwd = process.cwd(),
   legacySoulAppendix = "",
+  mxcEnabled = true,
 ): string[] {
   if (!persona.workspaceFiles) return [];
   const updatedFiles: string[] = [];
   const workspaceDir = resolveAgentPersonaWorkspace(config, stateDir, persona, env, homeDir, cwd);
+  const effectiveSoulAppendix = legacySoulAppendix
+    ? updateWindowsNodeInstructions(soulAppendix, legacySoulAppendix, mxcEnabled)
+    : soulAppendix;
 
   fs.mkdirSync(workspaceDir, { recursive: true });
   for (const [filename, source] of Object.entries(persona.workspaceFiles)) {
@@ -1183,7 +1189,7 @@ export function seedAgentPersonaWorkspace(
     if (fs.existsSync(filePath)) {
       let existing = fs.readFileSync(filePath, "utf-8");
       if (filename === "SOUL.md" && legacySoulAppendix) {
-        const updated = updateWindowsNodeInstructions(existing, legacySoulAppendix);
+        const updated = updateWindowsNodeInstructions(existing, legacySoulAppendix, mxcEnabled);
         if (updated !== existing) {
           fs.writeFileSync(filePath, updated, "utf-8");
           updatedFiles.push(filePath);
@@ -1245,14 +1251,14 @@ export function seedAgentPersonaWorkspace(
         if (requiredMarker && !existing.includes(requiredMarker)) {
           sections.push(requiredSection.trim());
         }
-        const appendixMarker = markdownSectionMarker(soulAppendix);
+        const appendixMarker = markdownSectionMarker(effectiveSoulAppendix);
         if (
           filename === "SOUL.md" &&
-          soulAppendix.trim() &&
+          effectiveSoulAppendix.trim() &&
           appendixMarker &&
           !existing.includes(appendixMarker)
         ) {
-          sections.push(soulAppendix.trim());
+          sections.push(effectiveSoulAppendix.trim());
         }
         if (sections.length > 0) {
           fs.appendFileSync(filePath, `\n${sections.join("\n\n")}\n`, "utf-8");
@@ -1267,14 +1273,14 @@ export function seedAgentPersonaWorkspace(
         if (requiredMarker && !existing.includes(requiredMarker)) {
           sections.push(OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION.trim());
         }
-        const appendixMarker = markdownSectionMarker(soulAppendix);
+        const appendixMarker = markdownSectionMarker(effectiveSoulAppendix);
         if (
           filename === "SOUL.md" &&
-          soulAppendix.trim() &&
+          effectiveSoulAppendix.trim() &&
           appendixMarker &&
           !existing.includes(appendixMarker)
         ) {
-          sections.push(soulAppendix.trim());
+          sections.push(effectiveSoulAppendix.trim());
         }
         if (sections.length > 0) {
           fs.appendFileSync(filePath, `\n${sections.join("\n\n")}\n`, "utf-8");
@@ -1292,9 +1298,9 @@ export function seedAgentPersonaWorkspace(
           sections.push(workspaceSource.trim());
           existing += `\n${workspaceSource.trim()}\n`;
         }
-        const appendixMarker = markdownSectionMarker(soulAppendix);
-        if (soulAppendix.trim() && appendixMarker && !existing.includes(appendixMarker)) {
-          sections.push(soulAppendix.trim());
+        const appendixMarker = markdownSectionMarker(effectiveSoulAppendix);
+        if (effectiveSoulAppendix.trim() && appendixMarker && !existing.includes(appendixMarker)) {
+          sections.push(effectiveSoulAppendix.trim());
         }
         if (sections.length > 0) {
           fs.appendFileSync(filePath, `\n${sections.join("\n\n")}\n`, "utf-8");
@@ -1304,20 +1310,84 @@ export function seedAgentPersonaWorkspace(
       continue;
     }
 
-    const appendixMarker = markdownSectionMarker(soulAppendix);
+    const appendixMarker = markdownSectionMarker(effectiveSoulAppendix);
     const shouldAppendSoulSection =
       filename === "SOUL.md" &&
-      soulAppendix.trim() &&
+      effectiveSoulAppendix.trim() &&
       appendixMarker &&
       !workspaceSource.includes(appendixMarker);
     const content = shouldAppendSoulSection
-      ? `${workspaceSource.trimEnd()}\n\n${soulAppendix.trim()}\n`
+      ? `${workspaceSource.trimEnd()}\n\n${effectiveSoulAppendix.trim()}\n`
       : `${workspaceSource.trimEnd()}\n`;
     fs.writeFileSync(filePath, content, "utf-8");
     updatedFiles.push(filePath);
   }
 
   return [...new Set(updatedFiles)];
+}
+
+export function synchronizeAgentWindowsNodeInstructions(
+  config: AgentRosterConfig,
+  stateDir: string,
+  legacySoulAppendix: string,
+  mxcEnabled: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir = os.homedir(),
+  cwd = process.cwd(),
+): { updatedFiles: string[]; rollback: () => void } {
+  const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
+  const seen = new Set<string>();
+  const changes: Array<{ filePath: string; before: string; after: string }> = [];
+  for (const persona of AGENT_PERSONAS) {
+    if (!persona.workspaceFiles?.["SOUL.md"] || !configuredIds.has(persona.id)) continue;
+    const workspace = resolveAgentPersonaWorkspace(config, stateDir, persona, env, homeDir, cwd);
+    const filePath = path.join(workspace, "SOUL.md");
+    const key = process.platform === "win32" ? filePath.toLowerCase() : filePath;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const before = fs.readFileSync(filePath, "utf-8");
+    const after = updateWindowsNodeInstructions(before, legacySoulAppendix, mxcEnabled);
+    if (after !== before) changes.push({ filePath, before, after });
+  }
+
+  const applied: typeof changes = [];
+  const rollback = () => {
+    const errors: unknown[] = [];
+    for (let index = applied.length - 1; index >= 0; index -= 1) {
+      const change = applied[index];
+      try {
+        if (fs.readFileSync(change.filePath, "utf-8") !== change.after) {
+          throw new Error(`Agent SOUL.md changed during rollback: ${change.filePath}`);
+        }
+        fs.writeFileSync(change.filePath, change.before, "utf-8");
+        applied.splice(index, 1);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, "Failed to restore agent instructions");
+  };
+  try {
+    for (const change of changes) {
+      if (fs.readFileSync(change.filePath, "utf-8") !== change.before) {
+        throw new Error(`Agent SOUL.md changed during mode update: ${change.filePath}`);
+      }
+      fs.writeFileSync(change.filePath, change.after, "utf-8");
+      applied.push(change);
+    }
+  } catch (error) {
+    try {
+      rollback();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "Failed to update and restore agent instructions",
+        { cause: rollbackError },
+      );
+    }
+    throw error;
+  }
+  return { updatedFiles: changes.map((change) => change.filePath), rollback };
 }
 
 function markdownSectionMarker(contents: string): string {

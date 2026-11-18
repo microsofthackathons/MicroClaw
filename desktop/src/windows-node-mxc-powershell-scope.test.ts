@@ -6,6 +6,7 @@ import {
   POWERSHELL_FILESYSTEM_INITIALIZER,
   validatePowerShellFilesystemInitialization,
 } from "./windows-node-mxc-powershell-scope";
+import { WINDOWS_NODE_MXC_POWERSHELL_OPERATIONS_INSTRUCTIONS } from "./windows-node-command-instructions";
 import { normalizeWindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 import {
   normalizeWeixinRemoteApprovalOwner,
@@ -38,6 +39,23 @@ function preview(payload: string) {
 }
 
 describe("exact contained PowerShell prepared initialization", () => {
+  it("initializes the exact single-operation example in agent guidance", () => {
+    const example = WINDOWS_NODE_MXC_POWERSHELL_OPERATIONS_INSTRUCTIONS.match(
+      /```\nREM \[declare-access\]rw:(.+?)\[\/declare-access\]\n(.+)\n```/,
+    );
+    if (!example) throw new Error("Missing declared PowerShell guidance example");
+    const exampleAccess = [{ access: "rw" as const, path: example[1] }];
+    const argv = [cmd, "/d", "/s", "/c", example[2]];
+    const initialization = createPowerShellFilesystemInitialization(argv, cmd, exampleAccess);
+
+    expect(createPowerShellFilesystemInitialization(argv, cmd, [])).toBeNull();
+    expect(initialization?.form).toBe("cmd");
+    expect(initialization?.originalArgv).toEqual(argv);
+    expect(initialization?.finalArgv.at(-1)).toContain(
+      `${POWERSHELL_FILESYSTEM_INITIALIZER}Remove-Item -LiteralPath 'C:\\work\\old.txt'`,
+    );
+  });
+
   it.each([false, true])(
     "retains original literal bytes and independently regenerates form nested=%s",
     (nested) => {

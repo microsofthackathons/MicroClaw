@@ -90,13 +90,43 @@ enforce those grants. If a conversation contains a stale declaration, its
 contents remain bound to command consent but are not checked as MXC folder
 paths and do not restrict host execution.
 
-Generated agent guidance also covers permission-denied recovery: when contained
-`exec` fails with a filesystem permission error, the agent should use the
+MicroClaw seeds managed agents' `SOUL.md` files according to the sandbox mode
+at startup and when an agent is added. A successful live mode change also
+updates those files before reopening ingress. Full mode includes the generated
+MXC guidance; Off mode removes recognized, unmodified MXC sections while keeping
+mode-independent guidance. User-customized sections are preserved and may
+still mention MXC in Off mode. The Gateway refreshes bootstrap files for
+subsequent turns when it injects them; an in-progress turn and existing
+conversation history are not rewritten.
+
+The Full-mode guidance covers permission-denied recovery: when contained `exec`
+fails with a filesystem permission error, the agent should use the
 reported path to request the smallest necessary directory with `[declare-access]`
 and fresh consent. It must check for partial effects before retrying, ask when
 the path is unclear, and never broaden grants repeatedly or bypass MXC. This is
-agent guidance, not automatic command rewriting or permission granting; existing
-workspaces receive the new section on startup without replacing custom guidance.
+agent guidance, not automatic command rewriting or permission granting.
+
+For ordinary file discovery, the generated guidance prefers available
+Gateway-native tools such as `ls` and `read` when their host-side boundary is
+acceptable. Those tools run outside MXC; they are not a way to bypass a denied
+operation or a request for containment. For contained commands it recommends an
+approved `workdir` instead of an absolute CMD `cd`, without claiming that this
+fixes other volume-root metadata failures. For missing executables, it suggests
+finding the actual installation directory with Gateway `ls` where permitted,
+then requesting only that existing directory read-only for a contained command.
+An inaccessible listing or an absent sandboxed `where` result does not prove a
+program is uninstalled.
+
+Declarations must name existing directories: to create a new destination, the
+guidance selects an appropriately scoped existing parent rather than the missing
+child, and checks both declarations and the working directory after
+`cwd-not-found`. For PowerShell `Remove-Item`, `Move-Item`, and `Rename-Item`,
+it prefers separate literal-path operations where semantics permit, so eligible
+commands can use the existing scoped initialization. The initializer requires
+explicit RW declarations covering each target even when its directory is
+already approved; declaring it does not itself grant access. Complex scripts
+that need initialization must include it in the same approved PowerShell
+invocation; a separate invocation does not retain the initialized drive.
 
 **Ask when needed** uses the upstream Windows Node command allowlist and asks
 for commands that are not already permitted. **Allow always** disables those

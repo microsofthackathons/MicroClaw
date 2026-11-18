@@ -196,6 +196,7 @@ import {
   resolveAgentPersonaWorkspace,
   seedAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
+  synchronizeAgentWindowsNodeInstructions,
   type AgentPersona,
   type AgentRosterConfig,
 } from "./agent-personas";
@@ -1837,6 +1838,7 @@ function seedWorkspaceFiles(
   config: AgentRosterConfig,
   gatewayEnvironment: NodeJS.ProcessEnv,
   cwd: string,
+  mxcEnabled: boolean,
 ): void {
   const workspaceDir = resolveAgentPersonaWorkspace(
     config,
@@ -1849,11 +1851,9 @@ function seedWorkspaceFiles(
   const soulPath = path.join(workspaceDir, "SOUL.md");
 
   if (fs.existsSync(soulPath)) {
-    // SOUL.md exists — ensure the declare-access section is present.
-    // This patches existing SOUL.md files from older versions that lack it.
     try {
       const existing = fs.readFileSync(soulPath, "utf-8");
-      const updated = updateWindowsNodeInstructions(existing, DECLARE_ACCESS_SECTION);
+      const updated = updateWindowsNodeInstructions(existing, DECLARE_ACCESS_SECTION, mxcEnabled);
       if (updated !== existing) {
         fs.writeFileSync(soulPath, updated, "utf-8");
         console.log("[seed] Updated generated Windows Node command instructions");
@@ -1868,7 +1868,7 @@ function seedWorkspaceFiles(
       }
       fs.writeFileSync(
         soulPath,
-        updateWindowsNodeInstructions(DEFAULT_SOUL_MD, DECLARE_ACCESS_SECTION),
+        updateWindowsNodeInstructions(DEFAULT_SOUL_MD, DECLARE_ACCESS_SECTION, mxcEnabled),
         "utf-8",
       );
       console.log(`[seed] Created default SOUL.md at ${soulPath}`);
@@ -3126,9 +3126,23 @@ async function changeWindowsNodeMxcMode(params: {
         },
         release: async () => {
           assertCurrent(requestedMode);
-          releaseWindowsNodeMxcIngress(generation);
-          windowsNodeMxcActivationInProgress = false;
-          setWindowsNodeMxcLifecycleState(requestedMode === "full" ? "active" : "idle");
+          const instructions = synchronizeWindowsNodeInstructionsForMode(requestedMode === "full");
+          try {
+            releaseWindowsNodeMxcIngress(generation);
+            windowsNodeMxcActivationInProgress = false;
+            setWindowsNodeMxcLifecycleState(requestedMode === "full" ? "active" : "idle");
+          } catch (error) {
+            try {
+              instructions.rollback();
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [error, rollbackError],
+                "Sandbox mode change and agent instruction rollback failed",
+                { cause: rollbackError },
+              );
+            }
+            throw error;
+          }
         },
         failClosed: async (error) => {
           closeWindowsNodeMxcIngress();
@@ -3145,7 +3159,11 @@ async function changeWindowsNodeMxcMode(params: {
         },
       }),
     {
-      beforeStart: () => beginWindowsNodeMxcLifecycleOperation(requestedMode === "off"),
+      beforeStart: () => {
+        if (agentRosterChangeInProgress)
+          throw new Error("Wait for the current agent roster change to finish");
+        beginWindowsNodeMxcLifecycleOperation(requestedMode === "off");
+      },
       afterSettled: () => {
         if (!locked && windowsNodeMxcLifecycleState === "validating")
           setWindowsNodeMxcLifecycleState(previousMode === "off" ? "idle" : "active");
@@ -4707,6 +4725,7 @@ function seedSpecialistAgentWorkspaces(
   stateDir: string,
   entryPath: string,
   gatewayEnvironment: Record<string, string>,
+  mxcEnabled: boolean,
 ): string[] {
   const seededFiles = seedAgentPersonaWorkspaces(
     config,
@@ -4716,11 +4735,36 @@ function seedSpecialistAgentWorkspaces(
     os.homedir(),
     path.dirname(entryPath),
     DECLARE_ACCESS_SECTION,
+    mxcEnabled,
   );
   if (seededFiles.length > 0) {
     console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
   }
   return seededFiles;
+}
+
+function synchronizeWindowsNodeInstructionsForMode(mxcEnabled: boolean): {
+  updatedFiles: string[];
+  rollback: () => void;
+} {
+  const config = readConfig();
+  if (!config) throw new Error("OpenClaw configuration is unavailable");
+  const stateDir = getOpenClawStateDir();
+  const result = synchronizeAgentWindowsNodeInstructions(
+    config,
+    stateDir,
+    DECLARE_ACCESS_SECTION,
+    mxcEnabled,
+    loadGatewayEnvironment(stateDir),
+    os.homedir(),
+    path.dirname(resolveOpenClawEntry()),
+  );
+  if (result.updatedFiles.length > 0) {
+    console.log(
+      `[seed] Updated Windows Node guidance in ${result.updatedFiles.length} workspace(s)`,
+    );
+  }
+  return result;
 }
 
 interface WorkspaceSnapshot {
@@ -4920,6 +4964,7 @@ async function addCatalogAgent(
       os.homedir(),
       path.dirname(entryPath),
       DECLARE_ACCESS_SECTION,
+      isWindowsNodeMxcDesired(),
     );
     assertAgentRosterHotReloadAvailable(
       config,
@@ -6349,17 +6394,20 @@ async function runGatewayStartup(
     }
     if (preparedPersonas && !externallyManagedGateway) {
       agentSkillTransactionPending = true;
+      const mxcEnabledForInstructions = isWindowsNodeMxcDesired();
       seedWorkspaceFiles(
         stateDir,
         preparedPersonas.config,
         gatewayEnvironment,
         path.dirname(entryPath),
+        mxcEnabledForInstructions,
       );
       seedSpecialistAgentWorkspaces(
         preparedPersonas.config,
         stateDir,
         entryPath,
         gatewayEnvironment,
+        mxcEnabledForInstructions,
       );
     }
   } catch (error) {

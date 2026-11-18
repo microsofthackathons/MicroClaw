@@ -1,6 +1,8 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { getAgentSkills, matchesSkill, resolveSkillFilterNames } from "./agent-catalog";
 import {
@@ -17,10 +19,15 @@ import {
   OFFICE_ARTISAN_ARTIFACT_BOUNDARY_SECTION,
   removeConfiguredAgent,
   resolveAgentPersonaWorkspace,
+  seedAgentPersonaWorkspace,
   seedAgentPersonaWorkspaces,
+  synchronizeAgentWindowsNodeInstructions,
 } from "./agent-personas";
 import { readAgentRoster } from "./agent-roster";
-import { WINDOWS_NODE_ACCESS_INSTRUCTIONS } from "./windows-node-command-instructions";
+import {
+  updateWindowsNodeInstructions,
+  WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+} from "./windows-node-command-instructions";
 
 const tempDirs: string[] = [];
 
@@ -350,9 +357,189 @@ My custom transport guidance.
       expect(updated).toContain(soulPath);
       expect(soul).toContain("My custom folder guidance.");
       expect(soul).toContain("My custom transport guidance.");
+      expect(soul).toContain("## MXC filesystem and executable recovery");
       expect(soul).toContain("## PowerShell command quoting");
+      expect(soul).toContain("## PowerShell filesystem operations in MXC");
       expect(soul).not.toContain("## PowerShell deletion in MXC");
     }
+  });
+
+  it("keeps MXC guidance synchronized across main, specialist, and newly added agents", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const main = getAgentPersona("main")!;
+    const specialist = getAgentPersona("code-geek")!;
+    const legacy = "Legacy generated appendix";
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, specialist]);
+    seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      {},
+      undefined,
+      undefined,
+      legacy,
+      false,
+    );
+    const paths = [main, specialist].map((persona) =>
+      path.join(resolveAgentPersonaWorkspace(config, stateDir, persona), "SOUL.md"),
+    );
+    for (const file of paths) {
+      expect(fs.readFileSync(file, "utf-8")).not.toMatch(/\bMXC\b|\[declare-access\]/);
+      fs.appendFileSync(file, "\n## User notes\nPreserve these.\n");
+    }
+
+    expect(
+      synchronizeAgentWindowsNodeInstructions(config, stateDir, legacy, true).updatedFiles,
+    ).toEqual(expect.arrayContaining(paths));
+    for (const file of paths) {
+      const soul = fs.readFileSync(file, "utf-8");
+      expect(soul).toContain("## MXC filesystem and executable recovery");
+      expect(soul).toContain("## PowerShell filesystem operations in MXC");
+      expect(soul).toContain("## User notes\nPreserve these.");
+    }
+    expect(
+      synchronizeAgentWindowsNodeInstructions(config, stateDir, legacy, false).updatedFiles,
+    ).toEqual(expect.arrayContaining(paths));
+    for (const file of paths) {
+      const soul = fs.readFileSync(file, "utf-8");
+      expect(soul).not.toMatch(/\bMXC\b|\[declare-access\]/);
+      expect(soul).toContain("## User notes\nPreserve these.");
+      expect(soul).toContain("## Memory recall before filesystem tools");
+    }
+    expect(
+      synchronizeAgentWindowsNodeInstructions(config, stateDir, legacy, false).updatedFiles,
+    ).toEqual([]);
+
+    const added = getAgentPersona("master-archive")!;
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, specialist, added]);
+    seedAgentPersonaWorkspace(
+      config,
+      stateDir,
+      added,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      {},
+      undefined,
+      undefined,
+      legacy,
+      false,
+    );
+    const addedSoul = fs.readFileSync(
+      path.join(resolveAgentPersonaWorkspace(config, stateDir, added), "SOUL.md"),
+      "utf-8",
+    );
+    expect(addedSoul).not.toMatch(/\bMXC\b|\[declare-access\]/);
+    expect(addedSoul).toContain("## Windows Node command transport");
+  });
+
+  it("does not partially update agent instructions if a workspace cannot be read", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const main = getAgentPersona("main")!;
+    const specialist = getAgentPersona("code-geek")!;
+    const legacy = "Legacy generated appendix";
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, specialist]);
+    seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      {},
+      undefined,
+      undefined,
+      legacy,
+      false,
+    );
+    const mainPath = path.join(resolveAgentPersonaWorkspace(config, stateDir, main), "SOUL.md");
+    const before = fs.readFileSync(mainPath, "utf-8");
+    fs.unlinkSync(path.join(resolveAgentPersonaWorkspace(config, stateDir, specialist), "SOUL.md"));
+
+    expect(() => synchronizeAgentWindowsNodeInstructions(config, stateDir, legacy, true)).toThrow();
+    expect(fs.readFileSync(mainPath, "utf-8")).toBe(before);
+  });
+
+  it("restores earlier SOUL files if a later workspace write fails", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const main = getAgentPersona("main")!;
+    const specialist = getAgentPersona("code-geek")!;
+    const legacy = "Legacy generated appendix";
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, specialist]);
+    seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      {},
+      undefined,
+      undefined,
+      legacy,
+      false,
+    );
+    const mainPath = path.join(resolveAgentPersonaWorkspace(config, stateDir, main), "SOUL.md");
+    const specialistPath = path.join(
+      resolveAgentPersonaWorkspace(config, stateDir, specialist),
+      "SOUL.md",
+    );
+    const before = fs.readFileSync(mainPath, "utf-8");
+    const source = fs.readFileSync(path.join(__dirname, "agent-personas.ts"), "utf-8");
+    const ast = ts.createSourceFile("agent-personas.ts", source, ts.ScriptTarget.Latest, true);
+    const declaration = ast.statements.find(
+      (statement) =>
+        ts.isFunctionDeclaration(statement) &&
+        statement.name?.text === "synchronizeAgentWindowsNodeInstructions",
+    );
+    if (!declaration) throw new Error("Cannot locate agent instruction synchronization");
+    const js = ts.transpileModule(
+      `exports.sync = ${declaration.getText(ast).replace(/^export\s+/, "")}`,
+      { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+    ).outputText;
+    const exported: { sync?: typeof synchronizeAgentWindowsNodeInstructions } = {};
+    runInNewContext(js, {
+      exports: exported,
+      fs: {
+        readFileSync: fs.readFileSync,
+        writeFileSync: (file: string, data: string) => {
+          if (file === specialistPath) throw new Error("SOUL write failed");
+          fs.writeFileSync(file, data, "utf-8");
+        },
+      },
+      os,
+      path,
+      process,
+      AGENT_PERSONAS,
+      listConfiguredAgents,
+      resolveAgentPersonaWorkspace,
+      updateWindowsNodeInstructions,
+    });
+    expect(() => exported.sync!(config, stateDir, legacy, true)).toThrow("SOUL write failed");
+    expect(fs.readFileSync(mainPath, "utf-8")).toBe(before);
+  });
+
+  it("rolls back a mode update without overwriting subsequent user edits", () => {
+    const stateDir = createStateDir();
+    const config = { agents: {} };
+    const main = getAgentPersona("main")!;
+    const specialist = getAgentPersona("code-geek")!;
+    const legacy = "Legacy generated appendix";
+    ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, specialist]);
+    seedAgentPersonaWorkspaces(
+      config,
+      stateDir,
+      WINDOWS_NODE_ACCESS_INSTRUCTIONS,
+      {},
+      undefined,
+      undefined,
+      legacy,
+      false,
+    );
+    const mainPath = path.join(resolveAgentPersonaWorkspace(config, stateDir, main), "SOUL.md");
+    const before = fs.readFileSync(mainPath, "utf-8");
+
+    synchronizeAgentWindowsNodeInstructions(config, stateDir, legacy, true).rollback();
+    expect(fs.readFileSync(mainPath, "utf-8")).toBe(before);
+    const update = synchronizeAgentWindowsNodeInstructions(config, stateDir, legacy, true);
+    fs.appendFileSync(mainPath, "\nUser edited during the update.\n");
+    expect(update.rollback).toThrow("Failed to restore agent instructions");
+    expect(fs.readFileSync(mainPath, "utf-8")).toContain("User edited during the update.");
   });
 
   it("seeds the Intel Analyst workspace with its research context", () => {
