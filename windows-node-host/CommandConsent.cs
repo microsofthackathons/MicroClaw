@@ -74,7 +74,7 @@ internal sealed class CommandConsent(ExecApprovalsStore store, IOpenClawLogger l
     }
 
     internal static NodeInvokeRequest Request(
-        IReadOnlyList<string> argv, string? cwd, int timeoutMs, string? agentId, string? sessionKey) =>
+        IReadOnlyList<string> argv, string? cwd, int? timeoutMs, string? agentId, string? sessionKey) =>
         new()
         {
             Id = Guid.NewGuid().ToString("N"),

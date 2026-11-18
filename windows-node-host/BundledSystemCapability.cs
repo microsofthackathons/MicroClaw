@@ -26,6 +26,8 @@ internal sealed class BundledSystemCapability(
     string? policyFingerprint = null,
     CommandConsent? commandConsent = null) : INodeCapability, IDisposable
 {
+    private const int DefaultRunTimeoutMs = 30_000;
+    private const int MaximumRunTimeoutMs = 600_000;
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private readonly MxcExecutionContext? _mxcExecution = policy.RequestedStrength == "full"
         ? MxcSdkRunner.CreateExecutor(policy, approvalsPath)
@@ -121,7 +123,8 @@ internal sealed class BundledSystemCapability(
                     if (commandConsent is not null && run.AgentId != ReadinessProbeContract.AgentId)
                     {
                         consentPreparation = await commandConsent.PrepareAsync(CommandConsent.Request(
-                            run.Argv, run.Cwd, run.TimeoutMs, run.AgentId, run.SessionKey));
+                            run.Argv, run.Cwd, run.TimeoutMs == 0 ? null : run.TimeoutMs,
+                            run.AgentId, run.SessionKey));
                         resolvedCarrier = consentPreparation.Execution.Argv[0];
                     }
                     else
@@ -136,7 +139,8 @@ internal sealed class BundledSystemCapability(
             if (commandConsent is not null && run.AgentId != ReadinessProbeContract.AgentId)
             {
                 var preparation = consentPreparation ?? await commandConsent.PrepareAsync(CommandConsent.Request(
-                    run.Argv, run.Cwd, run.TimeoutMs, run.AgentId, run.SessionKey));
+                    run.Argv, run.Cwd, run.TimeoutMs == 0 ? null : run.TimeoutMs,
+                    run.AgentId, run.SessionKey));
                 if (run.ProviderInitialization is not null &&
                     !preparation.Execution.Argv.SequenceEqual(run.ProviderInitialization.FinalArgv, StringComparer.Ordinal))
                     throw new HostPolicyException("powershell-initialization-invalid",
@@ -303,7 +307,9 @@ internal sealed class BundledSystemCapability(
             if (commandConsent is not null)
             {
                 consentExecution = await commandConsent.AuthorizeAsync(CommandConsent.Request(
-                    request.Argv, request.Cwd, request.TimeoutMs, request.AgentId, request.SessionKey),
+                    request.Argv, request.Cwd,
+                    request.TimeoutMs == 0 ? null : request.TimeoutMs,
+                    request.AgentId, request.SessionKey),
                     validatedApproval.ConsentDecision);
                 if (!consentExecution.Argv.SequenceEqual(request.Argv, StringComparer.Ordinal))
                     throw new HostPolicyException("consent-command-changed",
@@ -364,6 +370,8 @@ internal sealed class BundledSystemCapability(
             try
             {
                 var hostRequest = consentExecution.ToCommandRequest();
+                // The approval model requires a positive timeout; preserve the caller's no-timeout value for execution.
+                hostRequest.TimeoutMs = request.TimeoutMs;
                 if (string.IsNullOrEmpty(currentCwd.LaunchPath))
                 {
                     var stateRoot = Path.GetDirectoryName(approvalsPath)
@@ -443,7 +451,9 @@ internal sealed class BundledSystemCapability(
             $"[filesystem-policy] launchLocation={(currentCwd.MatchedRoot is null ? "isolated-scratch" : "selected-grant")} effectiveAccess={currentCwd.Access} containmentStrength={policy.RequestedStrength}");
         try
         {
-            var result = await runner.RunAsync(commandRequest, cancellationToken);
+            var result = commandRequest.TimeoutMs == 0
+                ? await MxcNoTimeoutRunner.RunAsync(executor, commandRequest, cancellationToken)
+                : await runner.RunAsync(commandRequest, cancellationToken);
             if (result.ExecutionMode == NodeToolExecutionMode.Host)
                 throw new HostPolicyException(
                     "mxc-host-fallback", "MXC unexpectedly selected host execution; sandbox activation is blocked.");
@@ -488,9 +498,7 @@ internal sealed class BundledSystemCapability(
         var cwd = args.TryGetProperty("cwd", out var cwdElement) && cwdElement.ValueKind == JsonValueKind.String
             ? cwdElement.GetString()
             : null;
-        var timeout = args.TryGetProperty("timeoutMs", out var timeoutElement) && timeoutElement.TryGetInt32(out var value)
-            ? Math.Clamp(value, 1, 600_000)
-            : 30_000;
+        var timeout = ParseTimeoutMs(args);
         var agentId = args.TryGetProperty("agentId", out var agentElement) && agentElement.ValueKind == JsonValueKind.String
             ? agentElement.GetString()
             : null;
@@ -515,6 +523,7 @@ internal sealed class BundledSystemCapability(
             return new RunRequest(argv, cwd, timeout, agentId, sessionKey, rawCommand,
                 commandPreview, verified.Access, verified.Initialization);
         }
+
         if (PowerShellFilesystemScope.ContainsMarker(argv))
             throw new HostPolicyException("powershell-initialization-metadata-required",
                 "The PowerShell filesystem initializer requires its complete prepared plan.");
@@ -558,6 +567,21 @@ internal sealed class BundledSystemCapability(
             executableRawCommand,
             commandPreview,
             declaredAccess);
+    }
+
+    private static int ParseTimeoutMs(JsonElement args)
+    {
+        if (!args.TryGetProperty("timeoutMs", out var timeoutElement))
+            return DefaultRunTimeoutMs;
+        if (timeoutElement.ValueKind == JsonValueKind.Null)
+            return 0;
+        if (timeoutElement.ValueKind != JsonValueKind.Number
+            || !timeoutElement.TryGetInt64(out var value)
+            || value < 0)
+            throw new HostPolicyException(
+                "invalid-timeout",
+                "timeoutMs must be a non-negative integer or null.");
+        return value == 0 ? 0 : (int)Math.Min(value, MaximumRunTimeoutMs);
     }
 
     private static string? GetSystemRunPlanCommandPreview(JsonElement args)
