@@ -219,6 +219,7 @@ export function normalizeGatewayChannelsStatus(
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
+  onProgress?: (payload: unknown) => void;
 };
 
 export type GatewayClientOptions = {
@@ -335,6 +336,7 @@ export class GatewayClient {
     method: string,
     params?: unknown,
     timeoutMs: number | null = WS_REQUEST_TIMEOUT_MS,
+    onProgress?: (payload: unknown) => void,
   ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("gateway not connected");
@@ -352,6 +354,7 @@ export class GatewayClient {
               }
             }, timeoutMs);
       this.pending.set(id, {
+        onProgress: method === "plugins.install" ? onProgress : undefined,
         resolve: (v) => {
           clearTimeout(timer);
           resolve(v as T);
@@ -922,6 +925,20 @@ export class GatewayClient {
 
     if (frame.type === "event") {
       const evt = parsed as GatewayEventFrame;
+      if (evt.event === "plugins.install.progress") {
+        const payload = evt.payload;
+        if (payload && typeof payload === "object" && "requestId" in payload) {
+          const requestId = payload.requestId;
+          if (typeof requestId === "string") {
+            try {
+              this.pending.get(requestId)?.onProgress?.(payload);
+            } catch {
+              // Presentation observers must not interrupt the request or transport.
+            }
+          }
+        }
+        return;
+      }
       // Handle connect.challenge — gateway may require a nonce handshake
       if (evt.event === "connect.challenge") {
         const payload = evt.payload as { nonce?: string } | undefined;

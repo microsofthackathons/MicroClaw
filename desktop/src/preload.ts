@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { GatewayRestartOptions } from "./gateway-restart-reason";
 import type { ModelConfigUpdate } from "./model-config-application";
+import type { SearchSettingsWriteIntent, SearchSetupProgress } from "./search-setup-progress";
 // Sandboxed preloads cannot require local modules; keep runtime IPC adapters self-contained.
 import type {
   ChatAttachment,
@@ -61,8 +62,14 @@ contextBridge.exposeInMainWorld("openclaw", {
     write: (
       config: unknown,
       expectedConfig?: unknown,
-      intent?: { kind: "initial-setup"; providerKey: string } | { kind: "search-settings" },
+      intent?: { kind: "initial-setup"; providerKey: string } | SearchSettingsWriteIntent,
     ) => ipcRenderer.invoke("config:write", config, expectedConfig, intent),
+    onSearchProgress: (callback: (progress: SearchSetupProgress) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: SearchSetupProgress) =>
+        callback(progress);
+      ipcRenderer.on("config:search-progress", handler);
+      return () => ipcRenderer.removeListener("config:search-progress", handler);
+    },
   },
 
   // --- Settings ---

@@ -21,6 +21,62 @@ import {
 } from "./constants";
 import { GatewaySessionObserver } from "./gateway-session-observer";
 
+describe("GatewayClient plugin install progress", () => {
+  it.each(["response", "timeout", "disconnect"])(
+    "correlates progress to its request and ignores it after %s",
+    async (settlement) => {
+      vi.useFakeTimers();
+      try {
+        const client = Object.create(GatewayClient.prototype) as GatewayClient;
+        const send = vi.fn();
+        const progress = vi.fn();
+        Object.assign(client, { pending: new Map(), ws: { readyState: 1, send } });
+        const response = client.request("plugins.install", {}, 1000, progress);
+        const result = response.catch((error: Error) => error.message);
+        const { id } = JSON.parse(send.mock.calls[0][0]);
+        const emit = (requestId: string) =>
+          client["handleMessage"](
+            JSON.stringify({
+              type: "event",
+              event: "plugins.install.progress",
+              payload: { requestId, stage: "dependencies", status: "started" },
+            }),
+          );
+        emit("another-request");
+        expect(progress).not.toHaveBeenCalled();
+        emit(id);
+        expect(progress).toHaveBeenCalledExactlyOnceWith({
+          requestId: id,
+          stage: "dependencies",
+          status: "started",
+        });
+        if (settlement === "response") {
+          // A broken progress observer cannot break the operation's eventual response.
+          progress.mockImplementationOnce(() => {
+            throw new Error("observer failed");
+          });
+          emit(id);
+          client["handleMessage"](JSON.stringify({ type: "res", id, ok: true, payload: "done" }));
+          await expect(result).resolves.toBe("done");
+        } else if (settlement === "timeout") {
+          await vi.advanceTimersByTimeAsync(1000);
+          await expect(result).resolves.toContain("timed out");
+        } else {
+          client["flushPending"]("disconnected");
+          await expect(result).resolves.toBe("disconnected");
+        }
+        progress.mockClear();
+        emit(id);
+        expect(progress).not.toHaveBeenCalled();
+        expect(client["pending"].size).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+});
+
 describe("GatewayClient agent roster", () => {
   it.each([undefined, 250])("forwards the roster RPC timeout budget %s", async (timeoutMs) => {
     const client = Object.create(GatewayClient.prototype) as GatewayClient;

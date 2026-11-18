@@ -31,6 +31,7 @@ function fixture(provider = "brave") {
     invalidSnapshot: false,
     restartRequired: false,
     afterInstall: () => {},
+    installProgress: [] as unknown[],
   };
   const id = provider === "parallel-free" ? "parallel" : provider;
   const gateway = {
@@ -46,74 +47,88 @@ function fixture(provider = "brave") {
       "plugins.setEnabled",
       "plugins.reload",
     ],
-    request: vi.fn(async (method: string, params: JsonObject): Promise<unknown> => {
-      switch (method) {
-        case "config.get":
-          return {
-            valid: !state.invalidSnapshot,
-            hash,
-            config: structuredClone(config),
-            configRevisionHash: hash,
-            appliedConfigHash: hash,
-          };
-        case "plugins.list":
-          return {
-            plugins: [
-              {
+    request: vi.fn(
+      async (
+        method: string,
+        params: JsonObject,
+        _timeoutMs?: number,
+        onProgress?: (payload: unknown) => void,
+      ): Promise<unknown> => {
+        switch (method) {
+          case "config.get":
+            return {
+              valid: !state.invalidSnapshot,
+              hash,
+              config: structuredClone(config),
+              configRevisionHash: hash,
+              appliedConfigHash: hash,
+            };
+          case "plugins.list":
+            return {
+              plugins: [
+                {
+                  id,
+                  installed: state.pluginInstalled,
+                  enabled: state.pluginEnabled,
+                  version: "2026.10.5",
+                  runtime: {
+                    state: state.pluginRuntimeFailure
+                      ? "service-failed"
+                      : state.pluginActive
+                        ? "active"
+                        : "unloaded",
+                  },
+                },
+              ],
+              mutationAllowed: true,
+            };
+          case "plugins.install":
+          case "plugins.setEnabled":
+          case "plugins.reload": {
+            if (method === "plugins.install")
+              state.installProgress.forEach((event) => onProgress?.(event));
+            state.pluginInstalled = true;
+            state.pluginEnabled = true;
+            if (method !== "plugins.reload" || !state.reloadStaysUnloaded)
+              state.pluginActive = true;
+            if (method !== "plugins.reload") {
+              const plugins = config.plugins as { allow: string[]; entries: JsonObject };
+              if (!plugins.allow.includes(id)) plugins.allow.push(id);
+              plugins.entries[id] = { enabled: true };
+              hash = "plugin";
+              state.afterInstall();
+            }
+            return {
+              ok: true,
+              restartRequired: false,
+              runtime: { generation: 1, pluginIds: [id] },
+            };
+          }
+          case "plugins.inspect":
+            return {
+              ok: true,
+              plugin: {
                 id,
                 installed: state.pluginInstalled,
                 enabled: state.pluginEnabled,
                 version: "2026.10.5",
-                runtime: {
-                  state: state.pluginRuntimeFailure
-                    ? "service-failed"
-                    : state.pluginActive
-                      ? "active"
-                      : "unloaded",
-                },
               },
-            ],
-            mutationAllowed: true,
-          };
-        case "plugins.install":
-        case "plugins.setEnabled":
-        case "plugins.reload": {
-          state.pluginInstalled = true;
-          state.pluginEnabled = true;
-          if (method !== "plugins.reload" || !state.reloadStaysUnloaded) state.pluginActive = true;
-          if (method !== "plugins.reload") {
-            const plugins = config.plugins as { allow: string[]; entries: JsonObject };
-            if (!plugins.allow.includes(id)) plugins.allow.push(id);
-            plugins.entries[id] = { enabled: true };
-            hash = "plugin";
-            state.afterInstall();
-          }
-          return { ok: true, restartRequired: false, runtime: { generation: 1, pluginIds: [id] } };
+            };
+          case "config.apply":
+            expect(params.baseHash).toBe(hash);
+            config = JSON.parse(String(params.raw));
+            if (state.activateOnApply) state.pluginActive = true;
+            hash = "after";
+            return {
+              ok: true,
+              hash,
+              sentinel: { payload: { stats: { requiresRestart: state.restartRequired } } },
+            };
+          default:
+            throw new Error(`Unexpected request: ${method}`);
         }
-        case "plugins.inspect":
-          return {
-            ok: true,
-            plugin: {
-              id,
-              installed: state.pluginInstalled,
-              enabled: state.pluginEnabled,
-              version: "2026.10.5",
-            },
-          };
-        case "config.apply":
-          expect(params.baseHash).toBe(hash);
-          config = JSON.parse(String(params.raw));
-          if (state.activateOnApply) state.pluginActive = true;
-          hash = "after";
-          return {
-            ok: true,
-            hash,
-            sentinel: { payload: { stats: { requiresRestart: state.restartRequired } } },
-          };
-        default:
-          throw new Error(`Unexpected request: ${method}`);
-      }
-    }),
+      },
+    ),
   };
   const deps = {
     gateway: () => gateway,
@@ -135,6 +150,44 @@ function fixture(provider = "brave") {
 }
 
 describe("applying web search settings", () => {
+  it("reports observed install stages and verifies readiness after applying configuration", async () => {
+    const test = fixture();
+    const stages: string[] = [];
+    test.state.installProgress = [
+      { stage: "resolve", status: "started" },
+      { stage: "dependencies", status: "completed" },
+      { stage: "unknown", status: "started" },
+      null,
+      { stage: "dependencies", status: "started" },
+      { stage: "runtime", status: "started" },
+    ];
+    await applySearchConfig(
+      { ...test.deps, onProgress: (stage) => stages.push(stage) },
+      test.target,
+      test.original,
+    );
+    expect(stages).toEqual([
+      "preparing",
+      "fetching",
+      "installing",
+      "activating",
+      "verifying",
+      "activating",
+      "verifying",
+    ]);
+    expect(test.deps.assertMxcReady).toHaveBeenCalledOnce();
+  });
+
+  it("does not report fetching or installation when the component is already present", async () => {
+    const test = fixture();
+    test.state.pluginInstalled = true;
+    const onProgress = vi.fn();
+    await applySearchConfig({ ...test.deps, onProgress }, test.target, test.original);
+    expect(onProgress).not.toHaveBeenCalledWith("fetching");
+    expect(onProgress).not.toHaveBeenCalledWith("installing");
+    expect(onProgress).toHaveBeenLastCalledWith("verifying");
+  });
+
   it.each([
     ["brave", "brave"],
     ["tavily", "tavily"],

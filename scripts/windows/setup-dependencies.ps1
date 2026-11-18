@@ -6,7 +6,7 @@
     此脚本安装 MicroClaw 桌面客户端所需的核心第三方依赖：
       1. Git for Windows (PortableGit)
       2. Node.js v26.1+ (from npmmirror; also supports v24.16.x and later v24.x)
-      3. npm 镜像源配置
+      3. MicroClaw 专用 npm 源配置（不改写用户 npm 配置）
       4. OpenClaw Gateway (npm install -g)
       5. V8 编译缓存预热
       6. 系统 PATH 配置
@@ -18,7 +18,8 @@
     Node.js 安装目录 (默认: ~/.openclaw-node)
 
 .PARAMETER Mirror
-    npm 镜像源: npmmirror 或 tencent (默认: npmmirror)
+    Node/Git 二进制镜像: npmmirror 或 tencent (默认: npmmirror)。
+    npm 包源由 MICROCLAW_NPM_REGISTRY 或 MicroClaw 专用配置独立指定。
 
 .PARAMETER SkipGit
     跳过 Git 安装
@@ -42,6 +43,22 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$registryHelper = @(
+    (Join-Path $PSScriptRoot 'npm-registry.ps1'),
+    (Join-Path $PSScriptRoot 'resources/npm-registry.ps1')
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$registryDefaults = @(
+    (Join-Path $PSScriptRoot 'install-state/npm-registry.json'),
+    (Join-Path $PSScriptRoot 'resources/npm-registry.json'),
+    (Join-Path $PSScriptRoot '../../deployer/assets/npm-registry.json')
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $registryHelper -or -not $registryDefaults) {
+    throw 'MicroClaw npm source files are missing. Run the complete MicroClaw installer.'
+}
+. $registryHelper
+Invoke-WithMicroClawNpmRegistry -DefaultConfigPath $registryDefaults -Operation {
+param([string]$dependencyRegistry)
 
 # ── Mirror URLs ──
 $Mirrors = @{
@@ -326,22 +343,15 @@ if ($needInstall) {
 # ══════════════════════════════════════════════════════════════
 # Step 3: Configure npm
 # ══════════════════════════════════════════════════════════════
-Write-Step "Configuring npm registry ($Mirror)..."
+Write-Step "Using MicroClaw npm source..."
 $npmCmd = Join-Path $NodeDir "npm.cmd"
 if (-not (Test-Path $npmCmd)) {
     $npmCmd = Join-Path $NodeDir "npm"
 }
 
-# Set npm global config path to avoid touching system npmrc
-$npmrcDir = Join-Path $NodeDir "etc"
-New-Item -ItemType Directory -Path $npmrcDir -Force | Out-Null
-$env:npm_config_globalconfig = Join-Path $npmrcDir "npmrc"
-
 try {
-    & $npmCmd config set prefix $NodeDir 2>$null
-    & $npmCmd config set registry $($MirrorConfig.NpmRegistry)
     $actual = (& $npmCmd config get registry).Trim().TrimEnd('/')
-    $expected = $MirrorConfig.NpmRegistry.TrimEnd('/')
+    $expected = $dependencyRegistry.TrimEnd('/')
     if ($actual -eq $expected) {
         Write-Ok "npm registry: $actual"
     } else {
@@ -391,7 +401,7 @@ if ($needOpenClaw) {
         # (e.g. deprecation notices) don't abort under $ErrorActionPreference=Stop.
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        $npmOutput = & $npmCmd install -g "openclaw@$OpenClawTag" --prefix $NodeDir --registry $($MirrorConfig.NpmRegistry) --replace-registry-host always 2>&1
+        $npmOutput = & $npmCmd install -g "openclaw@$OpenClawTag" --prefix $NodeDir --registry $dependencyRegistry --replace-registry-host npmjs 2>&1
         $npmExitCode = $LASTEXITCODE
         foreach ($line in $npmOutput) {
             if ($line -is [System.Management.Automation.ErrorRecord]) {
@@ -444,3 +454,4 @@ Write-Host "  1. Install MicroClaw desktop app (if not already installed)" -Fore
 Write-Host "  2. Restart your terminal for PATH changes to take effect" -ForegroundColor Gray
 Write-Host "  3. Launch MicroClaw from the desktop shortcut" -ForegroundColor Gray
 Write-Host ""
+}

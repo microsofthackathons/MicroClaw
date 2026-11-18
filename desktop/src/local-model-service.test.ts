@@ -287,6 +287,79 @@ function fixture(initialReceipt?: LocalModelReceipt) {
   };
 }
 
+describe("lightweight local default selection", () => {
+  function fastFixture() {
+    const f = fixture();
+    f.gateway.serverVersion = "2026.10.10";
+    f.gateway.methods = [...f.gateway.methods, "config.set"];
+    f.plugin({ version: LOCAL_MODEL_PLUGIN_VERSION });
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params, timeout) => {
+      if (method === "config.set") {
+        const values = params as { baseHash: string; raw: string };
+        const before = (await original("config.get")) as { hash: string };
+        expect(values.baseHash).toBe(before.hash);
+        f.config(JSON.parse(values.raw));
+        const saved = (await original("config.get")) as { hash: string; config: unknown };
+        return { ok: true, hash: saved.hash, config: saved.config };
+      }
+      return original(method, params, timeout);
+    });
+    return f;
+  }
+
+  it("sets only the checked local selection on the current runtime", async () => {
+    const f = fastFixture();
+    const before = structuredClone(f.readConfig()) as Record<string, unknown>;
+    await f.service.activate({ kind: "existing-model", modelRef: MODEL });
+    await waitPhase(f, "ready");
+    expect(f.request.mock.calls.filter(([method]) => method === "config.set")).toHaveLength(1);
+    expect(f.request.mock.calls.some(([method]) => method === "config.patch")).toBe(false);
+    expect((f.readConfig() as Record<string, unknown>).models).toEqual(before.models);
+  });
+
+  it("retains file checks before the lightweight local write", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "microclaw-missing-fast-selection-"));
+    try {
+      const f = fastFixture();
+      f.config({
+        models: {
+          providers: {
+            "llama-cpp": {
+              baseUrl: "http://localhost:8080/v1",
+              localService: { command: "llama-server.exe" },
+              models: [
+                { id: "test-model", params: { modelPath: path.join(root, "missing.gguf") } },
+              ],
+            },
+          },
+        },
+      });
+      await expect(f.service.activate({ kind: "existing-model", modelRef: MODEL })).rejects.toThrow(
+        "files are missing",
+      );
+      expect(f.request.mock.calls.some(([method]) => method === "config.set")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a lost lightweight write reply without submitting another write", async () => {
+    const f = fastFixture();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, params, timeout) => {
+      const result = await original(method, params, timeout);
+      if (method === "config.set") throw new Error("disconnected after config commit");
+      return result;
+    });
+    await f.service.activate({ kind: "existing-model", modelRef: MODEL });
+    await waitPhase(f, "interrupted");
+    await f.service.resume();
+    await waitPhase(f, "ready");
+    expect(f.request.mock.calls.filter(([method]) => method === "config.set")).toHaveLength(1);
+  });
+});
+
 async function waitPhase(f: ReturnType<typeof fixture>, phase: LocalModelOperation["phase"]) {
   await vi.waitFor(() => expect(f.service.getOperation()?.phase).toBe(phase));
   await Promise.resolve();
@@ -733,6 +806,61 @@ describe("local model protocol guards", () => {
 });
 
 describe("local model provider hot loading", () => {
+  it.each(["plugins.install", "plugins.reload"])(
+    "starts exact model preparation after %s without scanning unrelated providers",
+    async (method) => {
+      const context = fixture();
+      context.plugin({ installed: method !== "plugins.install", runtime: { state: "unloaded" } });
+      const original = context.request.getMockImplementation()!;
+      context.request.mockImplementation(async (name, params, timeout) => {
+        if (name === "openclaw.setup.detect") throw new Error("Unrelated discovery must not run");
+        const result = await original(name, params, timeout);
+        if (name === method) context.plugin({ runtime: { state: "unloaded" } });
+        return result;
+      });
+      const installed = await context.service.installProvider({
+        confirmed: true,
+        modelRef: PRESET,
+      });
+      expect(installed.plugin.installed).toBe(true);
+      expect(installed.plugin.loaded).toBeUndefined();
+      await context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
+      await waitPhase(context, "step");
+      expect(context.request.mock.calls.filter(([name]) => name === method)).toHaveLength(1);
+      expect(context.request.mock.calls.some(([name]) => name === "openclaw.setup.detect")).toBe(
+        false,
+      );
+      expect(context.receipt()?.exactModelSelected).toBe(true);
+      expect(context.service.getOperation()?.step?.type).toBe("confirm");
+    },
+  );
+
+  it("reports targeted setup failures without treating registration as a loaded model", async () => {
+    const context = fixture();
+    context.plugin({ installed: false, runtime: { state: "unloaded" } });
+    const before = structuredClone(context.readConfig());
+    const original = context.request.getMockImplementation()!;
+    context.request.mockImplementation(async (name, params, timeout) => {
+      if (name === "openclaw.setup.prepare.start") throw new Error("Provider setup is unavailable");
+      const result = await original(name, params, timeout);
+      if (name === "plugins.install") context.plugin({ runtime: { state: "unloaded" } });
+      return result;
+    });
+    await context.service.installProvider({ confirmed: true, modelRef: PRESET });
+    await context.service.prepare({ authChoice: "llama-cpp", modelRef: PRESET });
+    await waitPhase(context, "error");
+    expect(context.service.getOperation()?.error).toContain("Provider setup is unavailable");
+    expect(context.readConfig()).toEqual(before);
+  });
+
+  it("rejects an unknown exact model before installing its runtime", async () => {
+    const context = fixture();
+    await expect(
+      context.service.installProvider({ confirmed: true, modelRef: "llama-cpp/unknown" }),
+    ).rejects.toThrow("managed ModelScope catalog");
+    expect(context.request).not.toHaveBeenCalled();
+  });
+
   it.each(["prepare", "activate"])(
     "refuses %s before configuration changes if hot reload is disabled",
     async (operation) => {

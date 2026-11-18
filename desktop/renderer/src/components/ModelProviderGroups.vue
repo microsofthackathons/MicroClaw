@@ -87,11 +87,11 @@
 import { computed, ref, useId, watch } from "vue";
 import { t } from "@/i18n";
 import { getModelRef, providerName, type ConfiguredModel } from "@/utils/configured-models";
-import { sortModelsByFamily } from "@/utils/model-family-sort";
 import {
   getProviderModelSections,
   isProviderModelVisible,
   isRecommendedProviderModel,
+  sortProviderModels,
 } from "@/utils/provider-model-options";
 import { getChatModelRestriction } from "../../../src/provider-model-capabilities";
 
@@ -127,11 +127,10 @@ const groups = computed(() => {
     result.set(model.providerKey, group);
   }
   return [...result].map(([key, models]) => {
-    const sorted = sortModelsByFamily(models, key === "qwen" ? "desc" : "asc");
-    const selected = sorted.find((model) => getModelRef(model) === props.selectedModel);
+    const sorted = sortProviderModels(key, models);
     const sections = search.value
       ? { primary: sorted, more: [] }
-      : getProviderModelSections(key, sorted, selected?.id);
+      : getProviderModelSections(key, sorted);
     return {
       key,
       models: sorted,

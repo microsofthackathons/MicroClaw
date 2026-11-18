@@ -595,6 +595,12 @@ export default {
   "settings.searchApiKeyRequired": "API key required",
   "settings.searchApiKeyFormatInvalid": "Check the key format",
   "settings.searchSaveFailed": "Failed to save",
+  "settings.searchProgress": "{stage} · {seconds}s",
+  "settings.searchPreparing": "Preparing",
+  "settings.searchFetching": "Fetching component",
+  "settings.searchInstalling": "Installing component",
+  "settings.searchActivating": "Enabling search",
+  "settings.searchVerifying": "Checking readiness",
   "settings.saveFailed": "Save failed: {error}",
   "settings.openLinkFailed": "Could not open the link: {error}",
   "settings.clearHistoryConfirm":
@@ -697,7 +703,10 @@ export default {
   "fixedLocal.confirmationExpired":
     "This download confirmation is no longer active. Refresh the setup status before retrying.",
   "fixedLocal.preparing": "Preparing the selected model...",
-  "fixedLocal.preparingHint": "Checking runtime components and download space. Please wait.",
+  "fixedLocal.preparingHint": "Checking download requirements and available space. Please wait.",
+  "fixedLocal.installingRuntime": "Installing and loading runtime components...",
+  "fixedLocal.installingRuntimeHint":
+    "First use requires local runtime components. The model download will follow.",
   "fixedLocal.downloadStage.chat": "Downloading chat model...",
   "fixedLocal.downloadStage.embedding": "Downloading companion embedding model...",
   "fixedLocal.downloadStage.runtime": "Downloading runtime components...",

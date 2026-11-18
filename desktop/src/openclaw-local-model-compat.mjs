@@ -128,6 +128,297 @@ export async function downloadWithOfficialGitHubRetry(params, download) {
   }
 }
 
+/** Bounded range prefetch; the official downloader still writes and verifies the whole file. */
+export async function fetchModelScopeWithRanges(fetcher, request, params, options = {}) {
+  const concurrency = options.concurrency ?? 4;
+  const chunkBytes = options.chunkBytes ?? 8 * 1024 * 1024;
+  const minimumBytes = options.minimumBytes ?? 32 * 1024 * 1024;
+  const warmupBytes = options.warmupBytes ?? 32 * 1024 * 1024;
+  const warmupMs = options.warmupMs ?? 1500;
+  const fastBytesPerSecond = options.fastBytesPerSecond ?? 16 * 1024 * 1024;
+  if (
+    !Number.isInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > 4 ||
+    !Number.isSafeInteger(chunkBytes) ||
+    chunkBytes < 1 ||
+    chunkBytes > 16 * 1024 * 1024 ||
+    !Number.isSafeInteger(minimumBytes) ||
+    minimumBytes < 0 ||
+    !Number.isSafeInteger(warmupBytes) ||
+    warmupBytes < 1 ||
+    !Number.isFinite(warmupMs) ||
+    warmupMs < 0 ||
+    !Number.isFinite(fastBytesPerSecond) ||
+    fastBytesPerSecond <= 0
+  )
+    throw new Error("Invalid model download concurrency settings");
+  const url = new globalThis.URL(request.url);
+  const total = params.expectedSize;
+  const headers = new globalThis.Headers(request.init?.headers);
+  if (
+    url.origin !== "https://modelscope.cn" ||
+    !url.pathname.startsWith("/api/v1/models/") ||
+    url.username ||
+    url.password ||
+    headers.has("range") ||
+    request.init?.body ||
+    (request.init?.method && request.init.method !== "GET") ||
+    !Number.isSafeInteger(total) ||
+    total < Math.max(1, minimumBytes) ||
+    !/^[a-f0-9]{64}$/iu.test(params.expectedSha256 ?? "")
+  )
+    return fetcher(request);
+
+  const controller = new globalThis.AbortController();
+  const deadline = globalThis.AbortSignal.timeout(request.timeoutMs ?? 30 * 60_000);
+  const signal = globalThis.AbortSignal.any([
+    controller.signal,
+    deadline,
+    ...(request.signal ? [request.signal] : []),
+  ]);
+  const tasks = new Map();
+  let partCount = 0;
+  let rangeOffset = 0;
+  const windowSize = concurrency * 2;
+  let nextStart = 0;
+  let nextRead = 0;
+  let active = 0;
+  let stopped = false;
+  let failure;
+  let closing;
+  let original;
+  let originalReader;
+  let promotion;
+  let assessed = false;
+  let parallel = false;
+  let downloaded = 0;
+  let lastBytes = 0;
+  let lastAt = Date.now();
+  let speed = 0;
+  const progress = (bytes) => {
+    signal.throwIfAborted();
+    downloaded += bytes;
+    if (downloaded > total) throw new Error("Model download exceeded its expected size");
+    const now = Date.now();
+    const elapsed = now - lastAt;
+    if (elapsed < 250 && downloaded !== total) return;
+    const sample = ((downloaded - lastBytes) * 1000) / Math.max(1, elapsed);
+    const weight = 1 - Math.exp(-elapsed / 1500);
+    speed = speed === 0 ? sample : speed + weight * (sample - speed);
+    lastAt = now;
+    lastBytes = downloaded;
+    params.onProgress?.({ downloadedSize: downloaded, totalSize: total, bytesPerSecond: speed });
+  };
+  const openRange = (start, end, etag, probing = false) => {
+    signal.throwIfAborted();
+    const rangeHeaders = new globalThis.Headers(headers);
+    rangeHeaders.set("Range", `bytes=${start}-${end}`);
+    rangeHeaders.set("Accept-Encoding", "identity");
+    if (etag) rangeHeaders.set("If-Range", etag);
+    return fetcher({
+      ...request,
+      init: { ...request.init, headers: rangeHeaders },
+      signal,
+      timeoutMs: probing
+        ? Math.min(request.timeoutMs ?? 10_000, 10_000)
+        : Math.min(request.timeoutMs ?? 120_000, 120_000),
+    });
+  };
+  const readRange = async (result, start, end, report) => {
+    let reader;
+    try {
+      signal.throwIfAborted();
+      const { response } = result;
+      const range = response.headers.get("content-range")?.match(/^bytes (\d+)-(\d+)\/(\d+)$/iu);
+      const length = end - start + 1;
+      const contentLength = response.headers.get("content-length");
+      const encoding = response.headers.get("content-encoding");
+      if (
+        response.status !== 206 ||
+        !range ||
+        Number(range[1]) !== start ||
+        Number(range[2]) !== end ||
+        Number(range[3]) !== total ||
+        (contentLength !== null && Number(contentLength) !== length) ||
+        (encoding && encoding !== "identity") ||
+        !response.body
+      )
+        throw new Error(`Invalid model range response: HTTP ${response.status}`);
+      const bytes = new Uint8Array(length);
+      let written = 0;
+      reader = response.body.getReader();
+      while (true) {
+        signal.throwIfAborted();
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (written + chunk.value.byteLength > length)
+          throw new Error("Model range exceeded its declared size");
+        bytes.set(chunk.value, written);
+        written += chunk.value.byteLength;
+        if (report) progress(chunk.value.byteLength);
+      }
+      signal.throwIfAborted();
+      if (written !== length) throw new Error("Model range ended before its declared size");
+      return bytes;
+    } finally {
+      if (reader) {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      } else await result.response.body?.cancel().catch(() => undefined);
+      await result.release();
+    }
+  };
+
+  // Fast servers stay on their original stream without extra range requests.
+  original = await fetcher({ ...request, signal });
+  if (
+    original.response.status !== 200 ||
+    !original.response.body ||
+    (original.response.headers.get("content-encoding") &&
+      original.response.headers.get("content-encoding") !== "identity")
+  )
+    return original;
+  const responseHeaders = new globalThis.Headers(original.response.headers);
+  const responseUrl = original.response.url || request.url;
+  const candidateEtag = responseHeaders.get("etag");
+  const etag =
+    candidateEtag && candidateEtag.length <= 1024 && /^"[^"]+"$/u.test(candidateEtag)
+      ? candidateEtag
+      : undefined;
+  originalReader = original.response.body.getReader();
+  const samplingStarted = Date.now();
+  lastAt = samplingStarted;
+  const releaseOriginal = async () => {
+    const owned = original;
+    original = undefined;
+    if (!owned) return;
+    await originalReader.cancel().catch(() => undefined);
+    originalReader.releaseLock();
+    originalReader = undefined;
+    await owned.release();
+  };
+  const tryParallel = async () => {
+    let probe;
+    try {
+      probe = await openRange(downloaded, downloaded, etag, true);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error?.name === "TimeoutError") return;
+      throw error;
+    }
+    // Keep the existing valid stream on unsupported/rate-limited range probes.
+    // In particular, never turn a 429 into additional parallel requests.
+    if (probe.response.status !== 206) {
+      await probe.response.body?.cancel().catch(() => undefined);
+      await probe.release();
+      signal.throwIfAborted();
+      return;
+    }
+    await readRange(probe, downloaded, downloaded, false);
+    rangeOffset = downloaded;
+    partCount = Math.ceil((total - rangeOffset) / chunkBytes);
+    await releaseOriginal();
+    signal.throwIfAborted();
+    parallel = true;
+  };
+
+  const release = () => {
+    closing ??= (async () => {
+      stopped = true;
+      controller.abort();
+      await Promise.allSettled([...tasks.values(), ...(promotion ? [promotion] : [])]);
+      await releaseOriginal();
+      tasks.clear();
+    })();
+    return closing;
+  };
+  const schedule = () => {
+    if (stopped || signal.aborted || failure) return;
+    while (active < concurrency && nextStart < partCount && nextStart - nextRead < windowSize) {
+      const index = nextStart++;
+      const start = rangeOffset + index * chunkBytes;
+      const end = Math.min(total - 1, start + chunkBytes - 1);
+      active++;
+      const task = openRange(start, end, etag)
+        .then((result) => readRange(result, start, end, true))
+        .catch((error) => {
+          failure ??= error;
+          controller.abort(error);
+          throw error;
+        })
+        .finally(() => {
+          active--;
+          schedule();
+        });
+      // Future ranges may fail before the ordered consumer reaches them.
+      void task.catch(() => undefined);
+      tasks.set(index, task);
+    }
+  };
+  const body = new globalThis.ReadableStream(
+    {
+      async pull(stream) {
+        try {
+          if (failure) throw failure;
+          signal.throwIfAborted();
+          if (!parallel) {
+            const chunk = await originalReader.read();
+            signal.throwIfAborted();
+            if (chunk.done) {
+              await releaseOriginal();
+              stream.close();
+              return;
+            }
+            progress(chunk.value.byteLength);
+            stream.enqueue(chunk.value);
+            const elapsed = Date.now() - samplingStarted;
+            if (!assessed && (elapsed >= warmupMs || downloaded >= warmupBytes)) {
+              assessed = true;
+              if (
+                total - downloaded >= chunkBytes * 2 &&
+                (downloaded * 1000) / Math.max(1, elapsed) < fastBytesPerSecond
+              ) {
+                promotion = tryParallel();
+                try {
+                  await promotion;
+                } finally {
+                  promotion = undefined;
+                }
+              }
+            }
+            return;
+          }
+          if (nextRead === partCount) {
+            stream.close();
+            return;
+          }
+          schedule();
+          const index = nextRead;
+          const bytes = await tasks.get(index);
+          if (failure) throw failure;
+          signal.throwIfAborted();
+          if (stopped) return;
+          tasks.delete(index);
+          nextRead++;
+          stream.enqueue(bytes);
+        } catch (error) {
+          stream.error(failure ?? error);
+          await release();
+        }
+      },
+      cancel: release,
+    },
+    { highWaterMark: 0 },
+  );
+  responseHeaders.delete("content-range");
+  responseHeaders.delete("content-encoding");
+  responseHeaders.set("content-length", String(total));
+  const response = new globalThis.Response(body, { status: 200, headers: responseHeaders });
+  Object.defineProperty(response, "url", { value: responseUrl });
+  return { response, release, microclawProgress: true };
+}
+
 const MODEL_SCOPE_SOURCE_HELPERS = `const MICROCLAW_LOCAL_MODEL_SOURCES = ${JSON.stringify(MICROCLAW_LOCAL_MODEL_SOURCES)};
 ${modelScopeModelUrl.toString()}
 ${modelScopeArtifact.toString()}
@@ -453,7 +744,7 @@ ${patched}`;
   const downloadEnd = patched.indexOf("\nasync function ", downloadStart + 1);
   if (downloadStart < 0 || downloadEnd < 0)
     throw new Error("The pinned runtime download function is unavailable");
-  const verifiedDownload = replaceExactly(
+  let verifiedDownload = replaceExactly(
     replaceExactly(
       patched.slice(downloadStart, downloadEnd),
       "async function downloadVerifiedFile(params) {",
@@ -462,6 +753,23 @@ ${patched}`;
     "\t\t\tif (!response.ok || !response.body)",
     "\t\t\tparams.onMicroclawResponse?.(response.url);\n\t\t\tif (!response.ok || !response.body)",
   );
+  if (!legacy) {
+    verifiedDownload = replaceExactly(
+      verifiedDownload,
+      "const { response, release } = await fetchWithSsrFGuard({",
+      "const { response, release, microclawProgress } = await fetchModelScopeWithRanges(fetchWithSsrFGuard, {",
+    );
+    verifiedDownload = replaceExactly(
+      verifiedDownload,
+      '\t\t\tauditContext: "llama-cpp-download"\n\t\t});',
+      '\t\t\tauditContext: "llama-cpp-download"\n\t\t}, params);',
+    );
+    verifiedDownload = replaceExactly(
+      verifiedDownload,
+      "\t\t\t\t\tparams.onProgress?.({",
+      "\t\t\t\t\tif (!microclawProgress) params.onProgress?.({",
+    );
+  }
   patched =
     patched.slice(0, downloadStart) +
     `async function downloadVerifiedFile(params) {
@@ -469,6 +777,7 @@ ${patched}`;
 }
 ${cacheIsolatedGitHubAssetUrl.toString()}
 ${downloadWithOfficialGitHubRetry.toString()}
+${legacy ? "" : fetchModelScopeWithRanges.toString()}
 ${verifiedDownload}` +
     patched.slice(downloadEnd);
   patched = replaceExactly(

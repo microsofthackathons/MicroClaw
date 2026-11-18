@@ -74,12 +74,17 @@ public sealed class CwdPolicyTests : IDisposable
             policyFingerprint: fingerprint,
             commandConsent: consent);
 
-        async Task<JsonElement> Run(string payload, string? cwd, string decision, bool requiresApproval = true)
+        async Task<JsonElement> Run(
+            string payload,
+            string? cwd,
+            string decision,
+            bool requiresApproval = true,
+            int? timeoutMs = 30_000)
         {
             var input = JsonSerializer.SerializeToElement(new
             {
                 command = new[] { Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d", "/s", "/c", payload },
-                cwd, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test",
+                cwd, rawCommand = payload, agentId = "main", sessionKey = "agent:main:test", timeoutMs,
             });
             var prepared = await capability.ExecuteAsync(new NodeInvokeRequest
             {
@@ -102,7 +107,7 @@ public sealed class CwdPolicyTests : IDisposable
             var dispatch = JsonSerializer.SerializeToElement(new
             {
                 command = argv, cwd, rawCommand = commandText,
-                agentId = "main", sessionKey = "agent:main:test", systemRunPlan = plan,
+                agentId = "main", sessionKey = "agent:main:test", timeoutMs, systemRunPlan = plan,
             });
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var proof = new ApprovalProofRecord(
@@ -113,7 +118,7 @@ public sealed class CwdPolicyTests : IDisposable
             var request = JsonSerializer.SerializeToElement(new
             {
                 command = argv, cwd, rawCommand = commandText,
-                agentId = "main", sessionKey = "agent:main:test",
+                agentId = "main", sessionKey = "agent:main:test", timeoutMs,
                 systemRunPlan = plan, microclawApprovalProof = proof,
             });
             var response = await capability.ExecuteAsync(new NodeInvokeRequest
@@ -142,6 +147,10 @@ public sealed class CwdPolicyTests : IDisposable
         var fileRead = await Run($"type \"{file}\"", _root, "allow-once");
         Assert.True(fileRead.GetProperty("success").GetBoolean(), fileRead.GetRawText());
         Assert.Equal("consent-file-content", fileRead.GetProperty("stdout").GetString()!.Trim());
+
+        var noTimeout = await Run("echo no-timeout", _root, "allow-once", timeoutMs: null);
+        Assert.True(noTimeout.GetProperty("success").GetBoolean(), noTimeout.GetRawText());
+        Assert.Equal("no-timeout", noTimeout.GetProperty("stdout").GetString());
 
         var denied = await Run("echo should-not-run", _root, "policy");
         Assert.False(denied.GetProperty("success").GetBoolean());
@@ -381,6 +390,57 @@ public sealed class CwdPolicyTests : IDisposable
         var commandLine = WindowsCommandLine.Join(run.Argv);
         Assert.DoesNotContain("declare-access", commandLine);
         Assert.Contains("\\\"C:\\Users\\sunt\\Desktop\\MXC-Approval-Smoke-20261020-1150\\\"", commandLine);
+    }
+
+    [Fact]
+    public void ParseRunUsesDefaultTimeoutWhenFieldIsMissing()
+    {
+        var capability = Capability(Policy([]));
+
+        var run = capability.ParseRun(Parse("""{"command":["cmd.exe"]}"""));
+
+        Assert.Equal(30_000, run.TimeoutMs);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("0")]
+    public void ParseRunTreatsNullAndZeroAsNoTimeout(string value)
+    {
+        var capability = Capability(Policy([]));
+
+        var run = capability.ParseRun(Parse(
+            """{"command":["cmd.exe"],"timeoutMs":""" + value + "}"));
+
+        Assert.Equal(0, run.TimeoutMs);
+    }
+
+    [Theory]
+    [InlineData("1000", 1000)]
+    [InlineData("2147483648", 600_000)]
+    public void ParseRunPreservesFiniteTimeoutsAndClampsTheMaximum(string value, int expected)
+    {
+        var capability = Capability(Policy([]));
+
+        var run = capability.ParseRun(Parse(
+            """{"command":["cmd.exe"],"timeoutMs":""" + value + "}"));
+
+        Assert.Equal(expected, run.TimeoutMs);
+    }
+
+    [Theory]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    [InlineData("\"30000\"")]
+    [InlineData("true")]
+    public void ParseRunRejectsInvalidTimeoutValues(string value)
+    {
+        var capability = Capability(Policy([]));
+
+        var error = Assert.Throws<HostPolicyException>(() => capability.ParseRun(Parse(
+            """{"command":["cmd.exe"],"timeoutMs":""" + value + "}")));
+
+        Assert.Equal("invalid-timeout", error.Code);
     }
 
     [Fact]

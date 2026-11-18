@@ -50,7 +50,8 @@ class BuildTimingWiringTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 self.assertIn(operation, stages[stage])
         self.assertIn("Start-BuildTiming -Timer $buildTimer", source)
-        self.assertTrue(source.rstrip().endswith("Write-BuildTimingSummary"))
+        # The registry environment wrapper closes after the final timing summary.
+        self.assertRegex(source, r"Write-BuildTimingSummary\s*\}\s*$")
 
     def test_failure_paths_print_summary_before_exiting(self):
         source = (ROOT / "build.ps1").read_text(encoding="utf-8-sig")

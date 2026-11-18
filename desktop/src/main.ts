@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
+import { microClawNpmEnvironment } from "./npm-registry";
 import { GatewayStartupTiming, type StartupTimingEvent } from "./startup-timing";
 import { RuntimePreparationTiming, parseRuntimeTiming } from "./runtime-preparation-timing";
 import { prepareBundledOpenClawDir } from "./bundled-runtime";
@@ -1647,6 +1648,8 @@ const githubCopilotAuthManager = new GitHubCopilotAuthManager(
     if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
   },
   (url) => shell.openExternal(url),
+  (timing) =>
+    electronLifecycleDiagnostics.log("github-copilot-login-timing", timing, { durable: false }),
 );
 
 // ---------------------------------------------------------------------------
@@ -6605,7 +6608,12 @@ async function runGatewayStartup(
       ? getWindowsNodeMxcWeixinEnvironment(nextWeixinContext)
       : {};
     const gwEnv: Record<string, string> = {
-      ...gatewayEnvironment,
+      ...microClawNpmEnvironment(gatewayEnvironment, {
+        installDir: app.isPackaged
+          ? path.dirname(app.getPath("exe"))
+          : process.env.MICROCLAW_DIR || path.join(app.getPath("home"), ".microclaw"),
+        resourcesDir: app.isPackaged ? process.resourcesPath : undefined,
+      }),
       ...livePolicyEnvironment,
       OPENCLAW_STATE_DIR: stateDir,
       NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
@@ -7685,12 +7693,16 @@ function registerIpcHandlers(): void {
                 () => undefined,
                 "plugin",
               ),
-            applySearch: (next, expected, assertCurrent) =>
+            applySearch: (next, expected, assertCurrent, requestId) =>
               applySearchConfig(
                 {
                   gateway: () => gwClient,
                   readConfig,
                   assertCurrent,
+                  onProgress: (stage) => {
+                    if (requestId && !_event.sender.isDestroyed())
+                      _event.sender.send("config:search-progress", { requestId, stage });
+                  },
                   assertMxcReady: async () => {
                     if (!isWindowsNodeMxcDesired()) return;
                     const status = await getWindowsNodeMxcStatus();

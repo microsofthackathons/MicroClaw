@@ -132,6 +132,7 @@ export interface LocalModelAPI {
   installProvider(params: {
     confirmed: true;
     reviewToken?: string;
+    modelRef?: string;
   }): Promise<LocalModelResult<LocalModelCapabilities>>;
   prepare(params: {
     authChoice: LocalModelChoice;

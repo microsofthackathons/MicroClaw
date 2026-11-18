@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { MODEL_APPLY_SETTLE_TIMEOUT_MS } from "./constants";
-import { waitForDefaultModelApplied } from "./model-setup";
+import { assertModelConfigUnchanged, waitForDefaultModelApplied } from "./model-setup";
+import { prepareDefaultModelWrite } from "./default-model-write";
 import { isLoopbackAddress } from "./model-connection";
 import { inspectLocalModelFiles, inspectManagedLocalModelCache } from "./local-model-files";
 import {
@@ -566,6 +567,7 @@ export class LocalModelService {
     gateway: LocalModelGateway,
     generation: number | undefined,
     result: JsonObject,
+    selectedModel?: string,
   ): Promise<LocalModelCapabilities | undefined> {
     this.assertProviderGateway(gateway, generation);
     if (!providerRuntimeApplied(result)) return;
@@ -581,6 +583,10 @@ export class LocalModelService {
         capabilities.plugin.loaded !== false
       ) {
         if (capabilities.plugin.loaded === true) return capabilities;
+        // A registered on-demand provider is loaded and checked by prepare.start.
+        // For an exact managed model, scanning every provider here duplicates that work.
+        // Keep loaded unknown until setup actually runs; do not claim a successful load.
+        if (selectedModel) return capabilities;
         const detection = await this.detect({ refresh: true });
         this.assertProviderGateway(gateway, generation);
         if (detection.choices.some((option) => option.id === PROVIDER))
@@ -597,6 +603,7 @@ export class LocalModelService {
   private async reloadProvider(
     gateway: LocalModelGateway,
     acknowledgeCapabilities: JsonObject = {},
+    selectedModel?: string,
   ): Promise<LocalModelCapabilities> {
     const generation = gateway.connectionGeneration;
     this.assertProviderGateway(gateway, generation);
@@ -614,7 +621,12 @@ export class LocalModelService {
           300_000,
         ),
       );
-      const capabilities = await this.confirmProviderRuntime(gateway, generation, result);
+      const capabilities = await this.confirmProviderRuntime(
+        gateway,
+        generation,
+        result,
+        selectedModel,
+      );
       if (!capabilities)
         throw new Error(
           "The local model provider could not be hot-loaded. Downloaded files are retained; retry loading. Gateway was not restarted.",
@@ -770,6 +782,9 @@ export class LocalModelService {
 
   async installProvider(input: unknown): Promise<LocalModelCapabilities> {
     const params = record(input);
+    const selectedModel = params.modelRef === undefined ? undefined : text(params.modelRef);
+    if (selectedModel && !isManagedLocalModel(selectedModel))
+      throw new Error("Only models in the managed ModelScope catalog can be prepared");
     if (params.confirmed !== true)
       throw new Error("Explicit plugin installation consent is required");
     if (params.reviewToken !== undefined && params.reviewToken !== this.reviewedToken) {
@@ -832,11 +847,12 @@ export class LocalModelService {
         if (result) {
           if (result.ok !== true)
             throw new Error("The official plugin could not be installed or enabled");
-          applied = await this.confirmProviderRuntime(gateway, generation, result);
+          applied = await this.confirmProviderRuntime(gateway, generation, result, selectedModel);
         }
       }
       this.assertProviderGateway(gateway, generation);
-      const loaded = applied ?? (await this.reloadProvider(gateway, acknowledgeCapabilities));
+      const loaded =
+        applied ?? (await this.reloadProvider(gateway, acknowledgeCapabilities, selectedModel));
       this.reviewedToken = undefined;
       this.pendingReview = undefined;
       return loaded;
@@ -927,12 +943,22 @@ export class LocalModelService {
       await this.requireReady();
       const context = this.detectionContext();
       const agentId = await this.defaultAgent(context.gateway);
+      const originalConfig = structuredClone(this.deps.readConfig());
       const snapshot = record(await context.gateway.request("config.get", {}));
       if (snapshot.valid !== true) throw new Error("The Gateway configuration is invalid");
       assertConfigHotReload(snapshot.config);
       const patch = buildLocalModelSelectionPatch(snapshot.config, modelRef);
       this.assertModelFilesPresent(snapshot.config, modelRef);
       const baseHash = text(snapshot.hash);
+      const write = prepareDefaultModelWrite({
+        gateway: context.gateway,
+        originalConfig,
+        modelRef,
+        baseHash,
+        patch,
+      });
+      if (write.method === "config.set")
+        assertModelConfigUnchanged(originalConfig, this.deps.readConfig());
       this.assertDetectionCurrent(context);
       this.deps.assertMutable();
       const receipt: LocalModelReceipt = {
@@ -959,23 +985,19 @@ export class LocalModelService {
       this.drive(async (gateway) => {
         this.deps.assertMutable();
         this.assertModelFilesPresent(this.deps.readConfig(), modelRef);
-        const result = record(
-          await gateway.request(
-            "config.patch",
-            {
-              raw: JSON.stringify(patch),
-              baseHash,
-            },
-            NEXT_TIMEOUT_MS,
-          ),
-        );
+        if (write.method === "config.set")
+          assertModelConfigUnchanged(originalConfig, this.deps.readConfig());
+        const result = record(await gateway.request(write.method, write.params, NEXT_TIMEOUT_MS));
         if (result.ok !== true) throw new Error("The model selection could not be saved");
         if (selectedDefault(result.config) !== modelRef) {
           throw new Error("The saved model does not match the selected model");
         }
         const stats = optionalRecord(optionalRecord(optionalRecord(result.sentinel).payload).stats);
         if (stats.requiresRestart === true) await this.reloadProvider(gateway);
-        await this.waitForSelectionApplied(modelRef);
+        await this.waitForSelectionApplied(
+          modelRef,
+          write.method === "config.set" ? text(result.hash) : undefined,
+        );
         this.finish({ phase: "ready", modelRef });
       });
       return this.getOperation()!;
@@ -1282,13 +1304,16 @@ export class LocalModelService {
     }
   }
 
-  private async waitForSelectionApplied(modelRef: string): Promise<void> {
+  private async waitForSelectionApplied(modelRef: string, writtenHash?: string): Promise<void> {
     this.publish({ phase: "applying", step: undefined, error: undefined });
-    const applied = await waitForDefaultModelApplied(modelRef, () => {
+    const applied = await waitForDefaultModelApplied(modelRef, async (timeoutMs) => {
       if (this.receipt?.gatewayIdentity !== this.deps.identity()) {
         throw new Error("The Gateway identity changed; reconnect to the original Gateway");
       }
-      return this.gateway().request("config.get", {});
+      const current = record(await this.gateway().request("config.get", {}, timeoutMs));
+      if (writtenHash && current.hash !== writtenHash)
+        throw new Error("The configuration changed while applying the local model");
+      return current;
     });
     if (!applied) {
       throw new ModelApplicationPendingError(

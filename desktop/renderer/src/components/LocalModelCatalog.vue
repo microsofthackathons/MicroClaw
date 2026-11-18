@@ -182,7 +182,9 @@ function isDisabled(model: LocalModelCatalogEntry): boolean {
 function actionLabel(model: LocalModelCatalogEntry): string {
   return t(
     props.selectingModelRef === model.modelRef
-      ? "modelManager.switching"
+      ? model.fileStatus === "present"
+        ? "modelManager.switching"
+        : "fixedLocal.preparing"
       : props.busyModelRef === model.modelRef
         ? "localModel.viewSetup"
         : model.fileStatus === "present"

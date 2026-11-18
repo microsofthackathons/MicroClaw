@@ -151,6 +151,7 @@ describe("guarded configuration writes", () => {
       next,
       before,
       expect.any(Function),
+      undefined,
     );
     expect(state.deps.persist).not.toHaveBeenCalled();
     expect(state.deps.startServices).not.toHaveBeenCalled();
@@ -168,9 +169,41 @@ describe("guarded configuration writes", () => {
       next,
       before,
       expect.any(Function),
+      undefined,
     );
     expect(state.deps.persist).not.toHaveBeenCalled();
   });
+
+  it("passes a validated search request id through to progress reporting", async () => {
+    const before = routedConfig();
+    const state = fixture({ mxc: false, current: before });
+    const next = searchChange(before);
+    await writeGuardedConfig(state.deps, next, before, {
+      kind: "search-settings",
+      requestId: "search-123",
+    });
+    expect(state.deps.applySearch).toHaveBeenCalledExactlyOnceWith(
+      next,
+      before,
+      expect.any(Function),
+      "search-123",
+    );
+  });
+
+  it.each(["", "x".repeat(129), 123, null])(
+    "rejects an invalid search request id: %s",
+    async (requestId) => {
+      const before = routedConfig();
+      const state = fixture({ mxc: false, current: before });
+      await expect(
+        writeGuardedConfig(state.deps, searchChange(before), before, {
+          kind: "search-settings",
+          requestId,
+        }),
+      ).rejects.toThrow("Invalid configuration write intent");
+      expect(state.deps.applySearch).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["gateway", "hooks", "exec"] as const)(
     "rejects a search update that also changes %s",

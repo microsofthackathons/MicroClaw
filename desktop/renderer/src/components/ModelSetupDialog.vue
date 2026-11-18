@@ -593,7 +593,6 @@ const catalogSections = computed(() =>
   getProviderModelSections(
     providerKey.value,
     catalogModels.value.map((id) => ({ id })),
-    selectedModelName.value,
   ),
 );
 const visibleCatalogModels = computed(() => {

@@ -221,8 +221,13 @@ interface OpenClawAPI {
     write(
       config: unknown,
       expectedConfig?: unknown,
-      intent?: { kind: "initial-setup"; providerKey: string } | { kind: "search-settings" },
+      intent?:
+        | { kind: "initial-setup"; providerKey: string }
+        | import("../src/search-setup-progress").SearchSettingsWriteIntent,
     ): Promise<void>;
+    onSearchProgress(
+      callback: (progress: import("../src/search-setup-progress").SearchSetupProgress) => void,
+    ): () => void;
   };
   settings: {
     get(): Promise<AppSettings>;

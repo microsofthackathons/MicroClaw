@@ -86,6 +86,8 @@ MicroClaw 仅支持 **Windows 10/11**。对大多数用户来说，真正需要�
 
 桌面客户端更新会先完整解压到暂存目录，再整体替换随包目录，不再覆盖解压；这样可以清除导致完整性校验失败的旧版原生运行时文件，同时保留安装器的升级记录、备份和安装状态。解压或发布失败时保留或恢复原有桌面文件；若恢复失败，则保留恢复文件供后续处理。
 
+包源由 MicroClaw 专用配置管理，安装器不再改写用户全局 npm 配置。可用进程变量 `MICROCLAW_NPM_REGISTRY` 或安装目录下 `install-state/npm-registry.json` 指定部署允许的源；构建和运行时插件获取会传递该配置。企业认证、代理及证书仍使用 npm 支持的既有配置。详见[专用 npm 源](docs/reference/microclaw-npm-registry.md)。
+
 ### 2. 只补上你的模型配置
 
 首次启动时，只有在模型尚未配置的情况下才会进入 SetupWizard。这里真正需要用户填写的内容只有：
@@ -288,10 +290,10 @@ Gateway 原生工具、插件、频道、Cron、Hooks 和 Canvas 在两种模式
 .\build.ps1
 ```
 
-`build.ps1` 准备内置 OpenClaw 资源时默认使用华为 npm 源
+`build.ps1` 安装 npm 依赖和准备内置 OpenClaw 资源时默认使用华为 npm 源
 （`https://repo.huaweicloud.com/repository/npm/`），不受机器普通 npm 源配置影响。
 如需覆盖，优先使用显式设置的 `MICROCLAW_NPM_REGISTRY`，其次为 `MSIX_NPM_REGISTRY`。
-该设置仅作用于资源准备，成功或失败后均恢复；普通依赖安装与用户 npm 配置不变。
+该设置作用于完整构建，成功或失败后均恢复；单独运行的 npm 命令和用户 npm 配置不变。
 构建日志只显示源的协议、主机和端口，不输出凭据、路径或查询参数。
 固定版本、Node 引擎和资源完整性校验仍会执行。
 
