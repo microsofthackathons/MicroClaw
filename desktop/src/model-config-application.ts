@@ -4,6 +4,7 @@ import { assertConfigWriteAllowed } from "./config-write-policy";
 import { GatewayRequestError } from "./gateway-client";
 import { supportsLocalModelGatewayVersion } from "./local-model-service";
 import { assertModelConfigUnchanged, ModelConfigRestartRequiredError } from "./model-setup";
+import { removeProviderConnectionConfig } from "./provider-connection-config";
 
 type JsonObject = Record<string, unknown>;
 
@@ -40,7 +41,7 @@ function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
 }
 
-/** Connection edits/removal leave all other providers, model references and plugins alone. */
+/** Connection edits preserve models; removal may also clear only the removed provider's refs. */
 function isManagedProviderConnectionUpdate(params: ModelConfigUpdate): boolean {
   if (
     !["provider-save", "provider-remove"].includes(params.action) ||
@@ -56,27 +57,12 @@ function isManagedProviderConnectionUpdate(params: ModelConfigUpdate): boolean {
       Object.hasOwn(nextProviders, params.providerKey)
     )
       return false;
-    const agents = object(object(params.config).agents);
-    const scopes = [
-      agents.defaults,
-      ...Object.values(object(agents.entries)),
-      ...(Array.isArray(agents.list) ? agents.list : []),
-    ];
-    const refersToProvider = (value: unknown) =>
-      typeof value === "string" && value.startsWith(`${params.providerKey}/`);
-    if (
-      scopes.some((scope) => {
-        const current = object(scope);
-        const selector = object(current.model);
-        return (
-          refersToProvider(current.model) ||
-          refersToProvider(selector.primary) ||
-          (Array.isArray(selector.fallbacks) && selector.fallbacks.some(refersToProvider)) ||
-          Object.keys(object(current.models)).some(refersToProvider)
-        );
-      })
-    )
-      return false;
+    // Use the same removal as the UI so clearing the active default/fallbacks
+    // does not force config.apply's slower restart-receipt processing.
+    return isDeepStrictEqual(
+      removeProviderConnectionConfig(object(params.expectedConfig), params.providerKey),
+      params.config,
+    );
   } else {
     const next = object(nextProviders[params.providerKey]);
     if (
@@ -241,7 +227,8 @@ export async function applyGatewayConfiguration(
         assertRequestedPluginsSaved();
         if (useConnectionSet) {
           const providers = (config: unknown) => object(object(object(config).models).providers);
-          const savedProviders = providers(deps.readConfig());
+          const savedConfig = deps.readConfig();
+          const savedProviders = providers(savedConfig);
           const expectedProviders = providers(params.config);
           const providerKey = params.connectionProvider!;
           const saved = object(savedProviders[providerKey]);
@@ -254,6 +241,11 @@ export async function applyGatewayConfiguration(
             )
           )
             throw new Error("The saved provider connection does not match the requested settings");
+          if (
+            !Object.hasOwn(expectedProviders, providerKey) &&
+            !isDeepStrictEqual(object(savedConfig).agents, object(params.config).agents)
+          )
+            throw new Error("The saved model references do not match the requested removal");
         }
         deps.log(`${context} status=hot-applied`);
         return;

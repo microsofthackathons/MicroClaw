@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as deviceIdentity from "./device-identity";
 import { GatewayClient } from "./gateway-client";
 import { applyModelConfig } from "./model-config-application";
+import { removeProviderConnectionConfig } from "./provider-connection-config";
 
 describe.skipIf(
   !process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR || !process.env.MICROCLAW_GATEWAY_E2E_PARENT,
@@ -208,7 +209,7 @@ describe.skipIf(
           expect(saved.models.providers.minimax?.apiKey).toBe(
             next.models.providers.minimax?.apiKey,
           );
-          expect(readConfig().agents).toEqual(before.agents);
+          expect(readConfig().agents).toEqual(next.agents);
           expect(client.connectionGeneration).toBe(generation);
           expect(child.exitCode).toBeNull();
           return sample;
@@ -258,6 +259,53 @@ describe.skipIf(
             warmup: index < 2,
           });
         }
+        const referencedRemovals: typeof samples = [];
+        for (const [index, method] of [
+          "config.apply",
+          "config.set",
+          "config.set",
+          "config.apply",
+        ].entries()) {
+          // Prepare an active provider outside the measured interval. The UI's
+          // removal also clears this default, fallback and model allowlist.
+          const current = readConfig();
+          const prepared = structuredClone(current);
+          prepared.models.providers.minimax = {
+            ...structuredClone(connection),
+            models: [{ id: "MiniMax-M3", name: "Fixture MiniMax" }],
+          };
+          const agents = prepared.agents as Record<string, unknown>;
+          agents.defaults = {
+            ...(agents.defaults as Record<string, unknown>),
+            model: { primary: "minimax/MiniMax-M3", fallbacks: ["minimax/MiniMax-M3"] },
+            models: { "minimax/MiniMax-M3": {} },
+          };
+          const snapshot = await client.request<{ hash: string }>("config.get", {});
+          await client.request("config.set", {
+            baseHash: snapshot.hash,
+            raw: JSON.stringify(prepared),
+          });
+          await vi.waitFor(
+            async () => {
+              const applied = await client.request<{
+                configRevisionHash: string;
+                appliedConfigHash: string;
+              }>("config.get", {});
+              expect(applied.configRevisionHash).toBeTruthy();
+              expect(applied.appliedConfigHash).toBe(applied.configRevisionHash);
+            },
+            { timeout: 30_000, interval: 100 },
+          );
+          const before = readConfig();
+          const next = removeProviderConnectionConfig(
+            before as unknown as Record<string, unknown>,
+            "minimax",
+          ) as unknown as FixtureConfig;
+          referencedRemovals.push({
+            ...(await measure(method, "provider-remove", before, next)),
+            warmup: index < 2,
+          });
+        }
         const report = {
           firstSaveMethod,
           gatewayVersion: client.serverVersion,
@@ -265,6 +313,7 @@ describe.skipIf(
             "isolated Gateway configuration write and applied-revision confirmation; excludes API validation and MXC",
           samples,
           removals,
+          referencedRemovals,
         };
         console.info(`[provider-save-benchmark] ${JSON.stringify(report)}`);
         const reportPath = process.env.MICROCLAW_PROVIDER_SAVE_REPORT;
