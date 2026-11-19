@@ -5,6 +5,7 @@ import {
   type ModelConfigUpdate,
 } from "./model-config-application";
 import { ensureGitHubCopilotProviderPlugin } from "./model-provider-plugins";
+import { removeProviderConnectionConfig } from "./provider-connection-config";
 import { runWindowsNodeMxcModelUpdate } from "./windows-node-mxc-model-config";
 
 function fixture() {
@@ -227,9 +228,53 @@ describe("applyModelConfig", () => {
     expect(state.saved()).toEqual(state.input.config);
   });
 
+  it.each(["string", "selector"])(
+    "removes a referenced provider through config.set and clears its %s default",
+    async (format) => {
+      const state = await removalFixture();
+      const agents = {
+        defaults: {
+          workspace: "keep",
+          model:
+            format === "string"
+              ? "minimax/one"
+              : { primary: "minimax/one", fallbacks: ["minimax/two", "qwen/old"] },
+          models: { "minimax/one": {}, "qwen/old": { alias: "keep" } },
+        },
+      };
+      for (const config of [state.input.expectedConfig, state.saved()])
+        (config as Record<string, unknown>).agents = structuredClone(agents);
+      state.input.config = removeProviderConnectionConfig(
+        state.input.expectedConfig as Record<string, unknown>,
+        "minimax",
+      );
+      const hooks = {
+        readConfig: state.deps.readConfig,
+        pause: vi.fn(async () => {}),
+        apply: () => applyModelConfig(state.deps, state.input),
+        restartSavedConfig: vi.fn(async () => {}),
+        verify: vi.fn(async () => {}),
+        resume: vi.fn(),
+        failClosed: vi.fn(async () => {}),
+      };
+      await runWindowsNodeMxcModelUpdate(hooks);
+      expect(state.gateway.request.mock.calls.map(([method]) => method)).toEqual([
+        "config.get",
+        "config.set",
+        "config.get",
+      ]);
+      expect(state.saved()).toEqual(state.input.config);
+      expect(hooks.resume).toHaveBeenCalledOnce();
+      expect(hooks.restartSavedConfig).not.toHaveBeenCalled();
+      expect(hooks.failClosed).not.toHaveBeenCalled();
+      expect((state.input.expectedConfig as Record<string, unknown>).agents).toEqual(agents);
+    },
+  );
+
   it.each([
     "default-change",
     "agent-change",
+    "workspace-change",
     "other-provider",
     "plugin-change",
     "retained-primary",
@@ -240,7 +285,7 @@ describe("applyModelConfig", () => {
     const next = state.input.config as {
       models: { providers: Record<string, unknown> };
       agents: {
-        defaults: { model: { primary: string } };
+        defaults: { model: { primary: string }; workspace?: string };
         entries?: Record<string, unknown>;
         list?: unknown[];
       };
@@ -248,6 +293,7 @@ describe("applyModelConfig", () => {
     };
     if (reason === "default-change") next.agents.defaults.model.primary = "qwen/replacement";
     if (reason === "agent-change") next.agents.entries = { writer: { model: "qwen/old" } };
+    if (reason === "workspace-change") next.agents.defaults.workspace = "different";
     if (reason === "other-provider") delete next.models.providers.qwen;
     if (reason === "plugin-change") next.plugins = { entries: { minimax: { enabled: false } } };
     if (reason.startsWith("retained-")) {
@@ -298,6 +344,31 @@ describe("applyModelConfig", () => {
     await vi.advanceTimersByTimeAsync(500);
     await pending;
     expect(state.saved()).toEqual(state.input.config);
+  });
+
+  it("rejects a removal receipt that retained the removed provider's model references", async () => {
+    const state = await removalFixture();
+    for (const config of [state.input.expectedConfig, state.saved()])
+      (config as Record<string, unknown>).agents = {
+        defaults: { model: { primary: "minimax/one" } },
+      };
+    state.input.config = removeProviderConnectionConfig(
+      state.input.expectedConfig as Record<string, unknown>,
+      "minimax",
+    );
+    const request = state.gateway.request.getMockImplementation()!;
+    state.gateway.request.mockImplementation(async (method, params) => {
+      if (method === "config.set") {
+        const config = JSON.parse(String(params?.raw));
+        config.agents = (state.input.expectedConfig as Record<string, unknown>).agents;
+        return request(method, { ...params, raw: JSON.stringify(config) });
+      }
+      return request(method, params);
+    });
+    await expect(applyModelConfig(state.deps, state.input)).rejects.toMatchObject({
+      cause: { message: "The saved model references do not match the requested removal" },
+    });
+    expect(state.deps.log).not.toHaveBeenCalledWith(expect.stringContaining("hot-applied"));
   });
 
   it("applies Copilot activation through the MXC model transaction", async () => {
