@@ -738,16 +738,19 @@ export const PINNED_EXEC_APPROVAL_VALIDATION_SOURCE = `\t\t"exec.approval.reques
 
 export function buildGatewayApprovalOrigin(identity, request, gatewayGeneration) {
   const nonempty = (value) => typeof value === "string" && value.length > 0;
+  const plan = request.systemRunPlan;
   if (
     request.host !== "node" ||
     !identity ||
     identity.agentId !== request.agentId ||
+    plan?.agentId !== request.agentId ||
     identity.operationalRunInstance?.runId !== request.runId ||
     ![
       identity.sessionKey,
       identity.operationalRunInstance?.instanceId,
       request.agentId,
       request.sessionKey,
+      plan?.sessionKey,
       request.runId,
       request.toolCallId,
       request.nodeId,
@@ -763,7 +766,7 @@ export function buildGatewayApprovalOrigin(identity, request, gatewayGeneration)
     gatewayGeneration,
     agentId: request.agentId,
     runSessionKey: identity.sessionKey,
-    executionSessionKey: request.sessionKey,
+    executionSessionKey: plan.sessionKey,
     runId: request.runId,
     toolCallId: request.toolCallId,
     nodeId: request.nodeId,

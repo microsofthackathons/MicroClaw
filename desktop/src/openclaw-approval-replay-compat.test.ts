@@ -14,12 +14,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizeWindowsNodeMxcGatewayApproval } from "./windows-node-mxc";
 // @ts-expect-error The compatibility preload is intentionally external ESM for the Gateway child.
 import * as replayCompat from "./openclaw-approval-replay-compat.mjs";
 
 const {
   APPROVAL_PROOF_CONTRACT,
   APPROVAL_PROOF_TTL_MS,
+  buildGatewayApprovalOrigin,
   classifyWindowsNodeMxcInvokeFailure,
   describeWindowsNodeSystemRunResponseShape,
   normalizeWindowsNodeSystemRunResponse,
@@ -130,6 +132,50 @@ describe("pinned approval module load boundaries", () => {
   });
 });
 
+describe("authenticated remote approval session lineage", () => {
+  const identity = {
+    agentId: "main",
+    sessionKey: "agent:main:main",
+    operationalRunInstance: { runId: "public-run", instanceId: "public-instance" },
+    turnSourceChannel: "openclaw-weixin",
+    turnSourceAccountId: "public-bot",
+    turnSourceTo: "owner@im.wechat",
+  };
+  const request = {
+    host: "node",
+    nodeId: "public-node",
+    agentId: "main",
+    sessionKey: identity.sessionKey,
+    runId: "public-run",
+    toolCallId: "public-tool",
+    systemRunPlan: { agentId: "main", sessionKey: "agent:main:sandbox:policy-execution" },
+  };
+
+  it.each([identity.sessionKey, request.systemRunPlan.sessionKey])(
+    "uses the prepared execution session regardless of request routing through %s",
+    (sessionKey) => {
+      expect(
+        buildGatewayApprovalOrigin(identity, { ...request, sessionKey }, "public-generation"),
+      ).toMatchObject({
+        runSessionKey: identity.sessionKey,
+        executionSessionKey: request.systemRunPlan.sessionKey,
+      });
+    },
+  );
+
+  it.each([
+    { systemRunPlan: undefined },
+    { systemRunPlan: { ...request.systemRunPlan, sessionKey: "" } },
+    { systemRunPlan: { ...request.systemRunPlan, agentId: "other-agent" } },
+    { runId: "other-run" },
+    { agentId: "other-agent" },
+  ])("does not grant remote provenance to a missing or mismatched binding: %j", (patch) => {
+    expect(
+      buildGatewayApprovalOrigin(identity, { ...request, ...patch }, "public-generation"),
+    ).toBeUndefined();
+  });
+});
+
 describe("pinned OpenClaw package validation", () => {
   const temporaryPackages: string[] = [];
 
@@ -179,6 +225,100 @@ describe("pinned OpenClaw package validation", () => {
 
   const publishedPackage = process.env.MICROCLAW_OPENCLAW_TEST_PACKAGE_DIR;
   describe.skipIf(!publishedPackage)("official npm package integration", () => {
+    it("preserves remote approval lineage through the published handler with distinct run and execution sessions", () => {
+      const target = validatePinnedOpenClawApprovalPackage(publishedPackage).find(
+        (entry: { module: string }) => entry.module.startsWith("exec-approval-"),
+      );
+      if (!target) throw new Error("Pinned exec approval handler missing");
+      const hook = pathToFileURL(resolve(__dirname, "openclaw-approval-replay-compat.mjs")).href;
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          hook,
+          "--input-type=module",
+          "-e",
+          `
+import assert from "node:assert/strict";
+const module = await import(${JSON.stringify(pathToFileURL(target.modulePath).href)});
+const create = Object.values(module).find(value =>
+  typeof value === "function" && value.name === "createExecApprovalHandlers");
+assert.ok(create, "published approval handler export missing");
+const identity = {
+  kind: "agentRuntime", agentId: "main", sessionKey: "agent:main:main",
+  operationalRunInstance: { runId: "public-run", instanceId: "public-instance" },
+  turnSourceChannel: "openclaw-weixin", turnSourceAccountId: "public-bot",
+  turnSourceTo: "owner@im.wechat",
+};
+const argv = ["C:\\\\Windows\\\\System32\\\\hostname.exe"];
+const stop = new Error("request captured");
+let captured, rejection;
+const handlers = create({
+  getSnapshot: async () => undefined,
+  create: request => { captured = request; throw stop; },
+});
+try {
+  await handlers["exec.approval.request"]({
+    params: {
+      id: "public-approval", host: "node", nodeId: "public-node",
+      agentId: "main", sessionKey: "agent:main:sandbox:policy-execution",
+      toolCallId: "public-tool",
+      systemRunPlan: {
+        argv, commandText: "hostname", commandPreview: "hostname", cwd: null,
+        cwdBinding: "isolated-scratch:v1", agentId: "main",
+        sessionKey: "agent:main:sandbox:policy-execution",
+        executablePath: argv[0], executableSha256: "a".repeat(64), declaredAccess: [],
+      },
+    },
+    client: { internal: { agentRuntimeIdentity: identity } },
+    context: {
+      validateAgentRuntimeApprovalAuthority: value => value === identity,
+      chatRunState: { hasAbortMarker: () => false },
+      getRuntimeConfig: () => ({}),
+    },
+    respond: (ok, payload, error) => { if (!ok) rejection = error; },
+  });
+} catch (error) { if (error !== stop) throw error; }
+assert.ok(captured, JSON.stringify(rejection));
+console.log("APPROVAL_ORIGIN_RESULT=" + JSON.stringify(captured));
+`,
+        ],
+        {
+          env: {
+            ...process.env,
+            MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT: "1",
+            MICROCLAW_MXC_APPROVAL_PRELOAD_INITIALIZED: "",
+            MICROCLAW_OPENCLAW_PACKAGE_DIR: publishedPackage,
+            MICROCLAW_MXC_APPROVAL_PROOF_SECRET: Buffer.alloc(32, 1).toString("base64"),
+            MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION: "public-generation",
+            MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT: "b".repeat(64),
+            MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID: "a".repeat(64),
+          },
+          encoding: "utf8",
+          timeout: 30_000,
+        },
+      );
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      const output = child.stdout
+        .split(/\r?\n/)
+        .find((line) => line.startsWith("APPROVAL_ORIGIN_RESULT="));
+      if (!output) throw new Error("Published handler returned no approval");
+      const request = JSON.parse(output.slice("APPROVAL_ORIGIN_RESULT=".length));
+      const approval = normalizeWindowsNodeMxcGatewayApproval(
+        { id: "public-approval", request },
+        "public-node",
+        "public-generation",
+        "full",
+      );
+      expect(approval?.origin).toMatchObject({
+        runSessionKey: "agent:main:main",
+        executionSessionKey: "agent:main:sandbox:policy-execution",
+        runId: "public-run",
+        toolCallId: "public-tool",
+      });
+    }, 40_000);
+
     it("validates all published hashes and patch points and parses the patched bundles", () => {
       const targets = validatePinnedOpenClawApprovalPackage(publishedPackage, {
         approval: true,

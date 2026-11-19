@@ -207,6 +207,11 @@ owner for experimental remote approval. Approval details can include command
 text, arguments, and paths and are sent through WeChat. The owner binding,
 source conversation, challenge, and current policy are revalidated; replacing
 or disabling the owner invalidates outstanding challenges.
+Remote approval binds the authenticated conversation/run identity separately
+from the Windows Node's prepared execution session. The execution session comes
+from `systemRunPlan.sessionKey`, not the approval request's conversation key;
+these can differ in OpenClaw 2026.10.10. Missing or inconsistent provenance keeps
+approval local to the desktop rather than guessing a WeChat recipient.
 
 ## Canvas
 
