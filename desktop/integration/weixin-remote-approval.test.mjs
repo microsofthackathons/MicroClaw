@@ -80,6 +80,7 @@ vi.mock("../../plugins/openclaw-weixin/src/storage/sync-buf.js", () => ({
   saveGetUpdatesBuf: mocks.saveCursor,
 }));
 vi.mock("../../plugins/openclaw-weixin/src/security/mxc-policy.js", () => ({
+  isMxcManagedWeixin: () => true,
   isMxcWeixinIngressReleased: () => true,
   assertMxcWeixinIngressReleased: () => {},
   waitForMxcWeixinIngressRelease: () => {},
